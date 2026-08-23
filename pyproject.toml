@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subzero-cli"
+version = "1.0.0"
+description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, and translate"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Yuri Barreira" }]
+keywords = [
+    "subtitles",
+    "srt",
+    "vtt",
+    "ass",
+    "sdh",
+    "sync",
+    "whisper",
+    "ollama",
+    "ffmpeg",
+    "jellyfin",
+    "plex",
+    "media",
+    "audio-sync",
+    "translation",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Text Processing :: Filters",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+subzero = "subzero.cli:main"
+sdhfix = "subzero.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yuri-rod/subzero"
+Issues = "https://github.com/yuri-rod/subzero/issues"
+Funding = "https://buymeacoffee.com/yurirod"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
