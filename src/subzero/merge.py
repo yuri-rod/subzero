@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
 
-from .convert import Cue, parse_srt, dump_srt, to_srt_time
+from .convert import Cue, parse_srt, dump_srt
 from .core import read
 
 
@@ -16,14 +13,6 @@ def _time_to_ms(time_str: str) -> int:
     h, m, rest = time_str.split(":")
     s, ms = rest.split(",")
     return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
-
-
-def _ms_to_time(ms: int) -> str:
-    ms = max(0, ms)
-    h, ms = divmod(ms, 3600000)
-    m, ms = divmod(ms, 60000)
-    s, ms = divmod(ms, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
 def merge_cues(
@@ -46,7 +35,6 @@ def merge_cues(
         p_start = _time_to_ms(p_cue.start)
         p_end = _time_to_ms(p_cue.end)
 
-        # Advance secondary index to first candidate that might overlap
         while sec_idx < num_sec and _time_to_ms(secondary_cues[sec_idx].end) <= p_start:
             sec_idx += 1
 
@@ -60,7 +48,6 @@ def merge_cues(
             if s_start >= p_end:
                 break
 
-            # Calculate overlap duration
             overlap = min(p_end, s_end) - max(p_start, s_start)
             if overlap > 200 or (overlap > 0 and overlap >= (s_end - s_start) * 0.3):
                 if s_cue.text and s_cue.text not in matched_texts:
@@ -102,11 +89,7 @@ def merge_files(
 
     merged = merge_cues(cues1, cues2, separator=separator, secondary_color=secondary_color)
 
-    if output:
-        out_path = Path(output)
-    else:
-        out_path = p1.parent / f"{p1.stem}.bilingual.srt"
-
+    out_path = Path(output) if output else p1.parent / f"{p1.stem}.bilingual.srt"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(dump_srt(merged), encoding="utf-8")
     return out_path, len(merged)
