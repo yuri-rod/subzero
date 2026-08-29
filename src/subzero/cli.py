@@ -18,6 +18,7 @@ from .extract import (
     require_ffmpeg,
     ToolError,
 )
+from .merge import merge_files
 from .moviehash import moviehash
 from .roles import ROLES
 from .shift import shift_file
@@ -135,6 +136,8 @@ def cmd_shift(args) -> int:
         print("subzero: nothing to do", file=sys.stderr)
         return 1
     failed = shifted = total_cues = 0
+    delta = args.seconds or 0.0
+    scale = args.scale or 1.0
     for p in files:
         out = None
         if args.output:
@@ -147,21 +150,25 @@ def cmd_shift(args) -> int:
         try:
             target, count = shift_file(
                 p,
-                delta_seconds=args.seconds,
+                delta_seconds=delta,
+                scale_factor=scale,
+                from_fps=args.from_fps,
+                to_fps=args.to_fps,
                 output=out,
                 backup_dir=args.backup,
                 dry=args.dry_run,
             )
             shifted += 1
             total_cues += count
+            fps_info = f", fps={args.from_fps}->{args.to_fps}" if (args.from_fps and args.to_fps) else ""
             verb = "would shift" if args.dry_run else "shifted"
             if args.verbose or args.dry_run:
-                print(f"{verb} {p.name} -> {target} ({count} cues, {args.seconds:+.3f}s)")
+                print(f"{verb} {p.name} -> {target} ({count} cues, {delta:+.3f}s{fps_info})")
         except Exception as e:                              # noqa: BLE001
             failed += 1
             print(f"failed {p}: {str(e)[:160]}", file=sys.stderr)
     verb = "would shift" if args.dry_run else "shifted"
-    print(f"{len(files)} files, {verb} {shifted} ({total_cues} cues, {args.seconds:+.3f}s), failed {failed}")
+    print(f"{len(files)} files, {verb} {shifted} ({total_cues} cues), failed {failed}")
     return 1 if failed else 0
 
 
@@ -313,14 +320,32 @@ def cmd_translate(args) -> int:
                 p,
                 target_lang=args.to,
                 output=args.output,
+                provider=args.provider,
                 model=args.model,
                 url=args.url,
+                api_key=args.api_key,
             )
             print(f"translated {p.name} -> {out.name} ({args.to})")
         except Exception as e:                              # noqa: BLE001
             failed += 1
             print(f"failed {p}: {str(e)[:160]}", file=sys.stderr)
     return 1 if failed else 0
+
+
+def cmd_merge(args) -> int:
+    try:
+        out, count = merge_files(
+            args.primary,
+            args.secondary,
+            output=args.output,
+            separator=args.separator.replace("\\n", "\n"),
+            secondary_color=args.color,
+        )
+        print(f"merged {args.primary} + {args.secondary} -> {out} ({count} cues)")
+        return 0
+    except Exception as e:                                  # noqa: BLE001
+        print(f"subzero merge error: {e}", file=sys.stderr)
+        return 1
 
 
 def cmd_moviehash(args) -> int:
@@ -365,7 +390,7 @@ def cmd_menu(args) -> int:                                  # noqa: ARG001
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="subzero",
-        description="Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, and translate.",
+        description="Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, translate, and merge.",
     )
     ap.add_argument("--version", action="store_true", help="print version and exit")
     sub = ap.add_subparsers(dest="command")
@@ -398,9 +423,12 @@ def build_parser() -> argparse.ArgumentParser:
     shared(check)
     check.set_defaults(func=cmd_check)
 
-    shift = sub.add_parser("shift", help="shift subtitle timestamps (+/- seconds)")
+    shift = sub.add_parser("shift", help="shift and/or speed-convert subtitle timestamps")
     shift.add_argument("paths", nargs="+", help="subtitle files or directories")
-    shift.add_argument("--seconds", "-s", type=float, required=True, help="seconds to shift (e.g. +1.5 or -2.0)")
+    shift.add_argument("--seconds", "-s", type=float, default=0.0, help="seconds to shift (e.g. +1.5 or -2.0)")
+    shift.add_argument("--scale", "--factor", type=float, default=1.0, help="speed multiplier (e.g. 1.0427)")
+    shift.add_argument("--from-fps", help="source framerate (e.g. 23.976, 25, 24)")
+    shift.add_argument("--to-fps", help="target framerate (e.g. 25, 23.976, 24)")
     shift.add_argument("-o", "--output", metavar="PATH", help="output file or directory")
     shift.add_argument("--pattern", default="*.srt", help="glob for directory walks")
     shift.add_argument("--skip", default="", help="glob of filenames to leave alone")
@@ -443,15 +471,25 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--dry-run", action="store_true", help="report without writing")
     sync.set_defaults(func=cmd_sync)
 
-    trans = sub.add_parser("translate", help="translate subtitle file using local Ollama LLM")
+    trans = sub.add_parser("translate", help="translate subtitle file using Ollama or OpenAI-compatible LLMs")
     trans.add_argument("paths", nargs="+", help="subtitle files or directories")
     trans.add_argument("--to", default="pt-BR", help="target language (default pt-BR)")
     trans.add_argument("-o", "--output", metavar="PATH", help="output file or directory")
-    trans.add_argument("--model", default="gemma3:12b", help="Ollama model (default gemma3:12b)")
-    trans.add_argument("--url", default="http://127.0.0.1:11434", help="Ollama URL (default http://127.0.0.1:11434)")
+    trans.add_argument("--provider", default="ollama", choices=["ollama", "openai", "openrouter", "groq", "deepseek"], help="LLM provider (default: ollama)")
+    trans.add_argument("--model", default=None, help="LLM model name (defaults to provider recommendation)")
+    trans.add_argument("--url", default=None, help="custom API base URL / Ollama host")
+    trans.add_argument("--api-key", default=None, help="API key for cloud LLM providers")
     trans.add_argument("--pattern", default="*.srt", help="glob for directory walks")
     trans.add_argument("--skip", default="", help="glob of filenames to leave alone")
     trans.set_defaults(func=cmd_translate)
+
+    merge = sub.add_parser("merge", help="merge two subtitles into dual-language/bilingual subtitles")
+    merge.add_argument("primary", help="primary language subtitle file")
+    merge.add_argument("secondary", help="secondary language subtitle file")
+    merge.add_argument("-o", "--output", metavar="PATH", help="output subtitle file path")
+    merge.add_argument("--separator", default="\n", help="separator between languages (default: newline)")
+    merge.add_argument("--color", default=None, help="optional HTML color for secondary language (e.g. #ffff00)")
+    merge.set_defaults(func=cmd_merge)
 
     mhash = sub.add_parser("moviehash", help="compute OpenSubtitles 64-bit file hash")
     mhash.add_argument("paths", nargs="+", help="files or directories")

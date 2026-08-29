@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.0.0"
-description = "Subtitle cleanup, conversion, timestamp adjustment, extraction, and translation"
+version = "1.1.0"
+description = "Subtitle cleanup, conversion, timestamp adjustment, extraction, translation, and bilingual merging"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
