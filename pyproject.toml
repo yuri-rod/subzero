@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
 version = "1.1.0"
-description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, translate, and merge"
+description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, and translate with zero setup"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "Yuri Barreira" }]
 keywords = [
@@ -31,8 +32,13 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
     "Topic :: Multimedia :: Video",
     "Topic :: Text Processing :: Filters",
 ]
@@ -47,6 +53,7 @@ sdhfix = "subzero.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/yuri-rod/subzero"
+Repository = "https://github.com/yuri-rod/subzero"
 Issues = "https://github.com/yuri-rod/subzero/issues"
 Funding = "https://buymeacoffee.com/yurirod"
 
