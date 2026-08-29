@@ -1,6 +1,6 @@
 """Universal subtitle & audio AI toolkit."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .convert import (
     Cue,
@@ -24,10 +24,11 @@ from .extract import (
     extract_from_video,
     list_subtitle_streams,
 )
+from .merge import merge_cues, merge_files
 from .moviehash import moviehash
-from .shift import shift_file, shift_timestamps
+from .shift import calculate_fps_factor, shift_file, shift_timestamps
 from .sync import auto_sync_file, probe_audio_delay
-from .translate import OllamaClient, translate_cues, translate_file
+from .translate import OllamaClient, OpenAIClient, translate_cues, translate_file
 
 __all__ = [
     "__version__",
@@ -35,6 +36,7 @@ __all__ = [
     "ExtractResult",
     "ConvertResult",
     "OllamaClient",
+    "OpenAIClient",
     "Options",
     "Result",
     "Stats",
@@ -42,6 +44,7 @@ __all__ = [
     "ToolError",
     "analyze",
     "auto_sync_file",
+    "calculate_fps_factor",
     "collect_videos",
     "convert_file",
     "convert_text",
@@ -53,6 +56,8 @@ __all__ = [
     "fix_file",
     "fix_text",
     "keep_breaks",
+    "merge_cues",
+    "merge_files",
     "rewrap",
     "strip_sdh",
     "list_subtitle_streams",

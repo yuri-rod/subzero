@@ -12,11 +12,12 @@
 **The universal subtitle and audio AI toolkit.**  
 *Clean SDH, auto-sync, shift, convert, extract, and translate with zero setup.*
 
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
 [![Platform: Linux | macOS | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
-[![Tests: 97 passed](https://img.shields.io/badge/tests-97%20passed-brightgreen.svg)]()
+[![Tests: 102 passed](https://img.shields.io/badge/tests-102%20passed-brightgreen.svg)]()
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/yurirod)
 
 ---
@@ -165,6 +166,9 @@ Offsets timecodes forward or backward with millisecond accuracy and zero-floor p
 # Delay subtitles by 1.5 seconds
 subzero shift episode.srt --seconds +1.5
 
+# Convert framerate timing (e.g. PAL 25fps to Film 23.976fps)
+subzero shift movie.srt --from-fps 25 --to-fps 23.976
+
 # Advance subtitles by 800 milliseconds across a whole folder
 subzero shift ./subs --seconds -0.800 --backup ./backup
 ```
@@ -199,19 +203,34 @@ subzero extract movie.mkv
 subzero extract /media/series --all --language eng por --format srt --fix
 ```
 
-### 6. Local LLM Translation (`subzero translate`)
+### 6. AI Translation (`subzero translate`)
 
-Translates subtitles into target languages using local Ollama LLMs with cue-preserving batching:
+Translates subtitles into target languages using local Ollama LLMs or cloud OpenAI-compatible APIs with cue-preserving batching:
 
 ```console
-# Translate English subtitle to Brazilian Portuguese using local Gemma 3 12B
+# Translate English subtitle to Brazilian Portuguese using local Ollama (Gemma 3 12B)
 subzero translate episode.srt --to pt-BR
+
+# Translate using OpenAI or Groq / DeepSeek / OpenRouter
+subzero translate movie.srt --to es --provider groq --api-key "$GROQ_API_KEY"
 
 # Translate using a custom Ollama host or model
 subzero translate movie.srt --to es --model qwen2.5-coder:7b --url http://192.168.1.50:11434
 ```
 
-### 7. OpenSubtitles MovieHash (`subzero moviehash`)
+### 7. Bilingual Subtitle Merge (`subzero merge`)
+
+Merges two language tracks into a single bilingual subtitle file (ideal for language learners and dual-audio streaming):
+
+```console
+# Merge English and Portuguese subtitles
+subzero merge movie.en.srt movie.pt.srt -o movie.dual.srt
+
+# Highlight secondary language with custom color
+subzero merge anime.jp.srt anime.en.srt -o anime.bilingual.srt --color "#ffff00"
+```
+
+### 8. OpenSubtitles MovieHash (`subzero moviehash`)
 
 Calculates the 64-bit file hash used by OpenSubtitles to identify video releases:
 
@@ -219,7 +238,7 @@ Calculates the 64-bit file hash used by OpenSubtitles to identify video releases
 subzero moviehash movie.mkv
 ```
 
-### 8. Background Media Server Daemon (`subzero watch`)
+### 9. Background Media Server Daemon (`subzero watch`)
 
 Runs as a lightweight daemon to automatically clean and prep newly arrived subtitles:
 

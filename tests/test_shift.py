@@ -1,4 +1,4 @@
-from subzero.shift import shift_timestamps, shift_file
+from subzero.shift import calculate_fps_factor, shift_timestamps, shift_file
 
 SAMPLE_SRT = """1
 00:00:01,000 --> 00:00:04,000
@@ -19,6 +19,13 @@ def test_shift_timestamps_negative_clips_to_zero():
     shifted, count = shift_timestamps(SAMPLE_SRT, -2.0)
     assert count == 2
     assert "00:00:00,000 --> 00:00:02,000" in shifted
+
+def test_fps_calculation_and_scaling():
+    factor = calculate_fps_factor(25, 23.976)
+    assert round(factor, 4) == round(25.0 / 23.976, 4)
+    shifted, count = shift_timestamps(SAMPLE_SRT, delta_seconds=0.0, scale_factor=2.0)
+    assert count == 2
+    assert "00:00:02,000 --> 00:00:08,000" in shifted
 
 def test_shift_file_in_place(tmp_path):
     p = tmp_path / "test.srt"

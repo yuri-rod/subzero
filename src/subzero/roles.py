@@ -41,6 +41,20 @@ ROLES = {
         "telephone téléphone ordinateur machine chanteur choeur chœur voix professeur "
         "garde pilote narrateur annonceur journaliste"
     ),
+    "de": (
+        "mann frau männer frauen junge mädchen kind kinder erzähler sprecher "
+        "polizist arzt ärztin krankenschwester richter beide alle menge publikum "
+        "zuschauer fahrer soldat hauptmann kellner kellnerin empfangschef betreiber "
+        "funk radio fernsehen telefon computer maschine sänger chor stimme stimmen "
+        "lehrer student wächter pilot"
+    ),
+    "it": (
+        "uomo donna uomini donne ragazzo ragazza bambino bambina bambini narratore "
+        "annunciatore poliziotto medico infermiere giudice entrambi tutti folla "
+        "pubblico conducente autista soldato capitano cameriere barista operatore "
+        "centralinista radio televisione telefono computer macchina cantante coro "
+        "voce voci insegnante studente guardia pilota"
+    ),
 }
 
 

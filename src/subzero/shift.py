@@ -1,4 +1,4 @@
-"""Timestamp shifting utility for subtitles."""
+"""Timestamp shifting and timecode stretching utility for subtitles."""
 
 from __future__ import annotations
 
@@ -9,6 +9,18 @@ from pathlib import Path
 TIME = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{1,3})"
 )
+
+COMMON_FPS = {
+    "23.976": 23.976,
+    "23.98": 23.976,
+    "24": 24.0,
+    "25": 25.0,
+    "29.97": 29.97,
+    "30": 30.0,
+    "50": 50.0,
+    "59.94": 59.94,
+    "60": 60.0,
+}
 
 
 def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
@@ -24,10 +36,23 @@ def _to_timestamp(value: float, sep: str = ",") -> str:
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
 
-def shift_timestamps(text: str, delta_seconds: float) -> tuple[str, int]:
-    """Shift all subtitle timecodes by delta_seconds.
+def calculate_fps_factor(from_fps: float | str, to_fps: float | str) -> float:
+    """Calculate speed ratio when converting subtitle framerate (e.g. 23.976 -> 25)."""
+    f1 = COMMON_FPS.get(str(from_fps).strip(), float(from_fps))
+    f2 = COMMON_FPS.get(str(to_fps).strip(), float(to_fps))
+    if f1 <= 0 or f2 <= 0:
+        raise ValueError(f"Invalid frame rate: {from_fps} -> {to_fps}")
+    return f1 / f2
+
+
+def shift_timestamps(
+    text: str,
+    delta_seconds: float = 0.0,
+    scale_factor: float = 1.0,
+) -> tuple[str, int]:
+    """Shift and/or stretch all subtitle timecodes.
     
-    Returns (shifted_text, count_of_shifted_cues).
+    Returns (processed_text, count_of_shifted_cues).
     """
     shifted_count = 0
 
@@ -35,8 +60,8 @@ def shift_timestamps(text: str, delta_seconds: float) -> tuple[str, int]:
         nonlocal shifted_count
         g = m.groups()
         sep = "," if "," in m.group(0) else "."
-        start_sec = _to_seconds(*g[:4]) + delta_seconds
-        end_sec = _to_seconds(*g[4:]) + delta_seconds
+        start_sec = max(0.0, (_to_seconds(*g[:4]) * scale_factor) + delta_seconds)
+        end_sec = max(start_sec, (_to_seconds(*g[4:]) * scale_factor) + delta_seconds)
         shifted_count += 1
         return f"{_to_timestamp(start_sec, sep)} --> {_to_timestamp(end_sec, sep)}"
 
@@ -45,14 +70,20 @@ def shift_timestamps(text: str, delta_seconds: float) -> tuple[str, int]:
 
 def shift_file(
     path: Path,
-    delta_seconds: float,
+    delta_seconds: float = 0.0,
+    scale_factor: float = 1.0,
+    from_fps: float | str | None = None,
+    to_fps: float | str | None = None,
     output: Path | None = None,
     backup_dir: str | Path | None = None,
     dry: bool = False,
 ) -> tuple[Path, int]:
-    """Shift a subtitle file in place or to a target output path."""
+    """Shift and/or speed-stretch a subtitle file in place or to a target output path."""
+    if from_fps is not None and to_fps is not None:
+        scale_factor = scale_factor * calculate_fps_factor(from_fps, to_fps)
+
     content = path.read_text(encoding="utf-8", errors="replace")
-    shifted_text, count = shift_timestamps(content, delta_seconds)
+    shifted_text, count = shift_timestamps(content, delta_seconds=delta_seconds, scale_factor=scale_factor)
 
     target = Path(output) if output else path
 

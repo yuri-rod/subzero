@@ -286,11 +286,11 @@ def analyze(raw: str, opts: Options | None = None) -> Stats:
 
 
 def read(path) -> tuple[str, str]:
-    """Read a subtitle, tolerating the legacy 8-bit encodings still in the wild."""
+    """Read a subtitle, tolerating legacy 8-bit and unicode encodings still in the wild."""
     data = open(path, "rb").read()
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+    for enc in ("utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1", "iso-8859-1", "windows-1250"):
         try:
-            return data.decode(enc), ("utf-8" if enc == "utf-8-sig" else enc)
+            return data.decode(enc), ("utf-8" if "utf-8" in enc else enc)
         except UnicodeDecodeError:
             continue
     raise UnicodeDecodeError("subzero", data, 0, 1, "no supported encoding")

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.0.0"
-description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, and translate"
+version = "1.1.0"
+description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, translate, and merge"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
