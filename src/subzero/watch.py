@@ -65,7 +65,10 @@ class Watcher:
                     st = p.stat()
                 except OSError:
                     continue
-                if now - st.st_mtime < self.settle:
+                # settle=0 means no quiet period at all. Without the guard a
+                # file whose timestamp sits a hair ahead of our clock, which
+                # happens on Windows, goes negative here and is skipped forever.
+                if self.settle and now - st.st_mtime < self.settle:
                     continue
                 key = str(p)
                 # size as well as mtime: on mtime alone the tool's own rewrite

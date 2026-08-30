@@ -82,9 +82,9 @@ def test_unreadable_file_counts_as_failure_not_crash(tmp_path):
     assert watcher(tmp_path).sweep() == (0, 1)
 
 
-def test_two_edits_in_the_same_second_are_both_seen(tmp_path):
-    """Truncating mtime to whole seconds hid an edit that landed in the same
-    second as the sweep that recorded it."""
+def test_a_rewrite_is_seen_even_with_a_zero_settle(tmp_path):
+    """settle=0 used to skip any file whose timestamp was a hair ahead of the
+    clock, which is routine on Windows once mtime keeps its sub-second part."""
     f = write(tmp_path / "a.srt")
     w = watcher(tmp_path)
     w.sweep()
@@ -93,3 +93,12 @@ def test_two_edits_in_the_same_second_are_both_seen(tmp_path):
     recorded = next(iter(stamp.values()))[0]
     assert w.sweep() == (1, 0)
     assert isinstance(recorded, float)
+
+
+def test_a_future_timestamp_is_not_skipped_when_settle_is_zero(tmp_path):
+    import os
+
+    f = write(tmp_path / "a.srt")
+    ahead = time.time() + 5
+    os.utime(f, (ahead, ahead))
+    assert watcher(tmp_path).sweep() == (1, 0)
