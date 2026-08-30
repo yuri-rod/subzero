@@ -80,3 +80,16 @@ def test_backup_keeps_the_first_original(tmp_path):
 def test_unreadable_file_counts_as_failure_not_crash(tmp_path):
     (tmp_path / "bad.srt").write_bytes(b"not a subtitle at all")
     assert watcher(tmp_path).sweep() == (0, 1)
+
+
+def test_two_edits_in_the_same_second_are_both_seen(tmp_path):
+    """Truncating mtime to whole seconds hid an edit that landed in the same
+    second as the sweep that recorded it."""
+    f = write(tmp_path / "a.srt")
+    w = watcher(tmp_path)
+    w.sweep()
+    write(f)
+    stamp = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    recorded = next(iter(stamp.values()))[0]
+    assert w.sweep() == (1, 0)
+    assert isinstance(recorded, float)
