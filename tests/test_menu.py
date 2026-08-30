@@ -177,3 +177,22 @@ def test_help_lists_new_commands(capsys):
     out = capsys.readouterr().out
     for name in ("extract", "convert", "menu", "streams", "shift", "moviehash"):
         assert name in out
+
+
+def test_split_paths_keeps_windows_separators(monkeypatch):
+    """POSIX shlex escapes backslashes, which silently emptied every menu action
+    on Windows: C:\\Users\\me came back as C:Usersme and matched nothing."""
+    from subzero import menu
+
+    monkeypatch.setattr(menu.os, "name", "nt")
+    assert menu._split_paths(r"C:\Users\me\subs") == [r"C:\Users\me\subs"]
+    assert menu._split_paths(r'"C:\Users\me\my subs"') == [r"C:\Users\me\my subs"]
+    assert menu._split_paths(r"C:\a C:\b") == [r"C:\a", r"C:\b"]
+
+
+def test_split_paths_still_posix_elsewhere(monkeypatch):
+    from subzero import menu
+
+    monkeypatch.setattr(menu.os, "name", "posix")
+    assert menu._split_paths("/home/me/subs") == ["/home/me/subs"]
+    assert menu._split_paths("'/home/me/my subs'") == ["/home/me/my subs"]
