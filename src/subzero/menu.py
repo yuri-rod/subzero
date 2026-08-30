@@ -5,6 +5,7 @@ No third-party UI library, plain stdin prompts so the tool stays dependency-free
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -126,12 +127,24 @@ def _menu_table() -> None:
     _print("-" * 60)
 
 
+def _split_paths(raw: str) -> list[str]:
+    """Split a typed path list without eating Windows separators.
+
+    shlex in POSIX mode treats a backslash as an escape, so C:\\Users\\me comes
+    back as C:Usersme and nothing is ever found. Non-POSIX mode keeps the
+    separators but also keeps the quotes, hence the strip.
+    """
+    if os.name == "nt":
+        return [token.strip('"') for token in shlex.split(raw, posix=False)]
+    return shlex.split(raw)
+
+
 def _ask_paths(state: MenuState, kind: str = "subtitle") -> list[str]:
     hint = state.last_path or "."
     raw = _input(f"Path(s) to {kind} file(s) or directory", hint)
     if not raw:
         return []
-    paths = shlex.split(raw)
+    paths = _split_paths(raw)
     if paths:
         state.last_path = paths[0]
     return paths
