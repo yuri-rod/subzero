@@ -69,8 +69,11 @@ class Watcher:
                     continue
                 key = str(p)
                 # size as well as mtime: on mtime alone the tool's own rewrite
-                # looks like a fresh change and every sweep redoes the library
-                stamp = [int(st.st_mtime), st.st_size]
+                # looks like a fresh change and every sweep redoes the library.
+                # mtime stays a float: truncating to whole seconds hid any edit
+                # that landed in the same second as the previous one, and every
+                # filesystem we run on keeps sub-second resolution.
+                stamp = [st.st_mtime, st.st_size]
                 if self.state.get(key) == stamp:
                     continue
                 yield p, key
@@ -105,7 +108,7 @@ class Watcher:
                     )
                 try:
                     st = p.stat()
-                    self.state[key] = [int(st.st_mtime), st.st_size]
+                    self.state[key] = [st.st_mtime, st.st_size]
                 except OSError:
                     self.state.pop(key, None)
         self._save()
