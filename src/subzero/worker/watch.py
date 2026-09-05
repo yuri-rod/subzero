@@ -1,0 +1,314 @@
+import json
+import pathlib
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .jobs import Job, JobStore
+from .moviehash import moviehash
+from .opensubs import OpenSubtitlesError
+from .service import three_letter
+
+UI_LANG = {"por": "pt-BR", "eng": "en", "spa": "es", "jpn": "ja"}
+
+Step = tuple[str, str, str | None]
+
+EPISODE = re.compile(r"s(\d{1,2})[\s._-]*e(\d{1,3})", re.I)
+
+
+def episode_code(text: str) -> str | None:
+    """Normalize episode codes across names such as Survivor.S48E01 and Survivor S48E01."""
+    found = EPISODE.search(text or "")
+    return f"s{int(found.group(1)):02d}e{int(found.group(2)):02d}" if found else None
+
+
+def ui_lang(code: str) -> str:
+    code = (code or "und").lower()
+    return UI_LANG.get(code, code)
+
+
+def has_language(media, lang: str) -> bool:
+    target = three_letter(lang)
+    if any(three_letter(tag) == target for tag in media.sidecars):
+        return True
+    return any(three_letter(s.lang) == target for s in media.embedded)
+
+
+def normalise(path: str) -> str:
+    return (path or "").replace("\\", "/").rstrip("/").lower()
+
+
+def excluded(path: str, prefixes) -> bool:
+    """Check whether a file belongs to an excluded folder.
+    Manual and automatic entry points apply the same exclusions."""
+    target = normalise(path)
+    return any(pref and (target == normalise(pref) or target.startswith(normalise(pref) + "/"))
+               for pref in prefixes)
+
+
+def embedded_steps(media, target_lang: str) -> list[Step]:
+    """Plan embedded subtitle extraction and translation as a download fallback."""
+    inside = (next((s for s in media.embedded if not s.external), None)
+              or next(iter(media.embedded), None))
+    if inside is None:
+        return []
+    tag = ui_lang(inside.lang)
+    steps: list[Step] = []
+    if not any(three_letter(existing) == three_letter(tag) for existing in media.sidecars):
+        steps.append(("embedded", tag, str(inside.index)))
+    steps.append(("translate", target_lang, tag))
+    return steps
+
+
+def title_query(media) -> dict:
+    """Build an OpenSubtitles query from title IDs before using the display name.
+
+    Jellyfin display names may contain only a translated title or episode number."""
+    season = getattr(media, "season", None)
+    episode = getattr(media, "episode", None)
+    if getattr(media, "kind", "") == "episode" and season is not None and episode is not None:
+        args = {"season": season, "episode": episode, "kind": "episode"}
+        if getattr(media, "parent_imdb_id", ""):
+            return {**args, "parent_imdb_id": media.parent_imdb_id}
+        if getattr(media, "parent_tmdb_id", ""):
+            return {**args, "parent_tmdb_id": media.parent_tmdb_id}
+        if getattr(media, "series_name", ""):
+            return {**args, "query": media.series_name}
+        return {**args, "query": media.name}
+    if getattr(media, "imdb_id", ""):
+        return {"imdb_id": media.imdb_id, "kind": "movie"}
+    if getattr(media, "tmdb_id", ""):
+        return {"tmdb_id": media.tmdb_id, "kind": "movie"}
+    return {"query": media.name}
+
+
+SOURCES = {
+    "bluray": {"bluray", "bluray", "bdrip", "brrip", "bdremux", "remux", "bd"},
+    "web": {"webdl", "webrip", "web", "amzn", "nf", "dsnp", "hmax", "atvp"},
+    "hdtv": {"hdtv", "pdtv"},
+    "dvd": {"dvdrip", "dvd", "dvdscr"},
+}
+EDITIONS = {"extended", "directors", "director", "uncut", "unrated", "theatrical",
+            "remastered", "imax", "final", "ultimate"}
+RESOLUTIONS = {"2160p", "1080p", "720p", "480p", "4k"}
+
+
+def tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"[^0-9a-z]+", (text or "").lower()) if t]
+
+
+def source_of(parts: list[str]) -> str:
+    joined = set(parts)
+    for family, tags in SOURCES.items():
+        if joined & tags:
+            return family
+    return ""
+
+
+def group_of(text: str) -> str:
+    """Extract the release group after the final hyphen as a timing-match signal."""
+    tail = (text or "").lower().rsplit("-", 1)
+    if len(tail) != 2:
+        return ""
+    return re.split(r"[^0-9a-z]+", tail[1].strip())[0] if tail[1].strip() else ""
+
+
+def release_score(local: str, release: str) -> int:
+    """Score how closely a subtitle release matches the local file.
+
+    A shared title ID does not establish the same edition, source, or timing."""
+    ours, theirs = tokens(local), tokens(release)
+    if not theirs:
+        return 0
+    score = 0
+    if group_of(local) and group_of(local) == group_of(release):
+        score += 8
+    a, b = source_of(ours), source_of(theirs)
+    if a and b:
+        score += 5 if a == b else -7
+    ours_res = {t for t in ours if t in RESOLUTIONS}
+    theirs_res = {t for t in theirs if t in RESOLUTIONS}
+    if ours_res and theirs_res:
+        score += 2 if ours_res & theirs_res else -1
+    ours_ed = {t for t in ours if t in EDITIONS}
+    theirs_ed = {t for t in theirs if t in EDITIONS}
+    if ours_ed != theirs_ed:
+        score -= 7
+    elif ours_ed:
+        score += 3
+    return score
+
+
+def same_title(media, candidate) -> bool:
+    """Compare title and episode metadata against the media item.
+
+    Use IMDb/TMDb IDs and episode numbers first, with release-name episode codes
+    as a fallback when subtitle metadata lacks IDs."""
+    if getattr(media, "kind", "") == "episode":
+        want_s, want_e = getattr(media, "season", None), getattr(media, "episode", None)
+        if candidate.season is not None and candidate.episode is not None:
+            return (int(candidate.season), int(candidate.episode)) == (want_s, want_e)
+    else:
+        for ours, theirs in ((getattr(media, "imdb_id", ""), candidate.imdb_id),
+                             (getattr(media, "tmdb_id", ""), candidate.tmdb_id)):
+            if ours and theirs and str(ours).lstrip("t") == str(theirs).lstrip("t"):
+                return True
+        if getattr(media, "imdb_id", "") or getattr(media, "tmdb_id", ""):
+            return False
+
+    code = episode_code(getattr(media, "name", "")) or episode_code(getattr(media, "path", "") or "")
+    return bool(code) and episode_code(candidate.release) == code
+
+
+def created_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = re.sub(r"(\.\d{6})\d+", r"\1", value.strip()).replace("Z", "+00:00")
+    try:
+        stamp = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+class Watcher:
+    def __init__(self, jellyfin, store: JobStore, opensubs, state_path: str,
+                 langs: list[str], budget: int = 15, fallback_langs: list[str] | None = None,
+                 translate_from: list[str] | None = None,
+                 excluded_paths: list[str] | None = None, sync_flow=None):
+        self.jellyfin = jellyfin
+        self.store = store
+        self.opensubs = opensubs
+        self.state_path = Path(state_path)
+        self.langs = langs
+        self.budget = budget
+        # Try accepted language variants before transcription.
+        self.fallback_langs = fallback_langs or []
+        # Source languages worth downloading for translation.
+        self.translate_from = translate_from or ["en"]
+        self.excluded_paths = excluded_paths or []
+        self.sync_flow = sync_flow
+
+    def marker(self) -> datetime | None:
+        if not self.state_path.exists():
+            return None
+        try:
+            return created_at(json.loads(self.state_path.read_text(encoding="utf-8")).get("marker"))
+        except (OSError, ValueError):
+            return None
+
+    def save_marker(self, value: str) -> None:
+        self.state_path.write_text(json.dumps({"marker": value}), encoding="utf-8")
+
+    def tick(self) -> list[Job]:
+        marker = self.marker()
+        items = self.jellyfin.recent()
+        fresh = [i for i in items if created_at(i.get("DateCreated")) and
+                 (marker is None or created_at(i["DateCreated"]) > marker)]
+        fresh.sort(key=lambda i: created_at(i["DateCreated"]))
+
+        enqueued: list[Job] = []
+        for item in fresh:
+            try:
+                media = self.jellyfin.media(item["Id"])
+            except Exception:
+                continue
+            if excluded(media.path, self.excluded_paths):
+                self.save_marker(item["DateCreated"])
+                continue
+            for lang in self.langs:
+                budget_left = max(0, self.budget - self.store.downloads_today())
+                for kind, target, source in self.plan(media, lang, budget_left):
+                    enqueued.append(self.store.enqueue(media.item_id, kind, target, source,
+                                                       origin="auto"))
+            self.save_marker(item["DateCreated"])
+        return enqueued
+
+    def sweep(self) -> list[Job]:
+        """Scan the library for missing or unverified target-language subtitles."""
+        items = self.jellyfin.all_items()
+        enqueued: list[Job] = []
+        active_keys = {(j.item_id, j.kind, j.target_lang) for j in self.store.active()}
+        for item in items:
+            try:
+                media = self.jellyfin.media(item["Id"])
+            except Exception:
+                continue
+            if excluded(media.path, self.excluded_paths):
+                continue
+            for lang in self.langs:
+                if self.sync_flow is None and has_language(media, lang):
+                    continue
+                budget_left = max(0, self.budget - self.store.downloads_today())
+                for kind, target, source in self.plan(media, lang, budget_left):
+                    if (media.item_id, kind, target) in active_keys:
+                        continue
+                    job = self.store.enqueue(media.item_id, kind, target, source, origin="auto")
+                    active_keys.add((media.item_id, kind, target))
+                    enqueued.append(job)
+        return enqueued
+
+    def plan(self, media, target: str, budget_left: int) -> list[Step]:
+        """Plan an audit when timing verification is configured.
+
+        Otherwise, try target-language downloads, translatable source downloads,
+        accepted language variants, embedded tracks, and finally transcription."""
+        if self.sync_flow is not None:
+            if any(j.item_id==media.item_id and j.target_lang==target for j in self.store.active()):
+                return []
+            if self.sync_flow.current(media,target):
+                return []
+            return [('audit',target,None)]
+        if has_language(media, target):
+            return []
+
+        if budget_left > 0:
+            found = self.pick_candidate(media, target)
+            if found:
+                return [("opensubtitles", target, found)]
+
+            for source_lang in self.translate_from:
+                found = self.pick_candidate(media, source_lang)
+                if found:
+                    return [("opensubtitles", source_lang, found),
+                            ("translate", target, source_lang)]
+
+            for other in self.fallback_langs:
+                found = self.pick_candidate(media, other)
+                if found:
+                    # Install an accepted variant under the target tag without translation.
+                    return [("opensubtitles", target, found)]
+
+        return embedded_steps(media, target) or [("whisper", target, None)]
+
+    def pick_candidate(self, media, target: str) -> str | None:
+        """Select a subtitle using file hashes, title identity, and release metadata.
+
+        Display names alone can match unrelated titles, so they are insufficient
+        for accepting an automatic download."""
+        try:
+            digest = moviehash(media.path)
+        except (OSError, ValueError):
+            digest = None
+        try:
+            candidates = self.opensubs.search(
+                langs=[target], moviehash=digest,
+                filename=pathlib.Path(getattr(media, "path", "") or "").name or None,
+                **title_query(media))
+        except OpenSubtitlesError:
+            return None
+        if not candidates:
+            return None
+
+        exact = next((c for c in candidates if c.hash_match), None)
+        if exact:
+            return str(exact.file_id)
+
+        # Title IDs identify the work; release names identify the cut.
+        # Prefer the most downloaded candidate among otherwise equal matches.
+        trusted = [c for c in candidates if same_title(media, c)]
+        if not trusted:
+            return None
+        local = pathlib.Path(getattr(media, "path", "") or "").stem or getattr(media, "name", "")
+        trusted.sort(key=lambda c: (release_score(local, c.release), c.downloads), reverse=True)
+        return str(trusted[0].file_id)

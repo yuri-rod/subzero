@@ -8,3 +8,7 @@ dist/
 *.subzero-part
 .DS_Store
 uv.lock
+.env
+*.db
+watch.json
+logs/
