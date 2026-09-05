@@ -12,12 +12,12 @@
 Subtitle cleanup, conversion, timestamp shifting, extraction, and translation.
 Use the CLI or Python library for subtitle files. Video operations need FFmpeg, and translation needs a configured provider.
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
 [![Platform: Linux | macOS | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
-[![Tests: 102 passed](https://img.shields.io/badge/tests-102%20passed-brightgreen.svg)]()
+[![CI](https://github.com/yuri-rod/subzero/actions/workflows/ci.yml/badge.svg)](https://github.com/yuri-rod/subzero/actions/workflows/ci.yml)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/yurirod)
 
 ---
@@ -29,7 +29,7 @@ Subzero combines subtitle cleanup, conversion, extraction, timing tools, and tra
 * The core uses the Python standard library. Video operations need FFmpeg, and translation needs a configured provider.
 * Remove sound cues (`[LAUGHTER]`, `(SIGHS)`, `♪`), speaker labels, and HTML or ASS formatting tags.
 * Split collapsed dialogue turns onto separate lines and normalize speaker dashes.
-* Apply the container audio/video start-time difference as a subtitle offset.
+* Check subtitle activity against local speech detection, with pass, reject, and inconclusive results.
 * Extract embedded text subtitle tracks from Matroska (`.mkv`), MP4, MOV, WebM, and AVI files.
 * Translate subtitle files through Ollama while retaining cue timestamps.
 * Convert subtitle text and timing between SRT, WebVTT, ASS, and SSA. Format-specific styling can be lost.
@@ -130,12 +130,41 @@ subzero fix show.srt --dry-run -v
 subzero fix concert.srt --keep-music
 ```
 
-### 2. Apply container timing offsets (`subzero sync`)
+### 2. Checking timing and applying container delay
 
-Read the container audio/video start-time difference and apply it as a subtitle offset. This does not verify speech alignment:
+Install the optional speech dependencies for timing verification:
 
 ```console
-# Auto-align subtitle timing to match container audio delay
+pip install 'subzero-cli[sync] @ git+https://github.com/yuri-rod/subzero.git@v1.2.0'
+subzero verify-sync movie.mkv movie.pt-BR.srt
+```
+
+`verify-sync` emits JSON with per-window offset, correlation and confidence.
+Exit codes are `0` for pass, `2` for rejection, `3` for inconclusive evidence and
+`4` for an operational error. It never changes the subtitle. FFmpeg extracts audio
+locally, and speech detection runs locally; no audio is uploaded. References are
+cached under `~/.cache/subzero/references`, keyed by video identity and validator
+version. Use `--cache DIR` to choose another location.
+
+Verification examines overlapping windows across the dialogue span. The default
+subtitle tolerance is 500 ms. Sparse speech, ambiguous correlations and isolated
+mismatches remain inconclusive. Repeated timing mismatches reject the subtitle.
+Embedded dialogue tracks are used only when local audio evidence supports them;
+otherwise speech activity supplies the reference. Forced and commentary tracks
+are excluded. Timing verification does not establish translation accuracy or
+prove that every individual cue is correct. Videos from two minutes to four hours
+are supported by the audio extraction path.
+
+The Python API exposes `subzero.timing.correction` for conservative constant-delay
+or linear framerate correction. Fit and held-out windows must agree, and consumers
+must verify the corrected file again before accepting it. Different cuts and
+irregular drift do not receive automatic piecewise repairs.
+
+`sync` measures container audio/video start-time skew.
+It does not detect release mismatches or certify dialogue synchronization:
+
+```console
+# Apply the container audio delay
 subzero sync movie.mkv movie.srt
 
 # Output the aligned subtitle to a new file

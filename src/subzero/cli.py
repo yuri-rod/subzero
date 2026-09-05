@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 import os
 import sys
 from pathlib import Path
@@ -286,6 +288,18 @@ def cmd_streams(args) -> int:
     return 0
 
 
+def cmd_verify_sync(args) -> int:
+    from .reference import build_reference, verify_text
+    try:
+        reference = build_reference(args.video,args.cache)
+        report = verify_text(Path(args.subtitle).read_text(encoding='utf-8-sig'),reference)
+    except (OSError, ValueError, RuntimeError, ImportError, subprocess.SubprocessError) as err:
+        print(json.dumps({'status':'error','reason':str(err)}))
+        return 4
+    print(json.dumps(report.json()))
+    return {'pass':0,'reject':2,'inconclusive':3}[report.status]
+
+
 def cmd_sync(args) -> int:
     try:
         require_ffmpeg()
@@ -463,7 +477,13 @@ def build_parser() -> argparse.ArgumentParser:
     streams.add_argument("paths", nargs="+", help="video files or directories")
     streams.set_defaults(func=cmd_streams)
 
-    sync = sub.add_parser("sync", help="auto-sync subtitle to video audio/speech delay")
+    verify = sub.add_parser('verify-sync', help='verify subtitle timing against local dialogue and audio')
+    verify.add_argument('video')
+    verify.add_argument('subtitle')
+    verify.add_argument('--cache', default=str(Path.home()/'.cache/subzero/references'))
+    verify.set_defaults(func=cmd_verify_sync)
+
+    sync = sub.add_parser("sync", help="apply container audio delay only; does not verify dialogue sync")
     sync.add_argument("video", help="video file path")
     sync.add_argument("subtitle", help="subtitle file path")
     sync.add_argument("-o", "--output", metavar="PATH", help="output subtitle path")
