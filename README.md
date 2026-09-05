@@ -12,12 +12,12 @@
 **The universal subtitle and audio AI toolkit.**  
 *Clean SDH, auto-sync, shift, convert, extract, and translate with zero setup.*
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
 [![Platform: Linux | macOS | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
-[![Tests: 102 passed](https://img.shields.io/badge/tests-102%20passed-brightgreen.svg)]()
+[![CI](https://github.com/yuri-rod/subzero/actions/workflows/ci.yml/badge.svg)](https://github.com/yuri-rod/subzero/actions/workflows/ci.yml)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/yurirod)
 
 ---
@@ -29,7 +29,7 @@ Most subtitle workflows are fragmented between slow Python 2 legacy scripts, hea
 * **Zero Dependencies:** Pure Python standard library core. Starts in under 20ms with negligible RAM usage.
 * **Smart SDH Removal:** Strips sound cues (`[LAUGHTER]`, `(SIGHS)`, `♪`), speaker labels, and HTML/ASS tags without corrupting real dialogue.
 * **Dual-Speaker Repair:** Automatically fixes collapsed dialogue lines and normalizes speaker dashes.
-* **Automatic Audio Sync:** Uses container audio delay probing to align out-of-sync subtitles automatically.
+* **Timing verification:** Checks subtitle activity against local speech detection across the movie, with explicit pass, reject and inconclusive results.
 * **Direct Video Extraction:** Pulls soft subtitle tracks from Matroska (`.mkv`), MP4, MOV, WebM, and AVI files.
 * **Local AI Translation:** Translates entire series into target languages using local Ollama LLMs with cue-preserving batching.
 * **Universal Format Engine:** Losslessly converts between SRT, WebVTT, ASS, SSA, and MicroDVD formats.
@@ -146,12 +146,41 @@ subzero fix show.srt --dry-run -v
 subzero fix concert.srt --keep-music
 ```
 
-### 2. Synchronizing Subtitles with Video (`subzero sync`)
+### 2. Checking timing and applying container delay
 
-Detects audio-to-video container start time delays and shifts subtitles automatically:
+Install the optional speech dependencies for timing verification:
 
 ```console
-# Auto-align subtitle timing to match container audio delay
+pip install 'subzero-cli[sync] @ git+https://github.com/yuri-rod/subzero.git@v1.2.0'
+subzero verify-sync movie.mkv movie.pt-BR.srt
+```
+
+`verify-sync` emits JSON with per-window offset, correlation and confidence.
+Exit codes are `0` for pass, `2` for rejection, `3` for inconclusive evidence and
+`4` for an operational error. It never changes the subtitle. FFmpeg extracts audio
+locally, and speech detection runs locally; no audio is uploaded. References are
+cached under `~/.cache/subzero/references`, keyed by video identity and validator
+version. Use `--cache DIR` to choose another location.
+
+Verification examines overlapping windows across the dialogue span. The default
+subtitle tolerance is 500 ms. Sparse speech, ambiguous correlations and isolated
+mismatches remain inconclusive. Repeated timing mismatches reject the subtitle.
+Embedded dialogue tracks are used only when local audio evidence supports them;
+otherwise speech activity supplies the reference. Forced and commentary tracks
+are excluded. Timing verification does not establish translation accuracy or
+prove that every individual cue is correct. Videos from two minutes to four hours
+are supported by the audio extraction path.
+
+The Python API exposes `subzero.timing.correction` for conservative constant-delay
+or linear framerate correction. Fit and held-out windows must agree, and consumers
+must verify the corrected file again before accepting it. Different cuts and
+irregular drift do not receive automatic piecewise repairs.
+
+The older `sync` command only measures container audio/video start-time skew.
+It does not detect release mismatches or certify dialogue synchronization:
+
+```console
+# Apply the container audio delay
 subzero sync movie.mkv movie.srt
 
 # Output the aligned subtitle to a new file
