@@ -275,6 +275,23 @@ Runs as a lightweight daemon to automatically clean and prep newly arrived subti
 subzero watch /media/library --interval 300 --backup ~/sub-backup
 ```
 
+### 10. Subtitle Worker Daemon (`subzero worker`)
+
+Runs the background subtitle service for Jellyfin and YUCAST with an ordered fallback chain (exact OpenSubtitles hash match, candidate resync, embedded dialogue translation, and local Whisper ASR transcription):
+
+```console
+# Start the worker daemon
+subzero worker serve
+
+# Check worker health and queue status
+subzero worker status
+
+# Request a graceful shutdown
+subzero worker stop
+```
+
+The worker supports idle auto-shutdown (`IDLE_SHUTDOWN_MINUTES=15`) so background servers free up RAM during the day while scheduling library sweeps overnight. Configure via `.env` or pass `--env /path/to/.env`.
+
 ---
 
 ## Integration with Media Servers

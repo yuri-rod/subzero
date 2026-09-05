@@ -401,6 +401,16 @@ def cmd_menu(args) -> int:                                  # noqa: ARG001
     return run_menu()
 
 
+def cmd_worker(args) -> int:
+    try:
+        from .worker.__main__ import run_worker_cmd
+    except ImportError as e:
+        print(f"subzero: worker requires optional dependencies: {e}", file=sys.stderr)
+        print("Install with: pip install 'subzero-cli[worker]'", file=sys.stderr)
+        return 1
+    return run_worker_cmd(action=args.action, env_file=args.env, port=args.port)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="subzero",
@@ -529,6 +539,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     menu = sub.add_parser("menu", help="interactive terminal menu for all features")
     menu.set_defaults(func=cmd_menu)
+
+    worker = sub.add_parser("worker", help="subtitle worker service for Jellyfin and YUCAST")
+    worker.add_argument("action", nargs="?", default="serve", choices=["serve", "start", "stop", "shutdown", "status"], help="action to perform (default: serve)")
+    worker.add_argument("--env", "-e", default=None, metavar="FILE", help="path to .env configuration file")
+    worker.add_argument("--port", "-p", type=int, default=None, metavar="PORT", help="HTTP port (default 8787)")
+    worker.set_defaults(func=cmd_worker)
 
     return ap
 

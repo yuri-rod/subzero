@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.2.0"
-description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, and translate with zero setup"
+version = "1.3.0"
+description = "Universal subtitle & audio AI toolkit: clean SDH, auto-sync, shift, convert, extract, translate, and background worker daemon"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -26,6 +26,7 @@ keywords = [
     "media",
     "audio-sync",
     "translation",
+    "worker",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -45,12 +46,36 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "numpy>=1.26,<3"]
-sync = ["numpy>=1.26", "faster-whisper>=1.1,<2"]
+dev = [
+    "pytest>=7",
+    "numpy>=1.26,<3",
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "faster-whisper>=1.1,<2",
+    "huggingface_hub>=0.23",
+    "python-multipart>=0.0.9",
+]
+sync = [
+    "numpy>=1.26",
+    "faster-whisper>=1.1,<2",
+]
+worker = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "faster-whisper>=1.1,<2",
+    "huggingface_hub>=0.23",
+    "python-multipart>=0.0.9",
+]
+all = [
+    "subzero-cli[sync,worker]",
+]
 
 [project.scripts]
 subzero = "subzero.cli:main"
 sdhfix = "subzero.cli:main"
+srtworker = "subzero.worker.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/yuri-rod/subzero"
