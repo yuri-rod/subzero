@@ -183,10 +183,10 @@ def test_translate_keeps_index_and_timing():
     assert [(c.start, c.end) for c in out] == [(0, 1), (1, 2)]
 
 
-def test_translate_falls_back_when_the_model_loses_lines():
+def test_translate_fails_when_the_model_loses_lines():
     cues = [Cue(1, 0, 1, "hello"), Cue(2, 1, 2, "world")]
-    out = translate(cues, "pt-BR", FakeOllama([["ola"]]), progress=lambda p, n: None)
-    assert [c.text for c in out] == ["hello", "world"]
+    with pytest.raises(RuntimeError, match="preserv"):
+        translate(cues, "pt-BR", FakeOllama([[]] * 6), progress=lambda p, n: None)
 
 
 def test_translate_works_block_by_block():
@@ -200,12 +200,13 @@ def test_translate_works_block_by_block():
     assert fake.blocks == 3
 
 
-def test_translate_raises_when_every_block_falls_back():
+def test_translate_stops_at_the_first_unrecoverable_block():
     cues = [Cue(i, i, i + 1, f"line {i}") for i in range(45)]
-    fake = FakeOllama([["so uma linha"], ["so uma linha"], ["so uma linha"]])
+    fake = FakeOllama([[]] * 6)
 
-    with pytest.raises(RuntimeError, match="nao traduziu nenhum bloco"):
+    with pytest.raises(RuntimeError, match="preserv"):
         translate(cues, "pt-BR", fake, progress=lambda p, n: None)
+    assert fake.blocks == 6
 
 
 def test_ollama_prompt_numbers_the_lines():
@@ -450,7 +451,7 @@ def test_ollama_asks_the_model_to_be_released_after_the_job():
     http = Recorder()
     Ollama("http://o", "gemma3:12b", http=http).translate_block([Cue(1, 0, 1, "hi")], "pt-BR")
 
-    assert http.sent["keep_alive"] == "30s"
+    assert http.sent["keep_alive"] == "2m"
 
 
 def test_model_holder_compute_type_defaults():
@@ -460,10 +461,116 @@ def test_model_holder_compute_type_defaults():
 def test_strict_translation_never_keeps_untranslated_fallback_lines():
     cues=[Cue(1,0,1,'hello'),Cue(2,1,2,'world')]
     with pytest.raises(RuntimeError,match='bloco'):
-        translate(cues,'pt-BR',FakeOllama([['ola']]),lambda *args:None,strict=True)
+        translate(cues,'pt-BR',FakeOllama([[]] * 6),lambda *args:None,strict=True)
 
 
 def test_numbered_translation_rejects_reordered_or_duplicate_lines():
     assert Ollama._lines('2. mundo\n1. ola') == []
     assert Ollama._lines('1. ola\n1. mundo') == []
 
+
+def test_ollama_preflight_checks_model_without_loading_it():
+    sent = []
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            sent.append((method, url, kwargs))
+            return type("R", (), {"status_code": 200})()
+
+    Ollama("http://localhost:11434", "gemma3:4b", http=HTTP()).ensure_available()
+    assert sent == [("POST", "http://localhost:11434/api/show",
+                     {"json": {"model": "gemma3:4b"}, "timeout": 5})]
+
+
+def test_ollama_preflight_reports_missing_model_without_response_body():
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type("R", (), {"status_code": 404, "text": "private server response"})()
+
+    with pytest.raises(RuntimeError, match="model.*installed") as caught:
+        Ollama("http://localhost", "missing", http=HTTP()).ensure_available()
+    assert "private" not in str(caught.value)
+
+
+def test_ollama_preflight_reports_transport_failure_without_url():
+    import httpx
+
+    class HTTP:
+        def request(self, *args, **kwargs):
+            raise httpx.ConnectError("http://token:secret@localhost")
+
+    with pytest.raises(RuntimeError, match="unavailable") as caught:
+        Ollama("http://localhost", "model", http=HTTP()).ensure_available()
+    assert "secret" not in str(caught.value)
+
+
+def test_ollama_release_uses_short_timeout():
+    import httpx
+    sent = {}
+
+    class HTTP:
+        def request(self, *args, **kwargs):
+            sent.update(kwargs)
+            raise httpx.ReadTimeout("no response")
+
+    Ollama("http://localhost", "model", http=HTTP()).release()
+    assert sent["timeout"] == 5
+    assert sent["json"]["keep_alive"] == 0
+
+
+def test_ollama_generates_structured_cues_with_bounded_options():
+    sent = {}
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            sent.update(kwargs["json"])
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": '[{"id":1,"text":"Ola"}]'}})()
+
+    client = Ollama("http://localhost", "model", http=HTTP(), num_ctx=2048, num_predict=1024)
+    assert client.translate_block([Cue(1, 1, 2, "Hello")], "pt-BR") == ["Ola"]
+    assert sent["format"]["type"] == "array"
+    assert sent["options"] == {"temperature": 0, "num_ctx": 2048, "num_predict": 1024}
+
+
+def test_worker_translation_splits_failed_blocks_and_preserves_names():
+    fake = FakeOllama([[], [], ["Ola"], ["Jeff"]])
+    cues = [Cue(7, 1, 2, "Hello"), Cue(8, 3, 4, "Jeff")]
+    translated = translate(cues, "pt-BR", fake, lambda *args:None)
+    assert [(c.index, c.start, c.end, c.text) for c in translated] == [(7, 1, 2, "Ola"), (8, 3, 4, "Jeff")]
+
+
+def test_ollama_response_limit_is_checked_before_json_parsing():
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type("R", (), {"status_code": 200, "content": b"x" * 131073})()
+
+    with pytest.raises(RuntimeError, match="size limit"):
+        Ollama("http://localhost", "model", http=HTTP()).translate_block([Cue(1, 1, 2, "Hello")], "pt-BR")
+
+
+def test_equal_count_reordered_output_never_becomes_a_translation():
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "2. mundo\n1. ola"}})()
+
+    cues = [Cue(1, 1, 2, "Hello"), Cue(2, 3, 4, "World")]
+    with pytest.raises(RuntimeError, match="preserv"):
+        translate(cues, "pt-BR", Ollama("http://localhost", "model", http=HTTP()), lambda *args:None)
+
+
+def test_worker_translategemma_receives_source_language_through_translation():
+    sent = {}
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            sent.update(kwargs["json"])
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": '[{"id":1,"text":"Ola"}]'}})()
+
+    cues = [Cue(7, 1, 2, "Hello")]
+    client = Ollama("http://localhost", "translategemma:4b", http=HTTP())
+    translated = translate(cues, "pt-BR", client, lambda *args:None, strict=True, source_lang="eng")
+    assert [(c.index, c.start, c.end, c.text) for c in translated] == [(7, 1, 2, "Ola")]
+    assert "English (en) to Brazilian Portuguese (pt-BR)" in sent["prompt"]

@@ -277,7 +277,7 @@ subzero watch /media/library --interval 300 --backup ~/sub-backup
 
 ### 10. Subtitle Worker Daemon (`subzero worker`)
 
-Runs the background subtitle service for Jellyfin and YUCAST with an ordered fallback chain (exact OpenSubtitles hash match, candidate resync, embedded dialogue translation, and local Whisper ASR transcription):
+Runs the background subtitle service for Jellyfin and YUCAST. It tries matching downloads, timing corrections, translation of verified embedded or external subtitles, and finally audio transcription. Every installed result must pass the timing checks.
 
 ```console
 # Start the worker daemon
@@ -291,6 +291,34 @@ subzero worker stop
 ```
 
 The worker supports idle auto-shutdown (`IDLE_SHUTDOWN_MINUTES=15`) so background servers free up RAM during the day while scheduling library sweeps overnight. Configure via `.env` or pass `--env /path/to/.env`.
+
+Before transcribing audio that needs translation, the worker checks that Ollama and the configured model are available. A translation failure leaves the job for review instead of transcribing the same episode again. Translation keeps the model loaded between batches and releases it when the operation ends. Missing, duplicate or reordered output lines are retried in smaller batches; an incomplete translation is never installed.
+
+The worker accepts these Ollama controls:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `OLLAMA_KEEP_ALIVE` | `2m` | Retain the model between subtitle batches. |
+| `OLLAMA_NUM_CTX` | `4096` | Bound the context allocated for a batch. |
+| `OLLAMA_NUM_PREDICT` | `2048` | Bound the generated response. |
+
+For a 16 GB Apple Silicon machine, this is a starting configuration to compare against the full `large-v3` model:
+
+```dotenv
+WHISPER_MODEL=large-v3-turbo
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+OLLAMA_MODEL=translategemma:4b
+OLLAMA_NUM_CTX=4096
+OLLAMA_NUM_PREDICT=2048
+OLLAMA_KEEP_ALIVE=2m
+```
+
+The current transcription backend uses the CPU on Apple Silicon. Keep `large-v3` available for difficult recordings; a short local comparison does not establish which model is best for every language or release. Whisper transcribes the source language, and Ollama handles translation into Brazilian Portuguese.
+
+TranslateGemma uses its translation-specific prompt when the source and target languages are known. The worker passes the subtitle language or Whisper's detected language. Other models and unknown language tags use the general subtitle prompt. Structured output preserves cue order and count, but does not guarantee translation quality.
+
+For a dedicated Ollama server on a small machine, set `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_MAX_LOADED_MODELS=1` in the server environment. Keep it bound to loopback when the worker runs on the same host.
 
 ---
 

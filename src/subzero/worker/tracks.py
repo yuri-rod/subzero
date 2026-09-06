@@ -1,5 +1,4 @@
 import json
-import re
 import subprocess
 import tempfile
 import threading
@@ -8,19 +7,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
+from subzero.translate import MAX_RESPONSE_BYTES, _ollama_payload, _parse_lines, _translate_lines
+
 from .jellyfin import Media
 from .srt import Cue, chunks, dump
 
 BLOCK = 20
 Progress = Callable[[str, int], None]
-
-LANG_NAMES = {
-    "pt-BR": "portugues do Brasil",
-    "pt": "portugues",
-    "en": "ingles",
-    "es": "espanhol",
-    "ja": "japones",
-}
 
 
 def split_path(video_path: str) -> tuple[str, str, str]:
@@ -225,87 +218,89 @@ def _stuck_in_a_loop(cues: list[Cue]) -> bool:
 
 
 class Ollama:
-    # o gemma3:12b ocupa quase toda a VRAM da 3060; segurando ele carregado o whisper
-    # do proximo job nao acha lugar. Meio minuto cobre os blocos de uma mesma legenda
-    # e devolve a placa logo depois.
-    KEEP_ALIVE = "30s"
+    KEEP_ALIVE = "2m"
 
-    def __init__(self, url: str, model: str, http=None, keep_alive: str = KEEP_ALIVE):
+    def __init__(self, url: str, model: str, http=None, keep_alive: str = KEEP_ALIVE,
+                 num_ctx: int = 4096, num_predict: int = 2048):
         self.url = url.rstrip("/")
         self.model = model
         self.keep_alive = keep_alive
+        if num_ctx < 1 or num_predict < 1:
+            raise ValueError("Ollama context and output limits must be positive")
+        self.num_ctx = num_ctx
+        self.num_predict = num_predict
         if http is None:
             import httpx
             http = httpx.Client(timeout=600)
         self.http = http
 
+    def ensure_available(self) -> None:
+        import httpx
+        try:
+            response = self.http.request("POST", f"{self.url}/api/show",
+                                         json={"model": self.model}, timeout=5)
+        except (httpx.HTTPError, OSError):
+            raise RuntimeError("Ollama is unavailable; start the local service before translating") from None
+        if response.status_code == 404:
+            raise RuntimeError("Ollama model is not installed; install the configured model before translating")
+        if response.status_code != 200:
+            raise RuntimeError(f"Ollama model check failed ({response.status_code})")
+
     def release(self) -> None:
         """Pede ao ollama para largar o modelo agora. Best-effort: se falhar, o
         keep_alive derruba sozinho em seguida."""
+        import httpx
         try:
             self.http.request("POST", f"{self.url}/api/generate",
-                              json={"model": self.model, "prompt": "", "keep_alive": 0})
-        except Exception:
+                              json={"model": self.model, "prompt": "", "keep_alive": 0}, timeout=5)
+        except (httpx.HTTPError, OSError):
             pass
 
-    def translate_block(self, cues: list[Cue], target_lang: str) -> list[str]:
-        target = LANG_NAMES.get(target_lang, target_lang)
-        numbered = "\n".join(f"{i}. {c.text.replace(chr(10), ' ')}" for i, c in enumerate(cues, start=1))
-        prompt = (
-            f"Traduza para {target} ({target_lang}) as legendas numeradas abaixo.\n"
-            f"Responda com exatamente {len(cues)} linhas, cada uma no formato 'numero. texto', "
-            "sem comentarios, sem juntar linhas e sem pular numeros.\n\n" + numbered
-        )
+    def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None) -> list[str]:
+        import httpx
+        payload = _ollama_payload(cues, target_lang, self.model, self.keep_alive,
+                                  self.num_ctx, self.num_predict, source_lang)
         last_err = None
         for attempt in range(3):
             try:
                 r = self.http.request("POST", f"{self.url}/api/generate",
-                                      json={"model": self.model, "prompt": prompt, "stream": False,
-                                            "keep_alive": self.keep_alive,
-                                            "options": {"temperature": 0.2}})
+                                      json=payload)
                 if r.status_code == 200:
-                    return self._lines(r.json().get("response", ""))
-                last_err = f"ollama respondeu {r.status_code}: {r.text[:120]}"
-            except Exception as e:
-                last_err = f"erro ao chamar ollama: {e}"
+                    if len(getattr(r, "content", b"")) > MAX_RESPONSE_BYTES:
+                        raise RuntimeError("Ollama response exceeds the subtitle size limit")
+                    try:
+                        body = r.json()
+                    except (ValueError, UnicodeError):
+                        return []
+                    return self._lines(body.get("response", "")) if isinstance(body, dict) else []
+                if r.status_code == 404:
+                    raise RuntimeError("Ollama model is not installed")
+                if 400 <= r.status_code < 500:
+                    raise RuntimeError(f"Ollama rejected the translation request ({r.status_code})")
+                last_err = f"Ollama returned status {r.status_code}"
+            except (httpx.HTTPError, OSError):
+                last_err = "Ollama is unavailable or the translation request timed out"
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
         raise RuntimeError(last_err or "falha ao traduzir bloco com ollama")
 
     @staticmethod
     def _lines(response: str) -> list[str]:
-        out = []
-        for line in response.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            match = re.match(r"^(\d+)[.)]\s*(.+)$", line)
-            if match:
-                if int(match.group(1)) != len(out)+1:
-                    return []
-                out.append(match.group(2).strip())
-        return out
+        return _parse_lines(response)
 
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-              strict: bool = False) -> list[Cue]:
+              strict: bool = False, source_lang: str | None = None) -> list[Cue]:
     done: list[Cue] = []
     blocks = list(chunks(cues, BLOCK))
-    fell_back = 0
     for n, block in enumerate(blocks, start=1):
-        lines = ollama.translate_block(block, target_lang)
-        # modelo perdeu ou inventou linha: mantem o original em vez de desalinhar a legenda
-        if len(lines) != len(block):
-            if strict:
-                raise RuntimeError(f'o modelo nao preservou as linhas do bloco {n}')
-            lines = [c.text for c in block]
-            fell_back += 1
+        try:
+            lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang)
+        except RuntimeError as err:
+            raise RuntimeError(f'Falha no bloco {n}: {err}') from None
         for cue, text in zip(block, lines):
-            done.append(Cue(cue.index, cue.start, cue.end, text or cue.text))
+            done.append(Cue(cue.index, cue.start, cue.end, text))
         progress(f"traduzindo bloco {n}/{len(blocks)}", int(n / len(blocks) * 100))
-    # um bloco isolado desalinhar acontece; todos desalinharem e o ollama fora do ar
-    if len(blocks) > 1 and fell_back == len(blocks):
-        raise RuntimeError("o modelo nao traduziu nenhum bloco, descartando a saida")
     return done
 
 
