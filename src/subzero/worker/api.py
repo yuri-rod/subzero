@@ -103,7 +103,10 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     service = Service(jellyfin=jellyfin, opensubs=opensubs,
                       holder=ModelHolder(cfg.whisper_model, cfg.whisper_device,
                                          cfg.whisper_compute_type or None),
-                      ollama=Ollama(cfg.ollama_url, cfg.ollama_model),
+                      ollama=Ollama(cfg.ollama_url, cfg.ollama_model,
+                                    keep_alive=cfg.ollama_keep_alive,
+                                    num_ctx=cfg.ollama_num_ctx,
+                                    num_predict=cfg.ollama_num_predict),
                       bare_lang=cfg.bare_lang)
     from .syncflow import SyncFlow
     service.sync_flow = SyncFlow(store,service,cfg)

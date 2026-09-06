@@ -1,8 +1,8 @@
 import hashlib
-import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -110,6 +110,16 @@ class SyncFlow:
         if excluded(media.path,self.cfg.excluded_paths):
             raise RuntimeError('Media library is excluded')
         key = fingerprint(media.path)
+        kind = job.kind if job.kind in ('audit','refetch','resync','embedded_translate','rebuild') else 'audit'
+        if self.cfg.sync_audit_only:
+            kind = 'audit'
+        audio_lang = (media.audio_lang or '').strip()
+        if (kind == 'rebuild' and audio_lang.lower() not in ('','und','unknown','mul','zxx')
+                and not same_language(audio_lang,job.target_lang)):
+            try:
+                self.translation_ready()
+            except RuntimeError as err:
+                return self.review(media,job,key,f'Translation unavailable: {err}')
         progress('verificando referencia de audio',0)
         try:
             reference = self.reference_builder(media.path,self.cache/'references')
@@ -118,9 +128,6 @@ class SyncFlow:
         self.active(job)
         if not reference.get('speech'):
             return self.review(media,job,key,'No usable audio evidence; cannot certify timing')
-        kind = job.kind if job.kind in ('audit','refetch','resync','embedded_translate','rebuild') else 'audit'
-        if self.cfg.sync_audit_only:
-            kind = 'audit'
         def guarded_progress(phase,percent):
             self.active(job)
             progress(phase,percent)
@@ -219,23 +226,74 @@ class SyncFlow:
                 return self.install(media,job,key,repaired,report)
         self.jobs.advance(job.id,'embedded_translate','Sem correcao confiavel; usando faixa embutida')
 
-    def embedded_translate(self, media, job, key, reference, progress):
-        text = reference.get('text','')
-        if not text or verify_text(text,reference).status != 'pass':
-            self.jobs.advance(job.id,'rebuild','Sem faixa embutida verificada; refazendo pelo audio')
-            return None
+    def translation_ready(self):
+        if self.service.ollama is None:
+            raise RuntimeError('Ollama is not configured')
+        self.service.ollama.ensure_available()
+
+    def translate_cues(self, cues, lang, progress, source_lang=None):
+        self.translation_ready()
+        try:
+            return translate(cues,lang,self.service.ollama,progress,strict=True,source_lang=source_lang)
+        finally:
+            self.service.ollama.release()
+
+    def source_sidecar(self, media, reference):
+        video = Path(media.path)
+        prefix = video.stem+'.'
+        paths = sorted(video.parent.glob('*.srt'))
+        for lang in getattr(self.cfg,'translate_from',['en']):
+            for path in paths:
+                if not path.stem.startswith(prefix):
+                    continue
+                tag = path.stem[len(prefix):]
+                if not re.fullmatch(r'[a-zA-Z]{2,3}(?:-[a-zA-Z]{2})?',tag):
+                    continue
+                if not same_language(tag.split('-')[0].lower(),lang.split('-')[0].lower()):
+                    continue
+                try:
+                    before = path.lstat()
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > 2_000_000:
+                        continue
+                    flags = os.O_RDONLY | getattr(os,'O_NOFOLLOW',0) | getattr(os,'O_NONBLOCK',0)
+                    fd = os.open(path,flags)
+                    with os.fdopen(fd,'rb') as handle:
+                        info = os.fstat(handle.fileno())
+                        if not os.path.samestat(before,info) or info.st_size > 2_000_000:
+                            continue
+                        raw = handle.read(2_000_001)
+                    if len(raw) > 2_000_000:
+                        continue
+                    text = raw.decode('utf-8-sig')
+                except (OSError,UnicodeError):
+                    continue
+                if verify_text(text,reference).status == 'pass':
+                    return text,tag
+        return None
+
+    def translate_source(self, media, job, key, reference, progress, text, lang):
         cues = strip_hearing_impaired(parse(text))
-        if not same_language(reference.get('language','und'),job.target_lang):
+        if not same_language(lang,job.target_lang):
             try:
-                cues = translate(cues,job.target_lang,self.service.ollama,progress,strict=True)
-            except RuntimeError:
-                self.jobs.advance(job.id,'rebuild','Traducao incompleta; refazendo pelo audio')
-                return None
+                cues = self.translate_cues(cues,job.target_lang,progress,source_lang=lang)
+            except RuntimeError as err:
+                return self.review(media,job,key,f'Translation failed: {err}')
         text = dump(cues)
         report = verify_text(text,reference)
         if report.status == 'pass':
             return self.install(media,job,key,text,report)
-        self.jobs.advance(job.id,'rebuild','Traducao nao passou; refazendo pelo audio')
+        self.review(media,job,key,f'Translation failed timing validation: {report.reason}')
+
+    def embedded_translate(self, media, job, key, reference, progress):
+        text = reference.get('text','')
+        if text and verify_text(text,reference).status == 'pass':
+            source = text,reference.get('language','und')
+        else:
+            source = self.source_sidecar(media,reference)
+        if source is None:
+            self.jobs.advance(job.id,'rebuild','Sem legenda de origem verificada; refazendo pelo audio')
+            return None
+        return self.translate_source(media,job,key,reference,progress,*source)
 
     def rebuild(self, media, job, key, reference, progress):
         try:
@@ -244,7 +302,20 @@ class SyncFlow:
             self.review(media,job,key,f'Audio rebuild failed: {err}')
 
     def _rebuild(self, media, job, key, reference, progress):
-        self.service.ollama.release()
+        source = self.source_sidecar(media,reference)
+        if source is not None and not same_language(source[1],job.target_lang):
+            try:
+                self.translation_ready()
+            except RuntimeError:
+                audio_lang = (media.audio_lang or '').strip()
+                if (audio_lang.lower() not in ('','und','unknown','mul','zxx')
+                        and not same_language(audio_lang,job.target_lang)):
+                    raise
+                source = None
+        if source is not None:
+            return self.translate_source(media,job,key,reference,progress,*source)
+        if self.service.ollama is not None:
+            self.service.ollama.release()
         offset = audio_start_offset(media.path)
         audio = extract_audio(media.path,media.duration,progress)
         try:
@@ -253,7 +324,7 @@ class SyncFlow:
             Path(audio).unlink(missing_ok=True)
         cues = shift(cues,offset)
         if not same_language(detected,job.target_lang):
-            cues = translate(cues,job.target_lang,self.service.ollama,progress,strict=True)
+            cues = self.translate_cues(cues,job.target_lang,progress,source_lang=detected)
         text = dump(cues)
         report = verify_text(text,reference,phase=45)
         self.stage(key,job.target_lang,text)
