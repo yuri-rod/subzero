@@ -315,7 +315,7 @@ class SyncFlow:
         guard = check_excellence_guards(text,job.target_lang)
         if report.status == 'pass' and guard.ok:
             return self.install(media,job,key,text,report)
-        reason = report.reason if not guard.ok else guard.reason
+        reason = guard.reason if not guard.ok else report.reason
         self.review(media,job,key,f'Translation failed validation: {reason}')
 
     def embedded_translate(self, media, job, key, reference, progress):

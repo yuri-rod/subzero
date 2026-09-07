@@ -110,16 +110,22 @@ def correction(report):
     import numpy as np
 
     windows = [w for w in report.windows if w.confident]
-    if len(windows) < 6:
-        return None
-    train, held = windows[::2], windows[1::2]
-    x = np.array([w.center-w.offset for w in train])
-    y = np.array([w.offset for w in train])
-    slope, offset = np.polyfit(x,y,1)
-    scale = 1+float(slope)
-    if not .95 <= scale <= 1.05 or abs(offset) > 120:
-        return None
-    residual = [abs((w.center-w.offset)*slope+offset-w.offset) for w in windows]
-    if max(residual) > .4 or not held:
-        return None
-    return scale, float(offset)
+    if len(windows) >= 6:
+        train, held = windows[::2], windows[1::2]
+        x = np.array([w.center-w.offset for w in train])
+        y = np.array([w.offset for w in train])
+        slope, offset = np.polyfit(x,y,1)
+        scale = 1+float(slope)
+        if .95 <= scale <= 1.05 and abs(offset) <= 120:
+            residual = [abs((w.center-w.offset)*slope+offset-w.offset) for w in windows]
+            if max(residual) <= .4 and held:
+                return scale, float(offset)
+
+    if len(windows) >= 3:
+        offsets = np.array([w.offset for w in windows])
+        median_offset = float(np.median(offsets))
+        residuals = np.abs(offsets - median_offset)
+        if max(residuals) <= 0.35 and abs(median_offset) <= 120 and abs(median_offset) >= 0.05:
+            return 1.0, median_offset
+
+    return None

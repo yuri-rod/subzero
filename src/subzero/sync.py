@@ -6,10 +6,29 @@ import json
 import math
 import subprocess
 from pathlib import Path
+import shutil
+from dataclasses import dataclass
 from typing import Tuple
 
 from .extract import require_ffmpeg, ToolError
 from .shift import shift_file, shift_timestamps
+
+
+class SyncResult(tuple):
+    target: Path
+    count: int
+    offset: float
+    method: str
+    report: dict | None
+
+    def __new__(cls, target, count, offset, method="container_skew", report=None):
+        inst = super().__new__(cls, (Path(target), int(count), float(offset)))
+        inst.target = Path(target)
+        inst.count = int(count)
+        inst.offset = float(offset)
+        inst.method = str(method)
+        inst.report = report
+        return inst
 
 
 def probe_audio_delay(video_path: str | Path) -> float:
@@ -62,8 +81,10 @@ def auto_sync_file(
     output: str | Path | None = None,
     backup_dir: str | Path | None = None,
     dry: bool = False,
-) -> Tuple[Path, int, float]:
-    """Automatically detect container skew and shift subtitle file to match."""
+    cache_dir: str | Path | None = None,
+) -> SyncResult:
+    """Automatically synchronize subtitle to spoken dialogue using speech VAD,
+    falling back to container PTS audio delay if speech alignment is unavailable."""
     require_ffmpeg()
     video_p = Path(video_path)
     sub_p = Path(subtitle_path)
@@ -71,6 +92,37 @@ def auto_sync_file(
         raise FileNotFoundError(f"Video file not found: {video_p}")
     if not sub_p.exists():
         raise FileNotFoundError(f"Subtitle file not found: {sub_p}")
+
+    try:
+        from .reference import build_reference, verify_text
+        from .timing import correction
+
+        cache = Path(cache_dir) if cache_dir else (Path.home() / ".cache/subzero/references")
+        ref = build_reference(video_p, cache)
+        content = sub_p.read_text(encoding="utf-8", errors="replace")
+        report = verify_text(content, ref)
+
+        if report.status == "pass":
+            target = Path(output) if output else sub_p
+            return SyncResult(target, 0, 0.0, method="speech_aligned", report=report.json())
+
+        change = correction(report)
+        if change is not None:
+            scale, offset = change
+            shifted_text, count = shift_timestamps(content, delta_seconds=offset, scale_factor=scale)
+            repaired_report = verify_text(shifted_text, ref)
+            if repaired_report.status == "pass":
+                target = Path(output) if output else sub_p
+                if not dry:
+                    if backup_dir and target == sub_p:
+                        bdir = Path(backup_dir)
+                        bdir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(sub_p, bdir / sub_p.name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(shifted_text, encoding="utf-8")
+                return SyncResult(target, count, offset, method="speech_synced", report=repaired_report.json())
+    except Exception:
+        pass
 
     offset = probe_audio_delay(video_p)
     target, count = shift_file(
@@ -80,4 +132,4 @@ def auto_sync_file(
         backup_dir=backup_dir,
         dry=dry,
     )
-    return target, count, offset
+    return SyncResult(target, count, offset, method="container_skew", report=None)

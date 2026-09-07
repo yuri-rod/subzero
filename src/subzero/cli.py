@@ -307,15 +307,22 @@ def cmd_sync(args) -> int:
         print(f"subzero sync: {e}", file=sys.stderr)
         return 2
     try:
-        target, count, offset = auto_sync_file(
+        res = auto_sync_file(
             args.video,
             args.subtitle,
             output=args.output,
             backup_dir=args.backup,
             dry=args.dry_run,
+            cache_dir=getattr(args, "cache", None),
         )
         verb = "would sync" if args.dry_run else "synced"
-        print(f"{verb} {args.subtitle} -> {target} ({count} cues, offset={offset:+.3f}s)")
+        method = getattr(res, "method", "container_skew")
+        if method == "speech_aligned":
+            print(f"{args.subtitle} is already in sync with spoken dialogue (verified against audio)")
+        elif method == "speech_synced":
+            print(f"{verb} {args.subtitle} -> {res.target} ({res.count} cues, speech offset={res.offset:+.3f}s, verified against audio)")
+        else:
+            print(f"{verb} {args.subtitle} -> {res.target} ({res.count} cues, container skew offset={res.offset:+.3f}s)")
         return 0
     except Exception as e:                                  # noqa: BLE001
         print(f"subzero sync error: {e}", file=sys.stderr)
@@ -516,11 +523,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument('--cache', default=str(Path.home()/'.cache/subzero/references'))
     verify.set_defaults(func=cmd_verify_sync)
 
-    sync = sub.add_parser("sync", help="apply container audio delay only; does not verify dialogue sync")
+    sync = sub.add_parser("sync", help="synchronize subtitle to spoken dialogue using speech VAD (falls back to container audio delay)")
     sync.add_argument("video", help="video file path")
     sync.add_argument("subtitle", help="subtitle file path")
     sync.add_argument("-o", "--output", metavar="PATH", help="output subtitle path")
     sync.add_argument("--backup", metavar="DIR", help="backup directory")
+    sync.add_argument("--cache", default=str(Path.home()/'.cache/subzero/references'), help="cache directory for speech reference")
     sync.add_argument("--dry-run", action="store_true", help="report without writing")
     sync.set_defaults(func=cmd_sync)
 
