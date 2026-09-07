@@ -411,6 +411,29 @@ def cmd_worker(args) -> int:
     return run_worker_cmd(action=args.action, env_file=args.env, port=args.port)
 
 
+def cmd_contribute(args) -> int:
+    try:
+        from .worker.contribute import main as contribute_main
+    except ImportError as e:
+        print(f"subzero: contribute requires worker dependencies: {e}", file=sys.stderr)
+        print("Install with: pip install 'subzero-cli[worker]'", file=sys.stderr)
+        return 1
+    argv = []
+    if args.env:
+        argv.extend(["--env", args.env])
+    if args.log:
+        argv.extend(["--log", args.log])
+    if args.ledger:
+        argv.extend(["--ledger", args.ledger])
+    if args.limit is not None:
+        argv.extend(["--limit", str(args.limit)])
+    if args.lang:
+        argv.extend(["--lang", args.lang])
+    if args.dry_run:
+        argv.append("--dry-run")
+    return contribute_main(argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="subzero",
@@ -541,10 +564,19 @@ def build_parser() -> argparse.ArgumentParser:
     menu.set_defaults(func=cmd_menu)
 
     worker = sub.add_parser("worker", help="subtitle worker service for Jellyfin and YUCAST")
-    worker.add_argument("action", nargs="?", default="serve", choices=["serve", "start", "stop", "shutdown", "status"], help="action to perform (default: serve)")
+    worker.add_argument("action", nargs="?", default="serve", choices=["serve", "start", "stop", "shutdown", "status", "contribute"], help="action to perform (default: serve)")
     worker.add_argument("--env", "-e", default=None, metavar="FILE", help="path to .env configuration file")
     worker.add_argument("--port", "-p", type=int, default=None, metavar="PORT", help="HTTP port (default 8787)")
     worker.set_defaults(func=cmd_worker)
+
+    contribute = sub.add_parser("contribute", help="upload verified subtitles to OpenSubtitles")
+    contribute.add_argument("--env", "-e", default=".env", metavar="FILE", help="path to .env configuration file")
+    contribute.add_argument("--log", default=None, metavar="FILE", help="translator log path for proof of origin")
+    contribute.add_argument("--ledger", default="contributions.db", metavar="FILE", help="SQLite database tracking uploaded hashes")
+    contribute.add_argument("--limit", type=positive_int, default=50, help="maximum subtitles to upload (default: 50)")
+    contribute.add_argument("--lang", default="both", choices=["pt-BR", "en", "both"], help="language filter: pt-BR, en, or both (default: both)")
+    contribute.add_argument("--dry-run", action="store_true", help="simulate upload without making changes")
+    contribute.set_defaults(func=cmd_contribute)
 
     return ap
 

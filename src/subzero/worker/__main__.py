@@ -69,6 +69,12 @@ def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, po
             return 0
         print(f"subzero worker not running or unreachable ({body})", file=sys.stderr)
         return 1
+    if cmd in ("contribute", "--contribute"):
+        from .contribute import main as contribute_main
+        contribute_argv = []
+        if env_path:
+            contribute_argv.extend(["--env", str(env_path)])
+        return contribute_main(contribute_argv)
 
     try:
         cfg = Config.load(env)

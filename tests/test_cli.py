@@ -32,3 +32,38 @@ def test_verify_sync_emits_json_and_distinct_status(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(reference,'verify_text',lambda *a: Report('inconclusive','No speech'))
     assert main(['verify-sync','movie.mkv',str(subtitle)]) == 3
     assert 'inconclusive' in capsys.readouterr().out
+
+
+def test_contribute_parser_and_execution(monkeypatch):
+    from subzero.cli import build_parser, main
+    parser = build_parser()
+    args = parser.parse_args(["contribute", "--dry-run", "--limit", "10", "--lang", "pt-BR"])
+    assert args.dry_run is True
+    assert args.limit == 10
+    assert args.lang == "pt-BR"
+
+    called = []
+    def fake_contribute(argv):
+        called.append(argv)
+        return 0
+
+    monkeypatch.setattr("subzero.worker.contribute.main", fake_contribute)
+    rc = main(["contribute", "--dry-run", "--limit", "5", "--lang", "pt-BR", "--ledger", "test.db"])
+    assert rc == 0
+    assert "--dry-run" in called[0]
+    assert "--limit" in called[0]
+    assert "5" in called[0]
+    assert "--lang" in called[0]
+    assert "pt-BR" in called[0]
+    assert "--ledger" in called[0]
+    assert "test.db" in called[0]
+
+
+def test_worker_contribute_action_parses():
+    from subzero.cli import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["worker", "contribute", "--port", "9000"])
+    assert args.command == "worker"
+    assert args.action == "contribute"
+    assert args.port == 9000
+
