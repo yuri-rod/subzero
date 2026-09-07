@@ -12,7 +12,7 @@
 **The universal subtitle and audio AI toolkit.**  
 *Clean SDH, auto-sync, shift, convert, extract, and translate with zero setup.*
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
@@ -277,7 +277,13 @@ subzero watch /media/library --interval 300 --backup ~/sub-backup
 
 ### 10. Subtitle Worker Daemon (`subzero worker`)
 
-Runs the background subtitle service for Jellyfin and YUCAST. It tries matching downloads, timing corrections, translation of verified embedded or external subtitles, and finally audio transcription. Every installed result must pass the timing checks.
+Runs the background subtitle service for Jellyfin and YUCAST. It matches downloads, verifies dialogue timing against speech VAD, and translates verified embedded or external subtitles before falling back to local transcription.
+
+Every subtitle installed or audited by the worker must satisfy strict excellence guards:
+* Strict Brazilian Portuguese target (`pt-BR` / `por`). Non-conforming jobs are rejected at intake.
+* Zero SDH cues. Any bracketed cues, parentheticals, speaker prefixes, or music symbols are sanitized.
+* Verified dialogue sync. Existing subtitles with SDH cues are audited, sanitized, and updated in place once speech alignment is confirmed.
+* Professional layout standards (42-character line cap, no collapsed dialogue lines, clean UTF-8).
 
 ```console
 # Start the worker daemon
@@ -290,7 +296,7 @@ subzero worker status
 subzero worker stop
 ```
 
-The worker supports idle auto-shutdown (`IDLE_SHUTDOWN_MINUTES=15`) so background servers free up RAM during the day while scheduling library sweeps overnight. Configure via `.env` or pass `--env /path/to/.env`.
+The worker supports continuous 24/7 processing or idle auto-shutdown (`IDLE_SHUTDOWN_MINUTES=15`) so background servers free up RAM during the day while scheduling library sweeps overnight. Configure via `.env` or pass `--env /path/to/.env`.
 
 Before transcribing audio that needs translation, the worker checks that Ollama and the configured model are available. A translation failure leaves the job for review instead of transcribing the same episode again. Translation keeps the model loaded between batches and releases it when the operation ends. Missing, duplicate or reordered output lines are retried in smaller batches; an incomplete translation is never installed.
 
@@ -319,6 +325,24 @@ The current transcription backend uses the CPU on Apple Silicon. Keep `large-v3`
 TranslateGemma uses its translation-specific prompt when the source and target languages are known. The worker passes the subtitle language or Whisper's detected language. Other models and unknown language tags use the general subtitle prompt. Structured output preserves cue order and count, but does not guarantee translation quality.
 
 For a dedicated Ollama server on a small machine, set `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_MAX_LOADED_MODELS=1` in the server environment. Keep it bound to loopback when the worker runs on the same host.
+
+### 11. OpenSubtitles Contribution (`subzero contribute`)
+
+Contributes verified subtitles back to the OpenSubtitles community catalogue:
+
+```console
+# Simulate contribution run without uploading
+subzero contribute --dry-run --lang pt-BR --limit 20
+
+# Upload verified subtitles with SQLite deduplication tracking
+subzero contribute --env .env --lang pt-BR --limit 50
+```
+
+Every uploaded subtitle is screened against excellence guards:
+* **Target validation:** Strictly requires Brazilian Portuguese (`pt-BR` / `por`).
+* **Zero SDH:** Sound effects, speaker prefixes, and musical cues must be absent.
+* **Layout and encoding:** Dialogue lines must fit within 42 characters per line, with no collapsed speaker rows and valid UTF-8.
+* **Content ledger:** An SQLite database (`contributions.db`) tracks uploaded content hashes to prevent repeated submissions.
 
 ---
 

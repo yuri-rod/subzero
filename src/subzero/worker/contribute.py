@@ -17,9 +17,11 @@ import time
 from dataclasses import dataclass
 
 from .config import Config, read_env_file
+from .guards import check_excellence_guards
 from .jellyfin import JellyfinClient
 from .moviehash import moviehash
 from .opensubs import OpenSubtitles, OpenSubtitlesError, QuotaExceeded
+from .service import same_language
 
 MT_NOTE = "MACHINE TRANSLATION"
 WROTE = re.compile(r"wrote (.+?\.srt) in \d+s")
@@ -41,6 +43,8 @@ def translated_here(log_path) -> set:
     junto do release tem data recente do mesmo jeito, e mandar a legenda de outra
     pessoa como contribuicao nossa nao e contribuir.
     """
+    if not log_path:
+        return set()
     log = pathlib.Path(log_path)
     if not log.exists():
         return set()
@@ -62,12 +66,20 @@ def candidates(items, mine, bare_lang):
         video = pathlib.Path(it.get("Path") or "")
         if not video.suffix:
             continue
-        bare = video.with_suffix(".srt")
-        if bare.exists() and bare.name in mine:
-            yield Candidate(video, bare, bare_lang, True, it["Id"])
-        english = video.with_suffix(".en.srt")
-        if english.exists() and english.stat().st_size > 1000:
-            yield Candidate(video, english, "en", False, it["Id"])
+        try:
+            for sub in sorted(video.parent.glob("*.srt")):
+                if not sub.stem.startswith(video.stem):
+                    continue
+                tag = sub.stem[len(video.stem):].lstrip(".")
+                if same_language(tag, "pt-BR") or (not tag and same_language(bare_lang, "pt-BR")):
+                    is_mine = True if mine is None else (sub.name in mine)
+                    if is_mine:
+                        yield Candidate(video, sub, "por", True, it["Id"])
+                elif same_language(tag, "en"):
+                    if sub.stat().st_size > 1000:
+                        yield Candidate(video, sub, "eng", False, it["Id"])
+        except (OSError, UnicodeError):
+            continue
 
 
 def open_ledger(path):
@@ -117,9 +129,9 @@ def upload(client, cand: Candidate, imdb_id: str, text: str):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="subzero.worker.contribute")
     ap.add_argument("--env", default=".env")
-    ap.add_argument("--log", required=True, help="log do tradutor, prova de origem")
+    ap.add_argument("--log", default=None, help="log do tradutor, prova de origem (opcional)")
     ap.add_argument("--ledger", default="contributions.db")
-    ap.add_argument("--limit", type=int, default=5)
+    ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--lang", default="both", help="pt-BR, en ou both")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
@@ -132,14 +144,14 @@ def main(argv=None) -> int:
 
     db = open_ledger(args.ledger)
     sent_before = {row[0] for row in db.execute("select subhash from uploads")}
-    mine = translated_here(args.log)
+    mine = translated_here(args.log) if args.log else None
 
     tally = {"sent": 0, "duplicate": 0, "no_imdb": 0, "failed": 0}
     # uma volta so na biblioteca: procurar por caminho dentro do laco seria O(n2)
     for cand in candidates(jf.all_items(), mine, cfg.bare_lang or "pt-BR"):
         if tally["sent"] + tally["duplicate"] >= args.limit:
             break
-        if args.lang != "both" and cand.lang != args.lang:
+        if args.lang != "both" and not same_language(cand.lang, args.lang):
             continue
         try:
             text = read_subtitle(cand.sub)
@@ -147,6 +159,10 @@ def main(argv=None) -> int:
             tally["failed"] += 1
             print(f"  FAIL {cand.sub.name[:50]}: {e}")
             continue
+        if cand.lang == "por":
+            guard = check_excellence_guards(text, "pt-BR")
+            if not guard.ok:
+                continue
         # a chave e o hash do conteudo, nao o caminho: a legenda e reescrita e
         # renomeada o tempo todo, e e pelo conteudo que o servidor dedup
         digest = hashlib.md5(text.encode("utf-8")).hexdigest()
