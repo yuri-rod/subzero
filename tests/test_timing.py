@@ -56,6 +56,19 @@ def test_repair_is_validated_on_windows_not_used_for_fitting():
     assert timing.evaluate([(a*scale+offset,b*scale+offset) for a,b in shifted], ref).status == 'pass'
 
 
+def test_constant_offset_repair_is_supported():
+    ref = dialogue()
+    # Simple constant delay of 3 seconds
+    shifted = [(a + 3.0, b + 3.0) for a, b in ref]
+    corr = timing.correction(timing.evaluate(shifted, ref))
+    assert corr is not None
+    scale, offset = corr
+    assert abs(scale - 1.0) < 0.005
+    assert abs(offset - (-3.0)) < 0.2
+    assert timing.evaluate([(a*scale+offset, b*scale+offset) for a, b in shifted], ref).status == 'pass'
+
+
+
 def test_irregular_cut_is_not_given_an_affine_repair():
     ref = dialogue()
     shifted = [(a + (8 if 600 < a < 1200 else 0), b + (8 if 600 < a < 1200 else 0)) for a,b in ref]
