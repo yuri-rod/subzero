@@ -10,6 +10,7 @@ from subzero.reference import build_reference, fingerprint, verify_text
 from subzero.shift import shift_timestamps
 from subzero.timing import correction
 
+from .guards import check_excellence_guards, sanitize_to_excellence
 from .moviehash import moviehash
 from .service import same_language
 from .srt import dump, parse, strip_hearing_impaired
@@ -44,8 +45,14 @@ class SyncFlow:
 
     def current(self, media, lang):
         try:
+            if not same_language(lang, 'pt-BR'):
+                return False
             path = self.installed(media,lang)
-            text = path.read_text(encoding='utf-8-sig') if path.exists() else ''
+            if not path.exists():
+                return False
+            text = path.read_text(encoding='utf-8-sig')
+            if not check_excellence_guards(text, lang).ok:
+                return False
             return self.state.current(fingerprint(media.path),lang,digest(text))
         except (OSError,UnicodeError):
             return False
@@ -67,6 +74,13 @@ class SyncFlow:
         self.active(job)
         if fingerprint(media.path) != key:
             raise RuntimeError('Video changed during subtitle validation')
+        if not same_language(job.target_lang, 'pt-BR'):
+            raise ValueError(f'Worker only accepts pt-BR subtitles, got {job.target_lang}')
+        cleaned = sanitize_to_excellence(text)
+        guard = check_excellence_guards(cleaned, job.target_lang)
+        if not guard.ok:
+            raise ValueError(f'Subtitle fails excellence guards: {guard.reason}')
+        text = cleaned
         if self.cfg.sync_audit_only:
             self.review(media,job,key,'Validated candidate retained; audit-only mode')
             return None
@@ -106,6 +120,8 @@ class SyncFlow:
         self.active(job)
         if not re.fullmatch(r'[a-zA-Z]{2,3}(?:-[a-zA-Z]{2})?',job.target_lang):
             raise ValueError('Invalid subtitle language')
+        if not same_language(job.target_lang, 'pt-BR'):
+            raise ValueError('Worker only accepts pt-BR subtitles')
         media = self.service.jellyfin.media(job.item_id)
         if excluded(media.path,self.cfg.excluded_paths):
             raise RuntimeError('Media library is excluded')
@@ -138,11 +154,19 @@ class SyncFlow:
         if path.exists():
             text = path.read_text(encoding='utf-8-sig')
             report = verify_text(text,reference)
-            self.state.audit(key,job.target_lang,digest(text),report.status,report.json())
-            if report.status == 'pass':
+            guard = check_excellence_guards(text,job.target_lang)
+            if report.status == 'pass' and guard.ok:
+                self.state.audit(key,job.target_lang,digest(text),'pass',report.json())
                 return str(path)
+            if report.status == 'pass' and not guard.ok:
+                cleaned = sanitize_to_excellence(text)
+                clean_report = verify_text(cleaned,reference)
+                clean_guard = check_excellence_guards(cleaned,job.target_lang)
+                if clean_report.status == 'pass' and clean_guard.ok:
+                    return self.install(media,job,key,cleaned,clean_report)
+            self.state.audit(key,job.target_lang,digest(text),report.status if guard.ok else 'reject',report.json())
             self.stage(key,job.target_lang,text)
-            if report.status == 'reject' and not self.cfg.sync_audit_only:
+            if (report.status == 'reject' or not guard.ok) and not self.cfg.sync_audit_only:
                 quarantine = self.cache/'quarantine'/key
                 quarantine.mkdir(parents=True,exist_ok=True)
                 if path.is_symlink():
@@ -187,7 +211,8 @@ class SyncFlow:
             tried += 1
             seen.add(candidate.file_id)
             progress(f'baixando candidato {tried}/3',20)
-            text = dump(strip_hearing_impaired(parse(self.service.opensubs.download(candidate.file_id))))
+            raw = self.service.opensubs.download(candidate.file_id)
+            text = sanitize_to_excellence(raw)
             if len(text.encode()) > 2_000_000:
                 self.state.update(key,job.target_lang,candidate.file_id,status='oversized')
                 continue
@@ -198,9 +223,11 @@ class SyncFlow:
             content.add(sha)
             path = self.stage(key,job.target_lang,text)
             report = verify_text(text,reference)
-            self.state.update(key,job.target_lang,candidate.file_id,status=report.status,
+            guard = check_excellence_guards(text,job.target_lang)
+            status = report.status if guard.ok else 'reject'
+            self.state.update(key,job.target_lang,candidate.file_id,status=status,
                               digest=sha,path=str(path),report=report.json())
-            if report.status == 'pass':
+            if report.status == 'pass' and guard.ok:
                 return self.install(media,job,key,text,report)
         self.jobs.advance(job.id,'resync','Downloads esgotados; verificando correcao de tempo')
 
@@ -211,18 +238,22 @@ class SyncFlow:
             text = path.read_text(encoding='utf-8')
             if path.stem != digest(text):
                 continue
+            text = sanitize_to_excellence(text)
             report = verify_text(text,reference)
-            if report.status == 'pass':
+            guard = check_excellence_guards(text,job.target_lang)
+            if report.status == 'pass' and guard.ok:
                 return self.install(media,job,key,text,report)
             change = correction(report)
             if change is None:
                 continue
             scale,offset = change
             repaired,_ = shift_timestamps(text,offset,scale)
+            repaired = sanitize_to_excellence(repaired)
             if verify_text(repaired,reference).status != 'pass':
                 continue
             report = verify_text(repaired,reference,phase=45)
-            if report.status == 'pass':
+            guard = check_excellence_guards(repaired,job.target_lang)
+            if report.status == 'pass' and guard.ok:
                 return self.install(media,job,key,repaired,report)
         self.jobs.advance(job.id,'embedded_translate','Sem correcao confiavel; usando faixa embutida')
 
@@ -278,11 +309,14 @@ class SyncFlow:
                 cues = self.translate_cues(cues,job.target_lang,progress,source_lang=lang)
             except RuntimeError as err:
                 return self.review(media,job,key,f'Translation failed: {err}')
-        text = dump(cues)
+        raw = dump(cues)
+        text = sanitize_to_excellence(raw)
         report = verify_text(text,reference)
-        if report.status == 'pass':
+        guard = check_excellence_guards(text,job.target_lang)
+        if report.status == 'pass' and guard.ok:
             return self.install(media,job,key,text,report)
-        self.review(media,job,key,f'Translation failed timing validation: {report.reason}')
+        reason = report.reason if not guard.ok else guard.reason
+        self.review(media,job,key,f'Translation failed validation: {reason}')
 
     def embedded_translate(self, media, job, key, reference, progress):
         text = reference.get('text','')
@@ -325,9 +359,12 @@ class SyncFlow:
         cues = shift(cues,offset)
         if not same_language(detected,job.target_lang):
             cues = self.translate_cues(cues,job.target_lang,progress,source_lang=detected)
-        text = dump(cues)
+        raw = dump(cues)
+        text = sanitize_to_excellence(raw)
         report = verify_text(text,reference,phase=45)
         self.stage(key,job.target_lang,text)
-        if report.status == 'pass':
+        guard = check_excellence_guards(text,job.target_lang)
+        if report.status == 'pass' and guard.ok:
             return self.install(media,job,key,text,report)
-        self.review(media,job,key,f'All stages exhausted: {report.reason}')
+        reason = report.reason if not guard.ok else guard.reason
+        self.review(media,job,key,f'All stages exhausted: {reason}')

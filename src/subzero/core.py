@@ -36,6 +36,10 @@ class Options:
     strip_music: bool = True
     strip_labels: bool = True
 
+    def __post_init__(self):
+        if isinstance(self.languages, (list, set)):
+            object.__setattr__(self, "languages", tuple(self.languages))
+
 
 @dataclass
 class Result:
