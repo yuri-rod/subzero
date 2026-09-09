@@ -96,6 +96,9 @@ class TestLineBreaks:
     def test_dialogue_with_tags_preserves_markup(self):
         assert one("<i>- Maui! - Sim?</i>") == "<i>- Maui!\n- Sim?</i>"
 
+    def test_dialogue_with_inline_tag_on_second_speaker(self):
+        assert one("Beleza. <i>- DAVID: Sim</i>") == "- Beleza.\n<i>- Sim</i>"
+
     def test_short_line_is_untouched(self):
         assert one("Yes.") == "Yes."
 

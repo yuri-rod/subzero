@@ -18,9 +18,8 @@ CAPS_LABEL = r"[A-Z\u00c0-\u00dc\u00c7][A-Z\u00c0-\u00dc\u00c70-9 .'#\-]{1,20}"
 SPEAKER_DASH = re.compile(r"\S\s+-\s*\S")
 PUNCT_DASH = re.compile(r'[.!?…:\u2026"\'\u201d\u2019]\s*-\s*\S')
 SPLIT_DIALOGUE = re.compile(
-    r"(?<=[.!?…:\u2026\"\'\u201d\u2019])\s*-\s*(?=\S)"
-    rf"|\s+-\s*(?={CAPS_LABEL}:)"
-    r"|\s+-\s*(?=\S)"
+    r"\s+(?=(?:<[a-z][^>]*>\s*)?-\s*\S)"
+    r"|(?<=[.!?…:\u2026\"\'\u201d\u2019])\s*(?=(?:<[a-z][^>]*>\s*)?-\s*\S)"
 )
 SPLIT_DASH = re.compile(r"\s+-\s*(?=\S)")
 BREAK_AFTER = re.compile(r"[.,;:!?\u2026]$")
@@ -217,14 +216,21 @@ def rewrap(text: str, opts: Options) -> str:
     )
     parts = None
     if is_dialogue:
-        content = body.strip()
-        if content.startswith("-"):
-            content = content.lstrip("- ")
-        chunks = [c.strip() for c in SPLIT_DIALOGUE.split(content) if c.strip()]
+        chunks = [c.strip() for c in SPLIT_DIALOGUE.split(body) if c.strip()]
         if len(chunks) > 1:
-            parts = ["- " + strip_label(c, opts) for c in chunks]
+            clean_chunks = []
+            for c in chunks:
+                ot, inner, ct = _tag_split(c)
+                stripped = strip_label(inner, opts).lstrip()
+                if not stripped.startswith("- "):
+                    if stripped.startswith("-"):
+                        stripped = "- " + stripped[1:].lstrip()
+                    else:
+                        stripped = "- " + stripped
+                clean_chunks.append(f"{ot}{stripped}{ct}" if ot else stripped)
+            parts = clean_chunks
         elif chunks:
-            parts = ["- " + strip_label(chunks[0], opts)]
+            parts = [strip_label(body, opts)]
     if parts is None:
         parts = [strip_label(body, opts)]
     parts = [p for p in parts if p.strip(" -")]
