@@ -43,15 +43,19 @@ class SyncFlow:
                     return path
         return primary
 
+    @property
+    def accepted_langs(self) -> list[str]:
+        return getattr(self.cfg, "accepted_langs", [])
+
     def current(self, media, lang):
         try:
-            if not same_language(lang, 'pt-BR'):
+            if self.accepted_langs and not any(same_language(lang, al) for al in self.accepted_langs):
                 return False
             path = self.installed(media,lang)
             if not path.exists():
                 return False
             text = path.read_text(encoding='utf-8-sig')
-            if not check_excellence_guards(text, lang).ok:
+            if not check_excellence_guards(text, lang, self.accepted_langs).ok:
                 return False
             return self.state.current(fingerprint(media.path),lang,digest(text))
         except (OSError,UnicodeError):
@@ -74,10 +78,10 @@ class SyncFlow:
         self.active(job)
         if fingerprint(media.path) != key:
             raise RuntimeError('Video changed during subtitle validation')
-        if not same_language(job.target_lang, 'pt-BR'):
-            raise ValueError(f'Worker only accepts pt-BR subtitles, got {job.target_lang}')
-        cleaned = sanitize_to_excellence(text)
-        guard = check_excellence_guards(cleaned, job.target_lang)
+        if self.accepted_langs and not any(same_language(job.target_lang, al) for al in self.accepted_langs):
+            raise ValueError(f'Worker configured to only accept {self.accepted_langs}, got {job.target_lang}')
+        cleaned = sanitize_to_excellence(text, job.target_lang, self.accepted_langs)
+        guard = check_excellence_guards(cleaned, job.target_lang, self.accepted_langs)
         if not guard.ok:
             raise ValueError(f'Subtitle fails excellence guards: {guard.reason}')
         text = cleaned
@@ -120,8 +124,8 @@ class SyncFlow:
         self.active(job)
         if not re.fullmatch(r'[a-zA-Z]{2,3}(?:-[a-zA-Z]{2})?',job.target_lang):
             raise ValueError('Invalid subtitle language')
-        if not same_language(job.target_lang, 'pt-BR'):
-            raise ValueError('Worker only accepts pt-BR subtitles')
+        if self.accepted_langs and not any(same_language(job.target_lang, al) for al in self.accepted_langs):
+            raise ValueError(f'Worker configured to only accept {self.accepted_langs}')
         media = self.service.jellyfin.media(job.item_id)
         if excluded(media.path,self.cfg.excluded_paths):
             raise RuntimeError('Media library is excluded')

@@ -12,7 +12,7 @@
 Subtitle cleanup, conversion, timestamp shifting, extraction, and translation.
 Use the CLI or Python library for subtitle files. Video operations need FFmpeg, and translation needs a configured provider.
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
@@ -264,10 +264,10 @@ subzero watch /media/library --interval 300 --backup ~/sub-backup
 Runs the background subtitle service for Jellyfin and YUCAST. It matches downloads, verifies dialogue timing against speech VAD, and translates verified embedded or external subtitles before falling back to local transcription.
 
 Verified worker workflows check candidate subtitles before installation:
-* Verified worker workflows require Brazilian Portuguese (`pt-BR` / `por`).
-* Zero SDH cues. Any bracketed cues, parentheticals, speaker prefixes, or music symbols are sanitized.
-* Verified dialogue sync. Existing subtitles with SDH cues are audited, sanitized, and updated in place once speech alignment is confirmed.
-* Lines must fit within 42 characters, dialogue turns must be separated, and text must use valid UTF-8.
+* **Configurable target validation:** Validates against `ACCEPTED_LANGS` when set (e.g. `ACCEPTED_LANGS=pt-BR`). If unset or empty, all languages are accepted.
+* **Zero SDH cues:** Any bracketed cues, parentheticals, speaker prefixes, or music symbols are sanitized.
+* **Verified dialogue sync:** Existing subtitles with SDH cues are audited, sanitized, and updated in place once speech alignment is confirmed.
+* Split collapsed dialogue turns (`- Person 1! - Person 2?`) onto separate lines with `- ` prefixes and enforce the 42-character line limit.
 
 ```console
 # Start the worker daemon
@@ -281,6 +281,23 @@ subzero worker stop
 ```
 
 The worker supports continuous 24/7 processing or idle auto-shutdown (`IDLE_SHUTDOWN_MINUTES=15`) so background servers free up RAM during the day while scheduling library sweeps overnight. Configure via `.env` or pass `--env /path/to/.env`.
+
+#### Target and accepted languages
+
+Verified worker workflows can restrict target language tags through `ACCEPTED_LANGS`. Language-specific content checks apply where implemented.
+
+Configure `ACCEPTED_LANGS` in your `.env` file:
+
+```dotenv
+# Restrict worker strictly to Brazilian Portuguese
+ACCEPTED_LANGS=pt-BR
+
+# Or accept multiple designated languages
+ACCEPTED_LANGS=pt-BR,en,es
+
+# Default: leave unset or empty to accept any valid subtitle language
+ACCEPTED_LANGS=
+```
 
 Ollama translation requires an available server and configured model. A translation failure leaves the job for review instead of transcribing the same episode again. Translation keeps the model loaded between batches and releases it when the operation ends. Missing, duplicate or reordered output lines are retried in smaller batches; an incomplete translation is never installed.
 
@@ -393,8 +410,8 @@ WantedBy=multi-user.target
 
 ## Cleanup behavior
 
-1. **Human Line Breaks are Preserved:**
-   Professional release subtitles are timed and broken by human editors for reading pace. Subzero respects intact human line breaks and only modifies cues that exceed character limits or glue multiple speakers onto a single line.
+1. **Human Line Breaks and Dialogue Turn Standards:**
+   Professional release subtitles are timed and broken by human editors for reading pace. Subzero respects intact human line breaks while applying the configured cleanup rules: lines exceeding 42 characters are balanced near their natural midpoint, and collapsed dialogue turns sharing a line are split onto dedicated rows with standard hyphen prefixes.
 2. **Conservative Label Matching:**
    ALL-CAPS text before a colon is treated as a speaker tag (`OFFICER:`). Lower-case words before a colon are matched against a closed dictionary of role words per language (`man:`, `mulher:`, `doctor:`, `medico:`) to avoid eating valid dialogue like `Score: 10`.
 3. **Dialogue Dash Repair:**
@@ -454,6 +471,12 @@ cd subzero
 pip install -e ".[dev]"
 pytest
 ```
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the full release history and version notes.
 
 ---
 

@@ -5,11 +5,17 @@ from subzero.worker.guards import check_excellence_guards, sanitize_to_excellenc
 from tests.worker.test_syncflow import dialogue, run, setup
 
 
-def test_guards_reject_non_pt_br():
+def test_guards_reject_non_accepted_language():
+    sample = dialogue()
+    report = check_excellence_guards(sample, "en", accepted_langs=("pt-BR",))
+    assert not report.ok
+    assert "nao aceito" in report.reason
+
+
+def test_guards_accept_any_language_when_unrestricted():
     sample = dialogue()
     report = check_excellence_guards(sample, "en")
-    assert not report.ok
-    assert "esperado pt-BR" in report.reason
+    assert report.ok
 
 
 def test_guards_reject_sdh_cues():
@@ -51,9 +57,10 @@ def test_sanitize_to_excellence_fixes_collapsed_dialogue():
 
 def test_syncflow_rejects_non_pt_br_jobs(setup):
     flow, jobs, provider, media = setup
+    flow.cfg.accepted_langs = ["pt-BR"]
     job = jobs.enqueue("id", "audit", "en")
     jobs.start(job.id)
-    with pytest.raises(ValueError, match="Worker only accepts pt-BR subtitles"):
+    with pytest.raises(ValueError, match="Worker configured to only accept"):
         flow.run(job, lambda *args: None)
 
 

@@ -23,11 +23,16 @@ class GuardReport:
     stats: Stats | None = None
 
 
-def check_excellence_guards(text: str, target_lang: str, opts: Options = EXCELLENCE_OPTIONS) -> GuardReport:
-    """Check the Brazilian Portuguese target tag, subtitle structure, SDH,
-    dialogue layout, and line length."""
-    if not same_language(target_lang, "pt-BR"):
-        return GuardReport(False, f"Idioma nao aceito pelo worker: esperado pt-BR, recebido {target_lang}")
+def check_excellence_guards(
+    text: str,
+    target_lang: str | None = None,
+    accepted_langs: tuple[str, ...] | list[str] | None = None,
+    opts: Options = EXCELLENCE_OPTIONS,
+) -> GuardReport:
+    """Check accepted languages, subtitle structure, SDH, dialogue layout, and line length."""
+    if accepted_langs and target_lang:
+        if not any(same_language(target_lang, al) for al in accepted_langs):
+            return GuardReport(False, f"Idioma nao aceito pelo worker: esperado {accepted_langs}, recebido {target_lang}")
     if not text or not text.strip():
         return GuardReport(False, "Legenda vazia")
     try:
@@ -45,11 +50,16 @@ def check_excellence_guards(text: str, target_lang: str, opts: Options = EXCELLE
     return GuardReport(True, "pass", st)
 
 
-def sanitize_to_excellence(text: str, opts: Options = EXCELLENCE_OPTIONS) -> str:
+def sanitize_to_excellence(
+    text: str,
+    target_lang: str | None = None,
+    accepted_langs: tuple[str, ...] | list[str] | None = None,
+    opts: Options = EXCELLENCE_OPTIONS,
+) -> str:
     """Remove SDH markers and repair dialogue layout and line breaks."""
     if not text or not text.strip():
         return ""
-    guard = check_excellence_guards(text, "pt-BR", opts)
+    guard = check_excellence_guards(text, target_lang=target_lang, accepted_langs=accepted_langs, opts=opts)
     if guard.ok:
         return text
     result = fix_text(text, opts)
