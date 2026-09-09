@@ -23,16 +23,22 @@ class GuardReport:
     stats: Stats | None = None
 
 
-def check_excellence_guards(text: str, target_lang: str, opts: Options = EXCELLENCE_OPTIONS) -> GuardReport:
+def check_excellence_guards(
+    text: str,
+    target_lang: str | None = None,
+    accepted_langs: tuple[str, ...] | list[str] | None = None,
+    opts: Options = EXCELLENCE_OPTIONS,
+) -> GuardReport:
     """Valida os guards de excelencia do worker:
-    1. Idioma alvo: estritamente pt-BR (ou codigo equivalente 'por').
+    1. Idioma alvo: se configurado, valida contra a lista de idiomas permitidos.
     2. Sem SDH: zero marcacoes sonoras, notas musicais ou rotulos de locutor.
     3. Sem colisoes: dialogos com multiplos locutores devidamente separados.
     4. Formatacao e limites: linhas dentro do limite maximo de caracteres.
     5. Estrutura integra: arquivo nao vazio com blocos de tempo validos.
     """
-    if not same_language(target_lang, "pt-BR"):
-        return GuardReport(False, f"Idioma nao aceito pelo worker: esperado pt-BR, recebido {target_lang}")
+    if accepted_langs and target_lang:
+        if not any(same_language(target_lang, al) for al in accepted_langs):
+            return GuardReport(False, f"Idioma nao aceito pelo worker: esperado {accepted_langs}, recebido {target_lang}")
     if not text or not text.strip():
         return GuardReport(False, "Legenda vazia")
     try:
@@ -50,11 +56,16 @@ def check_excellence_guards(text: str, target_lang: str, opts: Options = EXCELLE
     return GuardReport(True, "pass", st)
 
 
-def sanitize_to_excellence(text: str, opts: Options = EXCELLENCE_OPTIONS) -> str:
+def sanitize_to_excellence(
+    text: str,
+    target_lang: str | None = None,
+    accepted_langs: tuple[str, ...] | list[str] | None = None,
+    opts: Options = EXCELLENCE_OPTIONS,
+) -> str:
     """Aplica limpeza profunda de termos SDH, correcao de colisoes e quebras de linha."""
     if not text or not text.strip():
         return ""
-    guard = check_excellence_guards(text, "pt-BR", opts)
+    guard = check_excellence_guards(text, target_lang=target_lang, accepted_langs=accepted_langs, opts=opts)
     if guard.ok:
         return text
     result = fix_text(text, opts)

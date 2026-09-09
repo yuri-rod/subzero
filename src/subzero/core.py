@@ -199,6 +199,7 @@ def strip_label(part: str, opts: Options) -> str:
     lead = "- " if part.lstrip().startswith("-") else ""
     body = part.lstrip()[1:].strip() if lead else part
     body = rules_for(opts).label.sub("", body, count=1)
+    body = body.lstrip(": ").strip()
     return (lead + body).strip() if body else ""
 
 

@@ -25,6 +25,7 @@ class Config:
     ollama_num_predict: int = 2048
     daily_download_budget: int = 15
     auto_langs: list[str] = field(default_factory=lambda: ["pt-BR"])
+    accepted_langs: list[str] = field(default_factory=list)
     auto_enabled: bool = True
     auto_window_start: int = 4
     auto_window_end: int = 7
@@ -73,6 +74,7 @@ class Config:
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
             daily_download_budget=int(env.get("DAILY_DOWNLOAD_BUDGET", "15")),
             auto_langs=langs,
+            accepted_langs=[l.strip() for l in env.get("ACCEPTED_LANGS", "").split(",") if l.strip()],
             auto_enabled=env.get("AUTO_ENABLED", "1") not in ("0", "false", "no"),
             auto_window_start=int(env.get("AUTO_WINDOW_START", "4")),
             auto_window_end=int(env.get("AUTO_WINDOW_END", "7")),
