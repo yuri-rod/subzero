@@ -84,6 +84,18 @@ class TestLineBreaks:
         got = one("The plan - such as it was - failed.")
         assert not got.startswith("- ")
 
+    def test_dialogue_without_leading_dash_is_split(self):
+        assert one("Maui! - Sim?") == "- Maui!\n- Sim?"
+
+    def test_dialogue_with_leading_dash_is_split(self):
+        assert one("- Maui! - Sim?") == "- Maui!\n- Sim?"
+
+    def test_dialogue_without_space_after_dash_is_split(self):
+        assert one("Maui! -Sim?") == "- Maui!\n- Sim?"
+
+    def test_dialogue_with_tags_preserves_markup(self):
+        assert one("<i>- Maui! - Sim?</i>") == "<i>- Maui!\n- Sim?</i>"
+
     def test_short_line_is_untouched(self):
         assert one("Yes.") == "Yes."
 
@@ -150,3 +162,19 @@ class TestAnalyze:
 
     def test_pct_is_safe_on_empty(self):
         assert analyze("").pct("sdh") == 0.0
+
+    def test_detects_collapsed_dialogue_without_leading_dash(self):
+        src = cue("Maui! - Sim?")
+        st = analyze(src)
+        assert st.collapsed == 1
+
+    def test_detects_collapsed_dialogue_in_multiline_cue(self):
+        src = cue("Fala 1\n- Maui! - Sim?")
+        st = analyze(src)
+        assert st.collapsed == 1
+
+    def test_detects_long_line_in_multiline_cue(self):
+        long_line = "Esta frase e propositalmente muito longa para testar a deteccao de linha excessiva."
+        src = cue(f"Curto\n{long_line}")
+        st = analyze(src)
+        assert st.long_lines == 1

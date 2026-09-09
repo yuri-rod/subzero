@@ -28,6 +28,27 @@ def test_sanitize_to_excellence_cleans_sdh_and_formats():
     assert "Ola mundo!" in cleaned
 
 
+def test_guards_reject_collapsed_dialogue():
+    dirty = "1\n00:00:01,000 --> 00:00:03,000\n- Maui! - Sim?\n"
+    report = check_excellence_guards(dirty, "pt-BR")
+    assert not report.ok
+    assert "dialogo" in report.reason
+
+
+def test_guards_reject_long_lines():
+    dirty = "1\n00:00:01,000 --> 00:00:03,000\nEsta frase e deliberadamente muito longa para caber em uma linha de video sem quebra.\n"
+    report = check_excellence_guards(dirty, "pt-BR")
+    assert not report.ok
+    assert "longas" in report.reason
+
+
+def test_sanitize_to_excellence_fixes_collapsed_dialogue():
+    dirty = "1\n00:00:01,000 --> 00:00:03,000\nMaui! - Sim?\n"
+    cleaned = sanitize_to_excellence(dirty)
+    assert check_excellence_guards(cleaned, "pt-BR").ok
+    assert "- Maui!\n- Sim?" in cleaned
+
+
 def test_syncflow_rejects_non_pt_br_jobs(setup):
     flow, jobs, provider, media = setup
     job = jobs.enqueue("id", "audit", "en")
