@@ -9,7 +9,20 @@ from .tracks import (audio_start_offset, deliver, extract_audio, extract_embedde
 Progress = Callable[[str, int], None]
 
 # a UI fala em pt-BR/en/es/ja, o Jellyfin em codigo de tres letras
-THREE_LETTER = {"pt-BR": "por", "pt": "por", "en": "eng", "es": "spa", "ja": "jpn"}
+THREE_LETTER = {
+    "pt-BR": "por",
+    "pt-br": "por",
+    "pob": "por",
+    "pb": "por",
+    "pt": "por",
+    "por": "por",
+    "en": "eng",
+    "eng": "eng",
+    "es": "spa",
+    "spa": "spa",
+    "ja": "jpn",
+    "jpn": "jpn",
+}
 
 
 def three_letter(lang: str) -> str:
