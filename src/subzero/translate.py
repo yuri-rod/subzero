@@ -11,7 +11,7 @@ import urllib.error
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .core import read
+from .core import Options, fix_text, read
 from .convert import Cue, parse_srt, dump_srt
 
 
@@ -307,5 +307,7 @@ def translate_file(
         else:
             out_path = p.parent / f"{stem}.{target_lang}.srt"
 
-    out_path.write_text(dump_srt(translated), encoding="utf-8")
+    raw_srt = dump_srt(translated)
+    fixed = fix_text(raw_srt, Options(max_line=42, preserve_breaks=False))
+    out_path.write_text(fixed.text, encoding="utf-8")
     return out_path

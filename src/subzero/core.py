@@ -16,6 +16,12 @@ MUSIC = re.compile(r"[\u266a\u266b\u2669\u266c]")
 CAPS_LABEL = r"[A-Z\u00c0-\u00dc\u00c7][A-Z\u00c0-\u00dc\u00c70-9 .'#\-]{1,20}"
 # a second speaker's dash, with or without the space some releases omit
 SPEAKER_DASH = re.compile(r"\S\s+-\s*\S")
+PUNCT_DASH = re.compile(r'[.!?…:\u2026"\'\u201d\u2019]\s*-\s*\S')
+SPLIT_DIALOGUE = re.compile(
+    r"(?<=[.!?…:\u2026\"\'\u201d\u2019])\s*-\s*(?=\S)"
+    rf"|\s+-\s*(?={CAPS_LABEL}:)"
+    r"|\s+-\s*(?=\S)"
+)
 SPLIT_DASH = re.compile(r"\s+-\s*(?=\S)")
 BREAK_AFTER = re.compile(r"[.,;:!?\u2026]$")
 CONTINUES = re.compile(
@@ -97,8 +103,26 @@ def rules_for(opts: Options) -> _Rules:
 
 def _tag_split(text: str) -> tuple[str, str, str]:
     """Peel a tag that wraps the whole cue, so a break never lands inside it."""
-    m = re.fullmatch(r"\s*(<[a-z][^>]*>)(.*?)(</[a-z]+>)\s*", text, re.S | re.I)
-    return (m.group(1), m.group(2), m.group(3)) if m else ("", text, "")
+    m = re.fullmatch(r"\s*(<([a-z]+)[^>]*>)(.*?)(</\2>)\s*", text, re.S | re.I)
+    if not m:
+        return ("", text, "")
+    open_tag, tag_name, inner, close_tag = m.group(1), m.group(2).lower(), m.group(3), m.group(4)
+    first_close = re.search(rf"</{tag_name}>", inner, re.I)
+    if first_close:
+        first_open = re.search(rf"<{tag_name}\b[^>]*>", inner, re.I)
+        if not first_open or first_close.start() < first_open.start():
+            return ("", text, "")
+    return (open_tag, inner, close_tag)
+
+
+def is_collapsed(line: str) -> bool:
+    line = TAG.sub("", line).strip()
+    if not line:
+        return False
+    if line.startswith("-"):
+        rest = line.lstrip("- ")
+        return bool(SPEAKER_DASH.search(rest) or PUNCT_DASH.search(rest) or re.search(rf"\s-\s*{CAPS_LABEL}:", rest))
+    return bool(PUNCT_DASH.search(line) or re.search(rf"\s-\s*{CAPS_LABEL}:", line))
 
 
 def balance(text: str, limit: int) -> list[str]:
@@ -107,7 +131,10 @@ def balance(text: str, limit: int) -> list[str]:
     Punctuation beats a bare gap: a cut after a comma reads better than one that
     merely happens to fall in the centre.
     """
-    if len(text) <= limit:
+    def clean_len(s: str) -> int:
+        return len(TAG.sub("", s).strip())
+
+    if clean_len(text) <= limit or " " not in text:
         return [text]
     mid = len(text) / 2
     best = None
@@ -115,22 +142,31 @@ def balance(text: str, limit: int) -> list[str]:
         left, right = text[: m.start()].rstrip(), text[m.end():].lstrip()
         if not left or not right:
             continue
+        c_left, c_right = clean_len(left), clean_len(right)
         cost = abs(m.start() - mid)
         if BREAK_AFTER.search(left):
             cost -= 12
         elif CONTINUES.match(right):
             cost -= 5
-        if max(len(left), len(right)) > limit * 1.6:
-            cost += 40
+        if c_left > limit:
+            cost += (c_left - limit) * 8
+        if c_right > limit:
+            cost += (c_right - limit) * 8
         if best is None or cost < best[0]:
             best = (cost, left, right)
     if best is None:
         return [text]
     _, left, right = best
-    # three lines only when two genuinely cannot hold it
-    if len(right) > limit and len(right) > len(left):
-        return [left] + balance(right, limit)
-    return [left, right]
+    out = []
+    if clean_len(left) > limit and " " in left:
+        out.extend(balance(left, limit))
+    else:
+        out.append(left)
+    if clean_len(right) > limit and " " in right:
+        out.extend(balance(right, limit))
+    else:
+        out.append(right)
+    return out
 
 
 def strip_sdh(body: str, opts: Options) -> str:
@@ -172,24 +208,24 @@ def rewrap(text: str, opts: Options) -> str:
     body = " ".join(l.strip() for l in body.split("\n") if l.strip())
     if not body:
         return ""
-    # only a cue that announces a speaker gets split on a dash, otherwise an
-    # aside like "the plan - such as it was - failed" would be torn in half
-    marked = (
-        body.lstrip().startswith("-")
-        or bool(rules_for(opts).label.match(body))
-        or bool(re.search(rf"\s-\s*{CAPS_LABEL}:", body))
+    body_clean = TAG.sub("", body).strip()
+    is_dialogue = (
+        is_collapsed(body_clean)
+        or bool(rules_for(opts).label.match(body_clean))
+        or bool(re.search(rf"\s-\s*{CAPS_LABEL}:", body_clean))
     )
     parts = None
-    if marked:
-        chunks = SPLIT_DASH.split(body)
+    if is_dialogue:
+        content = body.strip()
+        if content.startswith("-"):
+            content = content.lstrip("- ")
+        chunks = [c.strip() for c in SPLIT_DIALOGUE.split(content) if c.strip()]
         if len(chunks) > 1:
-            parts = [chunks[0].strip()] + ["- " + c.strip() for c in chunks[1:]]
+            parts = ["- " + strip_label(c, opts) for c in chunks]
+        elif chunks:
+            parts = ["- " + strip_label(chunks[0], opts)]
     if parts is None:
         parts = [strip_label(body, opts)]
-    else:
-        parts = [strip_label(p, opts) for p in parts]
-        if len(parts) > 1 and parts[0] and not parts[0].startswith("- "):
-            parts[0] = "- " + parts[0]
     parts = [p for p in parts if p.strip(" -")]
     if not parts:
         return ""
@@ -201,7 +237,15 @@ def rewrap(text: str, opts: Options) -> str:
     else:
         out = []
         for p in parts:
-            out.extend(balance(p, opts.max_line) if len(p) > opts.max_line else [p])
+            if len(TAG.sub("", p).strip()) > opts.max_line:
+                lead = "- " if p.startswith("- ") else ""
+                clean_p = p[2:] if lead else p
+                balanced = balance(clean_p, opts.max_line)
+                if lead and balanced:
+                    balanced[0] = lead + balanced[0]
+                out.extend(balanced)
+            else:
+                out.append(p)
         parts = out
     joined = "\n".join(p for p in parts if p)
     return f"{open_tag}{joined}{close_tag}" if open_tag else joined
@@ -223,8 +267,8 @@ def keep_breaks(text: str, opts: Options) -> str:
             lines.append(line)
     if not lines:
         return ""
-    broken = any(len(TAG.sub("", l)) > opts.max_line for l in lines) or any(
-        SPEAKER_DASH.search(l) for l in lines
+    broken = any(len(TAG.sub("", l).strip()) > opts.max_line for l in lines) or any(
+        is_collapsed(l) for l in lines
     )
     if broken:
         return rewrap(text, opts)
@@ -238,7 +282,9 @@ def keep_breaks(text: str, opts: Options) -> str:
 
 
 def normalise(raw: str) -> str:
-    return raw.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = raw.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = cleaned.replace(chr(8212), "-").replace(chr(8211), "-")
+    return cleaned
 
 
 def fix_text(raw: str, opts: Options | None = None) -> Result:
@@ -278,9 +324,9 @@ def analyze(raw: str, opts: Options | None = None) -> Stats:
         lines = [l for l in body.split("\n") if l.strip()]
         if len(lines) > 1:
             st.multiline += 1
-        if len(lines) == 1 and SPEAKER_DASH.search(lines[0]):
+        if any(is_collapsed(l) for l in lines):
             st.collapsed += 1
-        if len(lines) == 1 and len(lines[0]) > opts.max_line + 3:
+        if any(len(TAG.sub("", l).strip()) > opts.max_line + 3 for l in lines):
             st.long_lines += 1
         if "[" in body or "(" in body or MUSIC.search(body) or rules.label.match(body):
             st.sdh += 1
