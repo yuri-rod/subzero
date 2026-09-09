@@ -193,3 +193,13 @@ def test_whisper_releases_the_translation_model_first(service, monkeypatch):
     service.run(job("whisper", target="en"), lambda p, n: None)
 
     assert freed == [True]
+
+
+def test_pob_and_pb_recognized_as_portuguese():
+    from subzero.worker.service import same_language, three_letter
+    assert three_letter("pob") == "por"
+    assert three_letter("pb") == "por"
+    assert same_language("pob", "pt-BR")
+    assert same_language("pb", "pt-BR")
+    assert same_language("pob", "por")
+    assert same_language("pt-BR", "pob")

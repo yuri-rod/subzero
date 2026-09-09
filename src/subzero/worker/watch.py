@@ -9,7 +9,7 @@ from .moviehash import moviehash
 from .opensubs import OpenSubtitlesError
 from .service import three_letter
 
-UI_LANG = {"por": "pt-BR", "eng": "en", "spa": "es", "jpn": "ja"}
+UI_LANG = {"por": "pt-BR", "pob": "pt-BR", "pb": "pt-BR", "eng": "en", "spa": "es", "jpn": "ja"}
 
 Step = tuple[str, str, str | None]
 
