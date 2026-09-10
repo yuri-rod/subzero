@@ -308,6 +308,43 @@ def test_quota_exhausted_tracks_remaining_and_reset():
     assert client.quota_exhausted() is False
 
 
+def test_imdb_ids_lose_the_tt_prefix_and_leading_zeros():
+    from subzero.worker.opensubs import norm_imdb
+
+    assert norm_imdb("tt123456") == "123456"
+    assert norm_imdb("TT0070248") == "70248"
+    assert norm_imdb("123456") == "123456"
+    assert norm_imdb("") == ""
+
+
+def test_search_sends_normalized_imdb_ids():
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": []})})
+    OpenSubtitles("k", http=http).search(imdb_id="tt0070248", parent_imdb_id="TT00123",
+                                         langs=["pt-BR"])
+
+    params = dict(http.calls[0][2])
+    assert params["imdb_id"] == "70248"
+    assert params["parent_imdb_id"] == "123"
+
+
+def test_logout_calls_the_endpoint_and_clears_the_token():
+    http = FakeHTTP({("DELETE", "https://api.opensubtitles.com/api/v1/logout"): (200, {})})
+    client = OpenSubtitles("k", http=http)
+    client.token = "tok"
+
+    assert client.logout() is True
+    assert client.token is None
+    assert http.calls[0][0] == "DELETE"
+
+
+def test_logout_without_token_skips_the_call():
+    http = FakeHTTP({})
+    client = OpenSubtitles("k", http=http)
+
+    assert client.logout() is False
+    assert http.calls == []
+
+
 def test_download_stores_the_reset_time():
     http = FakeHTTP({
         ("POST", "https://api.opensubtitles.com/api/v1/download"):
