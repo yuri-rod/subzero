@@ -26,6 +26,15 @@ def _parse_reset(value) -> float | None:
     return stamp.timestamp()
 
 
+def norm_imdb(value) -> str:
+    """IMDb so com digitos: sem o prefixo tt e sem zeros a esquerda."""
+    text = str(value or "").strip()
+    if text[:2].lower() == "tt":
+        text = text[2:]
+    text = text.lstrip("0")
+    return text
+
+
 class OpenSubtitlesError(RuntimeError):
     pass
 
@@ -187,6 +196,20 @@ class OpenSubtitles:
         return Account(level=str(user.get("level") or ""), allowed=allowed,
                        used=0, remaining=allowed)
 
+    def logout(self) -> bool:
+        """Encerra a sessao e libera os recursos do servidor. Melhor esforco:
+        nunca derruba quem chamou, e o token morre aqui de qualquer jeito."""
+        try:
+            if not self.token:
+                return False
+            r = self.http.request("DELETE", f"{self.base}/logout", headers=self.headers)
+            ok = r.status_code < 400
+        except Exception:                                 # noqa: BLE001
+            ok = False
+        finally:
+            self.token = None
+        return ok
+
     def account(self) -> Account:
         payload = self._json(self._call("GET", f"{self.base}/infos/user")).get("data") or {}
         allowed = int(payload.get("allowed_downloads") or 0)
@@ -227,11 +250,11 @@ class OpenSubtitles:
         if langs:
             params["languages"] = ",".join(l.lower() for l in langs)
         if imdb_id:
-            params["imdb_id"] = str(imdb_id).lstrip("t")
+            params["imdb_id"] = norm_imdb(imdb_id)
         if tmdb_id:
             params["tmdb_id"] = str(tmdb_id)
         if parent_imdb_id:
-            params["parent_imdb_id"] = str(parent_imdb_id).lstrip("t")
+            params["parent_imdb_id"] = norm_imdb(parent_imdb_id)
         if parent_tmdb_id:
             params["parent_tmdb_id"] = str(parent_tmdb_id)
         if season is not None:
@@ -290,7 +313,7 @@ class OpenSubtitles:
         params = {"sublanguageid": lang, "subhash": hashlib.md5(raw).hexdigest(),
                   "subfilename": filename}
         if imdb_id:
-            params["imdbid"] = str(imdb_id).lstrip("t")
+            params["imdbid"] = norm_imdb(imdb_id)
         if movie_path:
             # caminho vem do Windows e o worker roda tambem no Mac: basename nao serve
             params["moviefilename"] = movie_path.replace("\\", "/").rsplit("/", 1)[-1]

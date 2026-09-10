@@ -150,6 +150,16 @@ def main(argv=None) -> int:
 
     tally = {"sent": 0, "duplicate": 0, "no_imdb": 0, "failed": 0}
     # uma volta so na biblioteca: procurar por caminho dentro do laco seria O(n2)
+    try:
+        for cand in _send_loop(client, jf, args, cfg, db, mine, tally, sent_before):
+            pass
+    finally:
+        client.logout()
+    print(json.dumps(tally))
+    return 1 if tally["failed"] else 0
+
+
+def _send_loop(client, jf, args, cfg, db, mine, tally, sent_before):
     for cand in candidates(jf.all_items(), mine, cfg.bare_lang or "pt-BR"):
         if tally["sent"] + tally["duplicate"] >= args.limit:
             break
@@ -199,9 +209,6 @@ def main(argv=None) -> int:
             tally["sent"] += 1
             print(f"  NEW  [{cand.lang}] {cand.sub.name[:50]} -> {sub_id} flags=[{flags}]")
         time.sleep(1.5)
-
-    print(json.dumps(tally))
-    return 1 if tally["failed"] else 0
 
 
 if __name__ == "__main__":
