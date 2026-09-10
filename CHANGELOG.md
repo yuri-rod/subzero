@@ -5,6 +5,15 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-10
+
+### Added
+- OpenSubtitles match verification: feature-type agreement in title checks and strict hash-only search mode.
+- Forced-track tracking: `foreign_parts_only` captured on candidates, surfaced in `/search`, deprioritized in automated picks.
+- Broken-subtitle memory: empty downloads recorded in the attempts ledger and skipped by refetch and watch picks.
+- Quota pre-check: download reset time tracked, automated refetch jumps to local resync on empty quota, manual jobs fail fast.
+- pt-BR automated disclaimer on machine-translation uploads.
+
 ## [1.6.0] - 2026-09-10
 
 ### Added
