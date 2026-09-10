@@ -140,6 +140,34 @@ def release_score(local: str, release: str) -> int:
     return score
 
 
+PROMOTE_SCORE = 13  # Matching group and source score 13 even when reencoding changes the hash.
+
+YEAR = re.compile(r"\b(19\d{2}|20\d{2})\b")
+
+
+def release_year(text: str | None) -> int | None:
+    """Extract the year from a release or file name to distinguish remakes."""
+    m = YEAR.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def promoted(local: str, release: str) -> bool:
+    """Accept a strong release-name match when reencoding prevents an exact hash match."""
+    return release_score(local, release) >= PROMOTE_SCORE
+
+
+def sync_compatible(media, candidate) -> bool:
+    """Reject mismatched frame rates when both releases report them."""
+    try:
+        mf = getattr(media, "fps", None)
+        cf = getattr(candidate, "fps", None)
+        if mf is None or cf is None:
+            return True
+        return abs(float(mf) - float(cf)) < 0.1
+    except (TypeError, ValueError):
+        return True
+
+
 def same_title(media, candidate) -> bool:
     """Compare title and episode metadata against the media item.
 
@@ -148,6 +176,10 @@ def same_title(media, candidate) -> bool:
     want_kind = getattr(media, "kind", "")
     have_kind = (getattr(candidate, "feature_type", "") or "").lower()
     if want_kind and have_kind and have_kind != want_kind:
+        return False
+    ours_year = release_year(getattr(media, "path", "") or "") or release_year(getattr(media, "name", ""))
+    theirs_year = getattr(candidate, "year", None) or release_year(candidate.release)
+    if ours_year and theirs_year and ours_year != theirs_year:
         return False
     if getattr(media, "kind", "") == "episode":
         want_s, want_e = getattr(media, "season", None), getattr(media, "episode", None)
@@ -305,17 +337,29 @@ class Watcher:
         if not candidates:
             return None
 
-        exact = next((c for c in candidates if c.hash_match), None)
+        local = pathlib.Path(getattr(media, "path", "") or "").stem or getattr(media, "name", "")
+        bad = broken_file_ids(getattr(self, "store", None), target)
+
+        def _usable(c):
+            # Exclude partial forced tracks and known broken downloads.
+            return not c.forced and c.file_id not in bad
+
+        exact = next((c for c in candidates if c.hash_match and _usable(c)), None)
         if exact:
             return str(exact.file_id)
 
-        # Title IDs identify the work; release names identify the cut.
-        # Prefer downloads among equally suitable matches, ranking forced and broken tracks last.
-        bad = broken_file_ids(getattr(self, "store", None), target)
-        trusted = [c for c in candidates if same_title(media, c) and c.file_id not in bad]
+        # A unique strong release-name match wins; ties use the ranking below.
+        named = [c for c in candidates
+                 if _usable(c) and same_title(media, c) and promoted(local, c.release)]
+        if len(named) == 1:
+            return str(named[0].file_id)
+
+        # Title IDs identify the work; release names and frame rates identify the cut.
+        # Prefer the most downloaded candidate among otherwise equal matches.
+        trusted = [c for c in candidates if same_title(media, c) and sync_compatible(media, c)
+                   and c.file_id not in bad]
         if not trusted:
             return None
-        local = pathlib.Path(getattr(media, "path", "") or "").stem or getattr(media, "name", "")
         trusted.sort(key=lambda c: (not c.forced, release_score(local, c.release),
                                     c.downloads), reverse=True)
         return str(trusted[0].file_id)

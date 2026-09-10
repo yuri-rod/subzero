@@ -161,7 +161,8 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         return {"candidates": [{"fileId": c.file_id, "release": c.release, "lang": c.lang,
                                 "downloads": c.downloads, "hearingImpaired": c.hearing_impaired,
                                 "fromTrusted": c.from_trusted, "hashMatch": c.hash_match,
-                                "forced": c.forced, "featureType": c.feature_type}
+                                "forced": c.forced, "featureType": c.feature_type,
+                                "fps": c.fps, "year": c.year}
                                for c in candidates]}
 
     @app.post("/jobs", dependencies=guard)

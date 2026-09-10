@@ -160,6 +160,18 @@ def test_empty_download_is_recorded_as_broken(setup):
     assert statuses[1]=='broken'
 
 
+def test_frame_rate_mismatch_skips_every_candidate(setup):
+    from subzero.worker.jellyfin import Media
+    flow,jobs,provider,media=setup
+    for c in provider.search():
+        c.fps=23.976
+    bad=Media('id','movie',str(media.path),'mkv',940,'eng','src',imdb_id='tt123',fps=25.0)
+    flow.service.jellyfin=SimpleNamespace(media=lambda _:bad,refresh=lambda _:None)
+    job=run(flow,jobs,'refetch')
+    assert flow.state.downloads_today()==0
+    assert job.kind=='resync'
+
+
 def test_exhausted_quota_skips_downloads_and_resyncs(setup):
     flow,jobs,provider,media=setup
     provider.quota_exhausted=lambda:True

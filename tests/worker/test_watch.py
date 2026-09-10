@@ -557,10 +557,64 @@ def test_same_title_ignores_a_missing_feature_type():
 def test_pick_candidate_prefers_a_full_subtitle_over_forced():
     from subzero.worker.watch import Watcher
 
-    osubs = OneCandidate([offer(1, downloads=5000, forced=True),
+    osubs = OneCandidate([offer(1, downloads=5000, forced=True, hash_match=True),
                           offer(2, downloads=10, forced=False)])
     w = Watcher(None, None, osubs, "s.json", ["pt-BR"])
     media = type("M", (), {"name": "Filme.1080p.WEB-DL", "path": "F:\\FILMES\\Filme.1080p.WEB-DL.mkv",
+                           "kind": "movie", "imdb_id": "tt123456", "tmdb_id": ""})()
+
+    assert w.pick_candidate(media, "pt-BR") == "2"
+
+
+def test_release_year_reads_the_release_not_the_resolution():
+    from subzero.worker.watch import release_year
+
+    assert release_year("Filme.2026.2160p.WEB-DL-GROUP") == 2026
+    assert release_year("La.Mome.2007.DVDRip") == 2007
+    assert release_year("Filme.1080p.WEB-DL") is None
+    assert release_year(None) is None
+
+
+def test_same_title_rejects_a_remake_year():
+    from subzero.worker.watch import same_title
+
+    media = episode_media(kind="movie", imdb_id="tt123456", tmdb_id="",
+                          path="F:\\FILMES\\Filme.2026.WEB-DL.mkv", name="Filme (2026)")
+    assert same_title(media, offer(6, imdb_id="123456", year=2012,
+                                  release="Filme.2012.BluRay-GROUP")) is False
+    assert same_title(media, offer(7, imdb_id="123456")) is True
+
+
+def test_sync_compatible_rejects_a_different_frame_rate():
+    from subzero.worker.watch import sync_compatible
+
+    full = type("M", (), {"fps": 23.976})()
+    pal = type("M", (), {"fps": 25.0})()
+    unknown = type("M", (), {"fps": None})()
+    assert sync_compatible(full, type("C", (), {"fps": 23.976})()) is True
+    assert sync_compatible(full, pal) is False
+    assert sync_compatible(full, unknown) is True
+    assert sync_compatible(unknown, pal) is True
+
+
+def test_promoted_accepts_same_group_and_source():
+    from subzero.worker.watch import promoted
+
+    local = "Filme.2026.1080p.WEB-DL-GROUP"
+    assert promoted(local, "Filme.2026.1080p.WEBRip-GROUP") is True
+    assert promoted(local, "Filme.2026.1080p.BluRay-GROUP") is False
+    assert promoted(local, "Filme.2026.1080p.WEB-DL-OTHER") is False
+
+
+def test_pick_candidate_promotes_a_high_score_without_hash():
+    from subzero.worker.watch import Watcher
+
+    osubs = OneCandidate([offer(1, downloads=5000, release="Filme.2026.720p.HDTV-OTHER"),
+                          offer(2, downloads=10,
+                                release="Filme.2026.1080p.WEB-DL-GROUP")])
+    w = Watcher(None, None, osubs, "s.json", ["pt-BR"])
+    media = type("M", (), {"name": "Filme.2026.1080p.WEB-DL-GROUP.mkv",
+                           "path": "F:\\FILMES\\Filme.2026.1080p.WEB-DL-GROUP.mkv",
                            "kind": "movie", "imdb_id": "tt123456", "tmdb_id": ""})()
 
     assert w.pick_candidate(media, "pt-BR") == "2"

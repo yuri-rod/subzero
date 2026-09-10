@@ -9,6 +9,20 @@ API = "https://api.opensubtitles.com/api/v1"
 AGENT = "YUCAST v1.0"
 
 
+def _to_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_reset(value) -> float | None:
     """Parse the quota reset time as an epoch or ISO timestamp."""
     if value is None:
@@ -64,6 +78,8 @@ class Candidate:
     feature_type: str = ""
     # Forced tracks contain partial dialogue and rank below complete subtitles.
     forced: bool = False
+    fps: float | None = None
+    year: int | None = None
 
     @property
     def human(self) -> bool:
@@ -282,6 +298,8 @@ class OpenSubtitles:
                 episode=feature.get("episode_number"),
                 feature_type=str(feature.get("feature_type") or ""),
                 forced=bool(attrs.get("foreign_parts_only")),
+                fps=_to_float(attrs.get("fps")),
+                year=_to_int(feature.get("year")),
             ))
         # Prefer human translations and tracks that need less SDH cleanup.
         found.sort(key=lambda c: (c.hash_match, not c.hearing_impaired, c.human,
