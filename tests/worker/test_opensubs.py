@@ -258,3 +258,66 @@ def test_ranking_prefers_a_subtitle_without_hearing_impaired_marks():
                              c.from_trusted, c.downloads), reverse=True)
 
     assert rows[0].file_id == 2
+
+
+def test_search_marks_forced_only_subtitles():
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": [
+        {"attributes": {"language": "pt-br", "release": "Filme 1080p", "foreign_parts_only": True,
+                        "files": [{"file_id": 7, "file_name": "f.srt"}]}},
+        {"attributes": {"language": "pt-br", "release": "Filme 720p",
+                        "files": [{"file_id": 8, "file_name": "g.srt"}]}},
+    ]})})
+    found = OpenSubtitles("k", http=http).search(query="Filme", langs=["pt-BR"])
+
+    by_id = {c.file_id: c for c in found}
+    assert by_id[7].forced is True
+    assert by_id[8].forced is False
+
+
+def test_search_hash_only_asks_for_hash_matches():
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": []})})
+    OpenSubtitles("k", http=http).search(moviehash="abc", langs=["pt-BR"], hash_only=True)
+
+    params = dict(http.calls[0][2])
+    assert params["moviehash_match"] == "only"
+
+
+def test_search_without_hash_ignores_hash_only():
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": []})})
+    OpenSubtitles("k", http=http).search(query="Filme", langs=["pt-BR"], hash_only=True)
+
+    params = dict(http.calls[0][2])
+    assert "moviehash_match" not in params
+
+
+def test_quota_exhausted_tracks_remaining_and_reset():
+    client = OpenSubtitles("k", http=FakeHTTP({}))
+
+    assert client.quota_exhausted() is False
+
+    client.remaining = 3
+    assert client.quota_exhausted() is False
+
+    client.remaining = 0
+    assert client.quota_exhausted() is True
+
+    client.reset_at = 9_999_999_999.0
+    assert client.quota_exhausted() is True
+
+    client.reset_at = 1.0
+    assert client.quota_exhausted() is False
+
+
+def test_download_stores_the_reset_time():
+    http = FakeHTTP({
+        ("POST", "https://api.opensubtitles.com/api/v1/download"):
+            (200, {"link": "https://dl.opensubtitles.com/x.srt", "remaining": 0,
+                   "reset_time_utc": "2026-09-11T00:00:00Z"}),
+        ("GET", "https://dl.opensubtitles.com/x.srt"): (200, "1\n00:00:01,000 --> 00:00:02,000\nOi\n"),
+    })
+    client = OpenSubtitles("k", http=http)
+    client.download(11)
+
+    assert client.remaining == 0
+    assert client.reset_at is not None and client.reset_at > 1_700_000_000
+    assert client.quota_exhausted() is True

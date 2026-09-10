@@ -3,9 +3,27 @@ import gzip
 import hashlib
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 API = "https://api.opensubtitles.com/api/v1"
 AGENT = "YUCAST v1.0"
+
+
+def _parse_reset(value) -> float | None:
+    """Quando a cota volta: epoch ou ISO da resposta de download."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        stamp = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
 
 
 class OpenSubtitlesError(RuntimeError):
@@ -36,6 +54,9 @@ class Candidate:
     season: int | None = None
     episode: int | None = None
     feature_type: str = ""
+    # legenda so de trechos forcados: parcial por definicao, nunca serve de
+    # legenda completa e afunda na ordenacao dos fluxos automaticos
+    forced: bool = False
 
     @property
     def human(self) -> bool:
@@ -74,6 +95,9 @@ class OpenSubtitles:
         self.token: str | None = None
         self.base = API
         self.remaining: int | None = None
+        # quando a cota volta, lido da resposta de download; sem ele, cota
+        # zerada vale ate prova em contrario
+        self.reset_at: float | None = None
         self._sleep = sleep
         self._clock = clock
         self._last_call = 0.0
@@ -172,12 +196,24 @@ class OpenSubtitles:
         return Account(level=str(payload.get("level") or ""), allowed=allowed,
                        used=used, remaining=remaining)
 
+    def quota_exhausted(self) -> bool:
+        """Cota esgotada sem gastar uma chamada para descobrir.
+
+        O plugin do Jellyfin recusa o trabalho automatico com resto zerado; aqui
+        vale o mesmo para o refetch nao queimar a noite girando em falso.
+        """
+        if self.remaining is None or self.remaining > 0:
+            return False
+        if self.reset_at is None:
+            return True
+        return self.reset_at > self._clock()
+
     def search(self, query: str | None = None, moviehash: str | None = None,
                langs: list[str] | None = None, imdb_id: str | None = None,
                tmdb_id: str | None = None, parent_imdb_id: str | None = None,
                parent_tmdb_id: str | None = None, season: int | None = None,
                episode: int | None = None, kind: str | None = None,
-               filename: str | None = None) -> list[Candidate]:
+               filename: str | None = None, hash_only: bool = False) -> list[Candidate]:
         """Busca. Ids e temporada/episodio identificam o titulo sem depender do nome,
         que no Jellyfin as vezes e so 'Episodio 1' ou o sufixo do release."""
         params: dict[str, str] = {}
@@ -204,6 +240,9 @@ class OpenSubtitles:
             params["episode_number"] = str(episode)
         if kind:
             params["type"] = kind
+        if hash_only and moviehash:
+            # modo estrito do plugin do Jellyfin: so casamento de hash
+            params["moviehash_match"] = "only"
 
         payload = self._json(self._call("GET", f"{self.base}/subtitles",
                                         params=self.clean(params)))
@@ -231,6 +270,7 @@ class OpenSubtitles:
                 season=feature.get("season_number"),
                 episode=feature.get("episode_number"),
                 feature_type=str(feature.get("feature_type") or ""),
+                forced=bool(attrs.get("foreign_parts_only")),
             ))
         # traducao de gente ganha de traducao de maquina, mesmo com menos downloads
         # a limpeza de marcacao e sempre aproximada, entao e melhor nem precisar dela
@@ -277,6 +317,9 @@ class OpenSubtitles:
                        headers={"Content-Type": "application/json"})
         payload = self._json(r)
         self.remaining = payload.get("remaining")
+        reset = _parse_reset(payload.get("reset_time_utc") or payload.get("reset_time"))
+        if reset is not None:
+            self.reset_at = reset
         link = payload.get("link")
         if not link:
             raise OpenSubtitlesError("resposta de download sem link")

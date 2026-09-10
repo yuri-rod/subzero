@@ -62,3 +62,17 @@ class SyncStore:
                              (video,lang)).fetchone()
         return bool(row and row['digest']==digest and
                     (row['status']=='pass' or time.time()-row['updated'] < 86400))
+
+
+def broken_file_ids(jobs_store, lang) -> set:
+    """file_ids que ja voltaram vazios: o plugin do Jellyfin filtra esses dos
+    automaticos para nao gastar cota com legenda quebrada duas vezes."""
+    if jobs_store is None:
+        return set()
+    with jobs_store._db() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS subtitle_attempts (video TEXT, lang TEXT,"
+                   " file_id INTEGER, job_id TEXT, created REAL, status TEXT DEFAULT 'reserved',"
+                   " digest TEXT DEFAULT '', path TEXT DEFAULT '', report TEXT DEFAULT '{}',"
+                   " PRIMARY KEY(video,lang,file_id))")
+        return {row[0] for row in db.execute("SELECT file_id FROM subtitle_attempts"
+                                             " WHERE lang=? AND status='broken'", (lang,))}

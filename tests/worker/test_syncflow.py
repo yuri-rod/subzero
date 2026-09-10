@@ -135,6 +135,42 @@ def test_wrong_movie_candidate_is_not_downloaded(setup):
     assert job.kind=='resync'
 
 
+def test_broken_file_is_never_downloaded_again(setup):
+    from subzero.reference import fingerprint
+    flow,jobs,provider,media=setup
+    key=fingerprint(str(media.path))
+    flow.state.reserve(key,'pt-BR',1,'old',10)
+    flow.state.update(key,'pt-BR',1,status='broken')
+    asked=[]
+    real=provider.download
+    provider.download=lambda fid:asked.append(fid) or real(fid)
+    job=run(flow,jobs,'refetch')
+    assert 1 not in asked
+    assert job.kind=='resync'
+
+
+def test_empty_download_is_recorded_as_broken(setup):
+    from subzero.reference import fingerprint
+    flow,jobs,provider,media=setup
+    key=fingerprint(str(media.path))
+    provider.download=lambda fid:'' if fid==1 else dialogue(8)
+    job=run(flow,jobs,'refetch')
+    assert job.kind=='resync'
+    statuses={a['file_id']:a['status'] for a in flow.state.attempts(key,'pt-BR')}
+    assert statuses[1]=='broken'
+
+
+def test_exhausted_quota_skips_downloads_and_resyncs(setup):
+    flow,jobs,provider,media=setup
+    provider.quota_exhausted=lambda:True
+    asked=[]
+    provider.download=lambda fid:asked.append(fid) or dialogue(8)
+    job=run(flow,jobs,'refetch')
+    assert asked==[]
+    assert flow.state.downloads_today()==0
+    assert job.kind=='resync'
+
+
 def test_audit_quarantines_confirmed_bad_subtitle_before_refetch(setup):
     flow,jobs,provider,media=setup
     path=Path(media.path).with_suffix('.pt-BR.srt');path.write_text(dialogue(8))

@@ -535,3 +535,50 @@ def test_sweep_queues_all_missing_items(tmp_path):
     assert len(jobs) == 1
     assert w.store.calls == [("1", "whisper", "pt-BR", None, "auto")]
 
+
+def test_same_title_rejects_a_feature_type_mismatch():
+    from subzero.worker.watch import same_title
+
+    media = episode_media(kind="episode")
+    movie = offer(3, feature_type="Movie", season=47, episode=1)
+    episode = offer(4, feature_type="Episode", season=47, episode=1)
+
+    assert same_title(media, episode) is True
+    assert same_title(media, movie) is False
+
+
+def test_same_title_ignores_a_missing_feature_type():
+    from subzero.worker.watch import same_title
+
+    media = episode_media(kind="movie", imdb_id="tt123456")
+    assert same_title(media, offer(5, imdb_id="123456")) is True
+
+
+def test_pick_candidate_prefers_a_full_subtitle_over_forced():
+    from subzero.worker.watch import Watcher
+
+    osubs = OneCandidate([offer(1, downloads=5000, forced=True),
+                          offer(2, downloads=10, forced=False)])
+    w = Watcher(None, None, osubs, "s.json", ["pt-BR"])
+    media = type("M", (), {"name": "Filme.1080p.WEB-DL", "path": "F:\\FILMES\\Filme.1080p.WEB-DL.mkv",
+                           "kind": "movie", "imdb_id": "tt123456", "tmdb_id": ""})()
+
+    assert w.pick_candidate(media, "pt-BR") == "2"
+
+
+def test_pick_candidate_skips_a_known_broken_file(tmp_path):
+    from subzero.worker.jobs import JobStore
+    from subzero.worker.syncstore import SyncStore
+    from subzero.worker.watch import Watcher
+
+    jobs = JobStore(str(tmp_path / "jobs.db"))
+    state = SyncStore(jobs)
+    state.reserve("v", "pt-BR", 1, "job", 10)
+    state.update("v", "pt-BR", 1, status="broken")
+    osubs = OneCandidate([offer(1), offer(2)])
+    w = Watcher(None, jobs, osubs, "s.json", ["pt-BR"])
+    media = type("M", (), {"name": "Filme.1080p.WEB-DL", "path": "F:\\FILMES\\Filme.1080p.WEB-DL.mkv",
+                           "kind": "movie", "imdb_id": "tt123456", "tmdb_id": ""})()
+
+    assert w.pick_candidate(media, "pt-BR") == "2"
+

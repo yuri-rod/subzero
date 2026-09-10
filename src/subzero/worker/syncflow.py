@@ -14,7 +14,7 @@ from .guards import check_excellence_guards, sanitize_to_excellence
 from .moviehash import moviehash
 from .service import same_language
 from .srt import dump, parse, strip_hearing_impaired
-from .syncstore import SyncStore
+from .syncstore import SyncStore, broken_file_ids
 from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, transcribe, translate
 from .watch import EDITIONS, excluded, release_score, same_title, title_query, tokens
 
@@ -194,15 +194,23 @@ class SyncFlow:
         seen = {a['file_id'] for a in attempts}
         content = {a['digest'] for a in attempts if a['digest']}
         tried = sum(a['job_id']==job.id for a in attempts)
-        candidates = self.service.opensubs.search(langs=[job.target_lang],
+        opensubs = self.service.opensubs
+        if getattr(opensubs, "quota_exhausted", lambda: False)():
+            # sem cota nao adianta baixar: cai no resync local em vez de girar em falso
+            self.jobs.advance(job.id,'resync','Cota do OpenSubtitles esgotada; verificando correcao de tempo')
+            return
+        bad = broken_file_ids(self.jobs, job.target_lang)
+        candidates = opensubs.search(langs=[job.target_lang],
                         moviehash=moviehash(media.path) if Path(media.path).stat().st_size >= 131072 else None,
                         filename=Path(media.path).name,**title_query(media))
         edition = set(tokens(Path(media.path).stem)) & EDITIONS
         candidates = [c for c in candidates if same_title(media,c) and c.human
                       and same_language(c.lang,job.target_lang)
+                      and c.file_id not in bad
                       and (c.hash_match or (set(tokens(c.release)) & EDITIONS)==edition)]
-        candidates.sort(key=lambda c:(c.hash_match,release_score(Path(media.path).stem,c.release),
-                                       c.from_trusted,c.downloads),reverse=True)
+        candidates.sort(key=lambda c:(c.hash_match,not c.forced,
+                                      release_score(Path(media.path).stem,c.release),
+                                      c.from_trusted,c.downloads),reverse=True)
         for candidate in candidates:
             self.active(job)
             if tried >= 3:
@@ -215,7 +223,12 @@ class SyncFlow:
             tried += 1
             seen.add(candidate.file_id)
             progress(f'baixando candidato {tried}/3',20)
-            raw = self.service.opensubs.download(candidate.file_id)
+            raw = opensubs.download(candidate.file_id)
+            if not raw.strip():
+                # corpo vazio: legenda quebrada no servidor, marca para nunca
+                # gastar cota com ela de novo em nenhum video
+                self.state.update(key,job.target_lang,candidate.file_id,status='broken')
+                continue
             text = sanitize_to_excellence(raw)
             if len(text.encode()) > 2_000_000:
                 self.state.update(key,job.target_lang,candidate.file_id,status='oversized')

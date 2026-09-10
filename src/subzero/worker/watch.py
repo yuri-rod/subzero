@@ -8,6 +8,7 @@ from .jobs import Job, JobStore
 from .moviehash import moviehash
 from .opensubs import OpenSubtitlesError
 from .service import three_letter
+from .syncstore import broken_file_ids
 
 UI_LANG = {"por": "pt-BR", "pob": "pt-BR", "pb": "pt-BR", "eng": "en", "spa": "es", "jpn": "ja"}
 
@@ -152,6 +153,10 @@ def same_title(media, candidate) -> bool:
     episodio. Isso e a fonte boa. O codigo SxxExx no nome do release fica de reserva
     para quando a legenda nao vier com id nenhum.
     """
+    want_kind = getattr(media, "kind", "")
+    have_kind = (getattr(candidate, "feature_type", "") or "").lower()
+    if want_kind and have_kind and have_kind != want_kind:
+        return False
     if getattr(media, "kind", "") == "episode":
         want_s, want_e = getattr(media, "season", None), getattr(media, "episode", None)
         if candidate.season is not None and candidate.episode is not None:
@@ -318,10 +323,13 @@ class Watcher:
             return str(exact.file_id)
 
         # o id so garante que e o mesmo titulo; quem decide a copia e o nome do
-        # release, e entre os equivalentes vale o mais baixado
-        trusted = [c for c in candidates if same_title(media, c)]
+        # release, e entre os equivalentes vale o mais baixado. Forcada e parcial
+        # por definicao e quebrada ja provou nao prestar: as duas afundam.
+        bad = broken_file_ids(getattr(self, "store", None), target)
+        trusted = [c for c in candidates if same_title(media, c) and c.file_id not in bad]
         if not trusted:
             return None
         local = pathlib.Path(getattr(media, "path", "") or "").stem or getattr(media, "name", "")
-        trusted.sort(key=lambda c: (release_score(local, c.release), c.downloads), reverse=True)
+        trusted.sort(key=lambda c: (not c.forced, release_score(local, c.release),
+                                    c.downloads), reverse=True)
         return str(trusted[0].file_id)
