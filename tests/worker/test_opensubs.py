@@ -345,6 +345,18 @@ def test_logout_without_token_skips_the_call():
     assert http.calls == []
 
 
+def test_search_captures_fps_and_year():
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": [
+        {"attributes": {"language": "pt-br", "release": "Filme 1080p", "fps": 23.976,
+                        "feature_details": {"year": 2026},
+                        "files": [{"file_id": 9, "file_name": "h.srt"}]}},
+    ]})})
+    found = OpenSubtitles("k", http=http).search(query="Filme", langs=["pt-BR"])
+
+    assert found[0].fps == 23.976
+    assert found[0].year == 2026
+
+
 def test_download_stores_the_reset_time():
     http = FakeHTTP({
         ("POST", "https://api.opensubtitles.com/api/v1/download"):

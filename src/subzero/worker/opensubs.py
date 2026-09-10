@@ -9,6 +9,20 @@ API = "https://api.opensubtitles.com/api/v1"
 AGENT = "YUCAST v1.0"
 
 
+def _to_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_reset(value) -> float | None:
     """Quando a cota volta: epoch ou ISO da resposta de download."""
     if value is None:
@@ -66,6 +80,8 @@ class Candidate:
     # legenda so de trechos forcados: parcial por definicao, nunca serve de
     # legenda completa e afunda na ordenacao dos fluxos automaticos
     forced: bool = False
+    fps: float | None = None
+    year: int | None = None
 
     @property
     def human(self) -> bool:
@@ -294,6 +310,8 @@ class OpenSubtitles:
                 episode=feature.get("episode_number"),
                 feature_type=str(feature.get("feature_type") or ""),
                 forced=bool(attrs.get("foreign_parts_only")),
+                fps=_to_float(attrs.get("fps")),
+                year=_to_int(feature.get("year")),
             ))
         # traducao de gente ganha de traducao de maquina, mesmo com menos downloads
         # a limpeza de marcacao e sempre aproximada, entao e melhor nem precisar dela

@@ -146,6 +146,35 @@ def release_score(local: str, release: str) -> int:
     return score
 
 
+PROMOTE_SCORE = 13  # grupo (8) + fonte (5): mesma copia, o hash vira detalhe
+
+YEAR = re.compile(r"\b(19\d{2}|20\d{2})\b")
+
+
+def release_year(text: str | None) -> int | None:
+    """Ano do release ou do arquivo: remake com o mesmo nome cai aqui."""
+    m = YEAR.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def promoted(local: str, release: str) -> bool:
+    """Pontuacao alta vira casamento: reencode nunca bate o hash, mas mesmo
+    grupo e mesma fonte e evidencia suficiente, como no subbuzz."""
+    return release_score(local, release) >= PROMOTE_SCORE
+
+
+def sync_compatible(media, candidate) -> bool:
+    """23.976 contra 25 fps e outra sincronia: sem fps dos dois lados, passa."""
+    try:
+        mf = getattr(media, "fps", None)
+        cf = getattr(candidate, "fps", None)
+        if mf is None or cf is None:
+            return True
+        return abs(float(mf) - float(cf)) < 0.1
+    except (TypeError, ValueError):
+        return True
+
+
 def same_title(media, candidate) -> bool:
     """A legenda diz de que titulo ela e; compara com o item em vez de ler o release.
 
@@ -156,6 +185,10 @@ def same_title(media, candidate) -> bool:
     want_kind = getattr(media, "kind", "")
     have_kind = (getattr(candidate, "feature_type", "") or "").lower()
     if want_kind and have_kind and have_kind != want_kind:
+        return False
+    ours_year = release_year(getattr(media, "path", "") or "") or release_year(getattr(media, "name", ""))
+    theirs_year = getattr(candidate, "year", None) or release_year(candidate.release)
+    if ours_year and theirs_year and ours_year != theirs_year:
         return False
     if getattr(media, "kind", "") == "episode":
         want_s, want_e = getattr(media, "season", None), getattr(media, "episode", None)
@@ -318,18 +351,31 @@ class Watcher:
         if not candidates:
             return None
 
-        exact = next((c for c in candidates if c.hash_match), None)
+        local = pathlib.Path(getattr(media, "path", "") or "").stem or getattr(media, "name", "")
+        bad = broken_file_ids(getattr(self, "store", None), target)
+
+        def _usable(c):
+            # forcada e parcial por definicao, quebrada ja provou nao prestar
+            return not c.forced and c.file_id not in bad
+
+        exact = next((c for c in candidates if c.hash_match and _usable(c)), None)
         if exact:
             return str(exact.file_id)
 
+        # nota alta vale casamento, mas so quando desempata: entre equivalentes
+        # quem decide e o mais baixado, no bolo abaixo
+        named = [c for c in candidates
+                 if _usable(c) and same_title(media, c) and promoted(local, c.release)]
+        if len(named) == 1:
+            return str(named[0].file_id)
+
         # o id so garante que e o mesmo titulo; quem decide a copia e o nome do
-        # release, e entre os equivalentes vale o mais baixado. Forcada e parcial
-        # por definicao e quebrada ja provou nao prestar: as duas afundam.
-        bad = broken_file_ids(getattr(self, "store", None), target)
-        trusted = [c for c in candidates if same_title(media, c) and c.file_id not in bad]
+        # release, e entre os equivalentes vale o mais baixado.
+        # fps diferente e outra sincronia e cai aqui tambem.
+        trusted = [c for c in candidates if same_title(media, c) and sync_compatible(media, c)
+                   and c.file_id not in bad]
         if not trusted:
             return None
-        local = pathlib.Path(getattr(media, "path", "") or "").stem or getattr(media, "name", "")
         trusted.sort(key=lambda c: (not c.forced, release_score(local, c.release),
                                     c.downloads), reverse=True)
         return str(trusted[0].file_id)

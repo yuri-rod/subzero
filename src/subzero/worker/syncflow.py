@@ -16,7 +16,7 @@ from .service import same_language
 from .srt import dump, parse, strip_hearing_impaired
 from .syncstore import SyncStore, broken_file_ids
 from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, transcribe, translate
-from .watch import EDITIONS, excluded, release_score, same_title, title_query, tokens
+from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
 def digest(text):
@@ -204,12 +204,14 @@ class SyncFlow:
                         moviehash=moviehash(media.path) if Path(media.path).stat().st_size >= 131072 else None,
                         filename=Path(media.path).name,**title_query(media))
         edition = set(tokens(Path(media.path).stem)) & EDITIONS
+        stem = Path(media.path).stem
         candidates = [c for c in candidates if same_title(media,c) and c.human
                       and same_language(c.lang,job.target_lang)
+                      and sync_compatible(media,c)
                       and c.file_id not in bad
                       and (c.hash_match or (set(tokens(c.release)) & EDITIONS)==edition)]
-        candidates.sort(key=lambda c:(c.hash_match,not c.forced,
-                                      release_score(Path(media.path).stem,c.release),
+        candidates.sort(key=lambda c:((c.hash_match or promoted(stem,c.release)),not c.forced,
+                                      release_score(stem,c.release),
                                       c.from_trusted,c.downloads),reverse=True)
         for candidate in candidates:
             self.active(job)

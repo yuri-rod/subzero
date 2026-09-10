@@ -7,6 +7,23 @@ class JellyfinError(RuntimeError):
     pass
 
 
+def parse_fps(value) -> float | None:
+    """23.976 ou 24000/1001: o Jellyfin devolve fracao como texto."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if "/" in text:
+        num, _, den = text.partition("/")
+        try:
+            return float(num) / float(den) if float(den) else None
+        except (TypeError, ValueError):
+            return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class EmbeddedSub:
     index: int
@@ -40,6 +57,7 @@ class Media:
     tmdb_id: str = ""
     parent_imdb_id: str = ""
     parent_tmdb_id: str = ""
+    fps: float | None = None
 
 
 class JellyfinClient:
@@ -73,6 +91,7 @@ class JellyfinClient:
 
         streams = src.get("MediaStreams") or []
         audio = next((s for s in streams if s.get("Type") == "Audio"), {})
+        video = next((s for s in streams if s.get("Type") == "Video"), {})
         embedded = []
         inside = 0
         for stream in sorted((s for s in streams if s.get("Type") == "Subtitle"),
@@ -108,7 +127,8 @@ class JellyfinClient:
                      imdb_id=str(ids.get("Imdb") or ""),
                      tmdb_id=str(ids.get("Tmdb") or ""),
                      parent_imdb_id=str(parent_ids.get("Imdb") or ""),
-                     parent_tmdb_id=str(parent_ids.get("Tmdb") or ""))
+                     parent_tmdb_id=str(parent_ids.get("Tmdb") or ""),
+                     fps=parse_fps(video.get("AverageFrameRate") or video.get("RealFrameRate")))
 
     def details(self, item_id: str | None) -> dict:
         """GET /Items/{id} devolve 400 nesta versao do Jellyfin; a rota de lista com
