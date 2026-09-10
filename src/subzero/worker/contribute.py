@@ -24,6 +24,8 @@ from .opensubs import OpenSubtitles, OpenSubtitlesError, QuotaExceeded
 from .service import same_language
 
 MT_NOTE = "MACHINE TRANSLATION"
+AUTO_DISCLAIMER = ("Legenda processada automaticamente, pode conter erros, "
+                   "mas melhor que nenhuma!")
 WROTE = re.compile(r"wrote (.+?\.srt) in \d+s")
 
 
@@ -112,7 +114,7 @@ def upload(client, cand: Candidate, imdb_id: str, text: str):
         params["releasename"] = f"{MT_NOTE} - {cand.video.stem}"
         params["comment"] = ("Machine translation produced by a local LLM from the "
                              "release's English subtitle. Timings come from that "
-                             "subtitle and were not re-synced.")
+                             "subtitle and were not re-synced. " + AUTO_DISCLAIMER)
     # metadado na query e conteudo no corpo: subcontent junto da query da 414
     body = {"subcontent": base64.b64encode(gzip.compress(raw)).decode()}
     r = client.http.post(f"{client.base}/subtitles/upload", headers=client.headers,
