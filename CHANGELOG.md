@@ -3,6 +3,16 @@
 Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-10
+
+### Added
+- Character gender map for translation (`subzero translate --cast "Ana:f,Rick:m"`):
+  - Instructs the model to use supplied speaker genders for pronouns and adjective agreement.
+  - Prompts that support cast information request gender-neutral phrasing when the speaker is unknown.
+
+### Fixed
+- `subzero extract` crash (`extract_from_video() got an unexpected keyword argument 'indices'`): CLI now passes the correct `indexes` parameter.
+
 ## [1.5.0] - 2026-09-08
 
 ### Added

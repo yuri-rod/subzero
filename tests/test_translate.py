@@ -214,3 +214,27 @@ def test_openai_client_accepts_source_language_from_translate_cues(monkeypatch):
     client = OpenAIClient(api_key="test-key")
     translated = translate_cues([Cue(1, 2, "Hello")], "pt-BR", client, source_lang="eng")
     assert [(c.start, c.end, c.text) for c in translated] == [(1, 2, "Ola")]
+
+
+def test_parse_cast_accepts_variants_and_drops_garbage():
+    from subzero.translate import parse_cast
+    assert parse_cast("Ana:f,Rick:m") == {"ana": "feminine", "rick": "masculine"}
+    assert parse_cast("Ana:Feminino, Rick : MASCULINO ") == {"ana": "feminine", "rick": "masculine"}
+    assert parse_cast("Bob:x,NoColon,:f") == {}
+    assert parse_cast("") == {}
+    assert parse_cast(None) == {}
+
+
+def test_ollama_payload_carries_cast_and_neutral_guidance():
+    cues = [Cue(1, 2, "I am ready")]
+    payload = _ollama_payload(cues, "pt-BR", "translategemma:4b", "2m", 4096, 2048,
+                              source_lang="eng", cast="Ana:f,Rick:m")
+    assert "ana (feminine)" in payload["prompt"]
+    assert "rick (masculine)" in payload["prompt"]
+    assert "avoids gendered agreement" in payload["prompt"]
+
+
+def test_ollama_payload_without_cast_still_has_neutral_guidance():
+    cues = [Cue(1, 2, "I am ready")]
+    payload = _ollama_payload(cues, "pt-BR", "gemma3:12b", "2m", 4096, 2048)
+    assert "avoids gendered agreement" in payload["prompt"]

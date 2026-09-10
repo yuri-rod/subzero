@@ -240,7 +240,7 @@ def cmd_extract(args) -> int:
                 output_dir=args.output,
                 fmt=args.format,
                 languages=languages,
-                indices=indices,
+                indexes=indices,
                 all_streams=args.all,
                 dry=args.dry_run,
                 fix=fix_cb if args.fix else None,
@@ -345,6 +345,7 @@ def cmd_translate(args) -> int:
                 model=args.model,
                 url=args.url,
                 api_key=args.api_key,
+                cast=args.cast,
             )
             print(f"translated {p.name} -> {out.name} ({args.to})")
         except Exception as e:                              # noqa: BLE001
@@ -542,6 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     trans.add_argument("--api-key", default=None, help="API key for cloud LLM providers")
     trans.add_argument("--pattern", default="*.srt", help="glob for directory walks")
     trans.add_argument("--skip", default="", help="glob of filenames to leave alone")
+    trans.add_argument("--cast", default=None, metavar="SPEC", help="character genders for pronoun agreement, e.g. Ana:f,Rick:m")
     trans.set_defaults(func=cmd_translate)
 
     merge = sub.add_parser("merge", help="merge two subtitles into dual-language/bilingual subtitles")
