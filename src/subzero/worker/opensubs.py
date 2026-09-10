@@ -3,9 +3,27 @@ import gzip
 import hashlib
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 API = "https://api.opensubtitles.com/api/v1"
 AGENT = "YUCAST v1.0"
+
+
+def _parse_reset(value) -> float | None:
+    """Parse the quota reset time as an epoch or ISO timestamp."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        stamp = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
 
 
 class OpenSubtitlesError(RuntimeError):
@@ -35,6 +53,8 @@ class Candidate:
     season: int | None = None
     episode: int | None = None
     feature_type: str = ""
+    # Forced tracks contain partial dialogue and rank below complete subtitles.
+    forced: bool = False
 
     @property
     def human(self) -> bool:
@@ -70,6 +90,8 @@ class OpenSubtitles:
         self.token: str | None = None
         self.base = API
         self.remaining: int | None = None
+        # Keep exhausted quota paused until its reset time or a fresh quota response.
+        self.reset_at: float | None = None
         self._sleep = sleep
         self._clock = clock
         self._last_call = 0.0
@@ -164,12 +186,22 @@ class OpenSubtitles:
         return Account(level=str(payload.get("level") or ""), allowed=allowed,
                        used=used, remaining=remaining)
 
+    def quota_exhausted(self) -> bool:
+        """Check the cached quota without making another request.
+
+        Automatic downloads stay paused until the known reset time or a quota update."""
+        if self.remaining is None or self.remaining > 0:
+            return False
+        if self.reset_at is None:
+            return True
+        return self.reset_at > self._clock()
+
     def search(self, query: str | None = None, moviehash: str | None = None,
                langs: list[str] | None = None, imdb_id: str | None = None,
                tmdb_id: str | None = None, parent_imdb_id: str | None = None,
                parent_tmdb_id: str | None = None, season: int | None = None,
                episode: int | None = None, kind: str | None = None,
-               filename: str | None = None) -> list[Candidate]:
+               filename: str | None = None, hash_only: bool = False) -> list[Candidate]:
         """Search by title IDs and episode numbers when available.
 
         Jellyfin names can contain only an episode number or a release suffix."""
@@ -197,6 +229,9 @@ class OpenSubtitles:
             params["episode_number"] = str(episode)
         if kind:
             params["type"] = kind
+        if hash_only and moviehash:
+            # Strict matching accepts only an exact file hash.
+            params["moviehash_match"] = "only"
 
         payload = self._json(self._call("GET", f"{self.base}/subtitles",
                                         params=self.clean(params)))
@@ -224,6 +259,7 @@ class OpenSubtitles:
                 season=feature.get("season_number"),
                 episode=feature.get("episode_number"),
                 feature_type=str(feature.get("feature_type") or ""),
+                forced=bool(attrs.get("foreign_parts_only")),
             ))
         # Prefer human translations and tracks that need less SDH cleanup.
         found.sort(key=lambda c: (c.hash_match, not c.hearing_impaired, c.human,
@@ -267,6 +303,9 @@ class OpenSubtitles:
                        headers={"Content-Type": "application/json"})
         payload = self._json(r)
         self.remaining = payload.get("remaining")
+        reset = _parse_reset(payload.get("reset_time_utc") or payload.get("reset_time"))
+        if reset is not None:
+            self.reset_at = reset
         link = payload.get("link")
         if not link:
             raise OpenSubtitlesError("resposta de download sem link")

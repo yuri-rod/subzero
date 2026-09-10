@@ -27,3 +27,18 @@ def test_sql_values_are_not_interpolated(tmp_path):
     key="x'; DROP TABLE jobs;--"
     state.audit(key,'pt-BR','a','reject',{})
     assert state.current(key,'pt-BR','a')
+
+
+def test_broken_file_ids_lists_only_broken_status(tmp_path):
+    from subzero.worker.syncstore import broken_file_ids
+    jobs=JobStore(str(tmp_path/'jobs.db'))
+    state=SyncStore(jobs)
+    state.reserve('v','pt-BR',1,'job',10)
+    state.update('v','pt-BR',1,status='broken')
+    state.reserve('v','pt-BR',2,'job',10)
+    state.update('v','pt-BR',2,status='reject')
+    state.reserve('w','pt-BR',3,'job',10)
+
+    assert broken_file_ids(jobs,'pt-BR') == {1}
+    assert broken_file_ids(jobs,'en') == set()
+    assert broken_file_ids(None,'pt-BR') == set()

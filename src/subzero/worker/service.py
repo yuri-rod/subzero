@@ -2,6 +2,7 @@ import os
 from typing import Callable
 
 from .jobs import Job
+from .opensubs import QuotaExceeded
 from .srt import parse, strip_hearing_impaired
 from .tracks import (audio_start_offset, deliver, extract_audio, extract_embedded,
                      shift, sidecar_path, transcribe, translate)
@@ -64,6 +65,8 @@ class Service:
     def _opensubtitles(self, media, job: Job, progress: Progress) -> str:
         if not job.source_id:
             raise RuntimeError("faltou o file_id do OpenSubtitles")
+        if getattr(self.opensubs, "quota_exhausted", lambda: False)():
+            raise QuotaExceeded(getattr(self.opensubs, "remaining", 0) or 0)
         progress("baixando do OpenSubtitles", 30)
         text = self.opensubs.download(int(job.source_id))
         cues = strip_hearing_impaired(parse(text))
