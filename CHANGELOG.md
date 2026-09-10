@@ -5,6 +5,16 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-10
+
+### Added
+- Character gender map for translation (`subzero translate --cast "Ana:f,Rick:m"`):
+  - Resolves pronouns and adjective agreement against known speaker genders.
+  - Neutral-first guidance in Ollama, TranslateGemma, and OpenAI-compatible prompts: prefers gender-invariable phrasing when the speaker is unknown and never guesses from stereotypes.
+
+### Fixed
+- `subzero extract` crash (`extract_from_video() got an unexpected keyword argument 'indices'`): CLI now passes the correct `indexes` parameter.
+
 ## [1.5.0] - 2026-09-08
 
 ### Added

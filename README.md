@@ -245,6 +245,9 @@ subzero translate movie.srt --to es --provider groq --api-key "$GROQ_API_KEY"
 
 # Translate using a custom Ollama host or model
 subzero translate movie.srt --to es --model qwen2.5-coder:7b --url http://192.168.1.50:11434
+
+# Translate with character genders for pronoun and adjective agreement
+subzero translate episode.srt --to pt-BR --cast "Ana:f,Rick:m"
 ```
 
 ### 7. Bilingual Subtitle Merge (`subzero merge`)
