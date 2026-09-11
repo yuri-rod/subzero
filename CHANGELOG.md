@@ -3,6 +3,12 @@
 Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-09-10
+
+### Added
+- Year and frame-rate match verification for subtitle candidates, with score promotion for same-group reencodes.
+- IMDb ID normalization (no `tt` prefix or leading zeros) and logout after contribution runs.
+
 ## [1.7.0] - 2026-09-10
 
 ### Added
