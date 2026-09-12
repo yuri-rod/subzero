@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "subzero-cli"
 version = "1.10.0"
-description = "Subtitle cleanup, conversion, timestamp adjustment, extraction, and translation, with a media-library worker"
+description = "Subtitle cleanup, conversion, timing checks, translation, and caption recovery, with a media-library worker"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -23,10 +23,17 @@ keywords = [
     "ffmpeg",
     "jellyfin",
     "plex",
+    "sonarr",
+    "radarr",
     "media",
     "audio-sync",
     "translation",
     "worker",
+    "ocr",
+    "vision-ocr",
+    "apple-vision",
+    "translategemma",
+    "opensubtitles",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

@@ -10,7 +10,7 @@
 ```
 
 Subtitle cleanup, conversion, timestamp shifting, extraction, and translation.
-Use the CLI or Python library for subtitle files. Video operations need FFmpeg, and translation needs a configured provider.
+Clean and translate subtitles, check speech timing, extract embedded tracks, and recover burned-in captions with Apple Vision on macOS.
 
 [![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -29,11 +29,13 @@ Subzero combines subtitle cleanup, conversion, extraction, timing tools, and tra
 * The core uses the Python standard library. Video operations need FFmpeg, and translation needs a configured provider.
 * Remove sound cues (`[LAUGHTER]`, `(SIGHS)`, `♪`), speaker labels, and HTML or ASS formatting tags.
 * Split collapsed dialogue turns onto separate lines and normalize speaker dashes.
-* Check subtitle activity against local speech detection, with pass, reject, and inconclusive results.
+* Compare speech intervals with subtitle timing and use Apple Vision on macOS to recover burned-in text from sampled frames.
+* Translate through Ollama or an OpenAI-compatible API. Retry line-count mismatches in smaller batches and supply character genders to prompts that support them.
+* Verify subtitle activity against local speech detection, or apply container start-time offsets when speech verification is unavailable.
 * Extract embedded text subtitle tracks from Matroska (`.mkv`), MP4, MOV, WebM, and AVI files.
-* Translate subtitle files through Ollama while retaining cue timestamps.
 * Convert subtitle text and timing between SRT, WebVTT, ASS, and SSA. Format-specific styling can be lost.
-* Watch local media directories and clean new or changed subtitles.
+* Use the FastAPI worker with Jellyfin, watch local media directories, or call the CLI from Sonarr and Radarr hooks.
+* Calculate OpenSubtitles movie hashes and upload subtitles after the contributor checks their language and layout.
 
 ---
 
