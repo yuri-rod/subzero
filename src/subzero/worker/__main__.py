@@ -24,10 +24,13 @@ def _request(path: str, method: str = "GET", token: str = "", port: int = 8787) 
 
 
 def find_env_file(custom: str | Path | None = None) -> Path | None:
-    if custom:
+    if custom is not None:
         p = Path(custom).expanduser().resolve()
-        if p.exists():
-            return p
+        if not p.exists():
+            raise ValueError(f"Environment file does not exist: {p}")
+        if not p.is_file():
+            raise ValueError(f"Environment path is not a file: {p}")
+        return p
     for candidate in [
         Path.cwd() / ".env",
         Path(__file__).resolve().parents[3] / ".env",
@@ -39,8 +42,12 @@ def find_env_file(custom: str | Path | None = None) -> Path | None:
 
 
 def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, port: int | None = None) -> int:
-    env_path = find_env_file(env_file)
-    env = read_env_file(env_path) if env_path else {}
+    try:
+        env_path = find_env_file(env_file)
+        env = read_env_file(env_path, required=env_file is not None) if env_path else {}
+    except (OSError, ValueError) as err:
+        print(f"subzero worker: {err}", file=sys.stderr)
+        return 1
     env = {**env, **os.environ}
     effective_port = port or int(env.get("PORT", "8787"))
     token = env.get("BEARER_TOKEN", "")
@@ -95,7 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     idx = 0
     while idx < len(args):
         arg = args[idx]
-        if arg in ("--env", "-e") and idx + 1 < len(args):
+        if arg in ("--env", "-e"):
+            if idx + 1 == len(args):
+                print(f"subzero worker: {arg} requires a file path", file=sys.stderr)
+                return 1
             env_file = args[idx + 1]
             idx += 2
         elif arg in ("--port", "-p") and idx + 1 < len(args):

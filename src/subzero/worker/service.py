@@ -76,7 +76,7 @@ class Service:
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
 
     def _whisper(self, media, job: Job, progress: Progress) -> str:
-        # a placa e uma so: o gemma sai antes de o whisper entrar
+        # The transcription and translation models share device memory.
         if self.ollama is not None:
             self.ollama.release()
         # medido antes de extrair: depois do wav o desvio ja se perdeu

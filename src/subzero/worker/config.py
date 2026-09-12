@@ -96,10 +96,10 @@ class Config:
         )
 
 
-def read_env_file(path: str | Path) -> dict[str, str]:
+def read_env_file(path: str | Path, *, required: bool = False) -> dict[str, str]:
     values: dict[str, str] = {}
     p = Path(path)
-    if not p.exists():
+    if not required and not p.exists():
         return values
     for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()

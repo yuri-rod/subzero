@@ -150,7 +150,7 @@ def extract_audio(video_path: str, duration: float = 0, progress: Progress = lam
 
 
 class ModelHolder:
-    """Segura o Whisper carregado e devolve a GPU antes de o gemma3 ser chamado."""
+    """Load and release the local Whisper model."""
 
     def __init__(self, name: str, device: str = "cuda", compute_type: str | None = None):
         self.name = name

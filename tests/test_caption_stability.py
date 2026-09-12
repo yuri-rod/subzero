@@ -135,3 +135,41 @@ def test_insufficient_dense_evidence_does_not_recreate_a_missing_coarse_reading(
     with patch("subzero.ocr._scan_caption_frames", return_value=dense), \
          pytest.raises(RuntimeError, match="lost a confirmed caption"):
         ocr.refine_caption_timing("video.mkv", coarse, 2)
+
+
+def test_dense_readings_remove_a_punctuation_glyph_from_a_short_caption():
+    correct = "Without your basic tools..."
+    noisy = correct + "t"
+    coarse = [(0, ""), (0.5, noisy), (1, noisy), (1.5, "")]
+    dense = [(0.2, ""), (0.3, correct), (0.5, correct), (0.6, noisy),
+             (1, correct), (1.2, correct), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [
+        ("00:00:00,250", "00:00:01,250", correct)]
+
+
+def test_dense_line_dropout_uses_neighbors_after_native_spelling_is_confirmed():
+    full = "It's only the start and\nwe have a second chance."
+    coarse = [(0, ""), (0.5, full), (1, full), (1.5, "")]
+    dense = [(0.2, ""), (0.3, full), (0.5, "i" + full),
+             (0.6, full.splitlines()[1]), (0.7, full), (1, full), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [cue.text for cue in cues] == [full]
+
+
+@pytest.mark.parametrize("first, changed", [
+    ("We will vote.", "We will veto."),
+    ("Without your basic tools... a", "Without your basic tools..."),
+    ("Without your basic tools...I", "Without your basic tools..."),
+    ("We need 7...t", "We need 8..."),
+    ("We need Sam...t", "We need Pam..."),
+    ("We will not...t", "We will now..."),
+])
+def test_short_caption_glyph_correction_preserves_words_and_protected_changes(first, changed):
+    coarse = [(0, ""), (0.5, first), (1, first), (1.5, "")]
+    dense = [(0.2, ""), (0.3, changed), (0.5, changed), (1, changed), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense), \
+         pytest.raises(RuntimeError, match="lost a confirmed caption"):
+        ocr.refine_caption_timing("video.mkv", coarse, 2)

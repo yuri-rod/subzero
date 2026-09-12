@@ -288,6 +288,16 @@ def _protected_caption_change(first: str, second: str, *, contained_fragment: bo
     return False
 
 
+def _trailing_caption_glyph(first: str, second: str) -> bool:
+    left, right = _caption_words(first), _caption_words(second)
+    for noisy, clean, text in ((left, right, first), (right, left, second)):
+        if (len(clean) >= 3 and len(noisy) == len(clean) + 1 and noisy[:-1] == clean
+                and len(noisy[-1]) == 1
+                and re.search(r"[.!?…][\"'”’]*[a-z][\"'”’]*$", text)):
+            return True
+    return False
+
+
 def _retry_compatible(first: str, second: str) -> bool:
     protected = _protected_caption_change(first, second)
     first, second = clean_ocr_text(first), clean_ocr_text(second)
@@ -297,10 +307,8 @@ def _retry_compatible(first: str, second: str) -> bool:
     if min(len(left), len(right)) < 3 or protected:
         return False
     if len(left) != len(right):
-        for noisy, clean, text in ((left, right, first), (right, left, second)):
-            if (len(noisy) == len(clean) + 1 and noisy[:-1] == clean and len(noisy[-1]) == 1
-                    and re.search(r"[.!?…][\"'”’]*[a-z][\"'”’]*$", text)):
-                return True
+        if _trailing_caption_glyph(first, second):
+            return True
         return "".join(left).replace("'", "") == "".join(right).replace("'", "")
     changes = 0
     for original, candidate in zip(left, right):
@@ -783,7 +791,7 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
             if not start <= timestamp < end:
                 continue
             observed = tuple(_caption_words(text))
-            if observed == tuple(words) or (len(observed) >= 5
+            if observed == tuple(words) or ((len(observed) >= 5 or _trailing_caption_glyph(cue.text, text))
                     and not _protected_caption_change(cue.text, text)
                     and _single_character_change("".join(words), "".join(observed))):
                 variants[observed] += 1
@@ -804,12 +812,14 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
             exact = words == expected
             partial_line = (len(words) >= 3 and support and min(support) <= timestamp <= max(support)
                             and any(words == _caption_words(line) for line in caption.splitlines()))
-            flicker = (confirmed and len(expected) >= 5 and not _protected_caption_change(text, caption)
+            flicker = (confirmed and (len(expected) >= 5 or _trailing_caption_glyph(text, caption))
+                       and not _protected_caption_change(text, caption)
                        and _single_character_change("".join(words), "".join(expected)))
             if exact or (len(support) >= 2 and (partial_line or flicker)):
                 matches.append((int(exact), start <= timestamp <= end,
                                 -abs(timestamp - (start + end) / 2), caption))
         stabilized.append((timestamp, max(matches)[-1] if matches else text))
+    stabilized = _stabilize_dense_readings(stabilized)
     combined = {round(timestamp, 3): text for timestamp, text in detections
                 if not any(start <= timestamp < end for start, end in windows)}
     combined.update((round(timestamp, 3), text) for timestamp, text in stabilized if 0 <= timestamp < duration)
