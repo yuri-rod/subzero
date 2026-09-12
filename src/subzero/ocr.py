@@ -29,7 +29,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 3
+CAPTION_SCAN_VERSION = 4
 
 
 @dataclass
@@ -199,7 +199,7 @@ def _caption_geometry(region: dict) -> dict:
 
 
 def _caption_regions(frame: dict, center_tolerance: float | None, max_height: float = 0.10) -> list[dict]:
-    if _caption_credit_layout(frame):
+    if _caption_credit_layout(frame) or _caption_logo_layout(frame):
         return []
     regions = []
     for region in frame.get("items", []):
@@ -239,12 +239,36 @@ def _caption_credit_layout(frame: dict) -> bool:
 
 
 def _caption_title_card(frame: dict) -> bool:
-    return _caption_credit_layout(frame) or any(float(region["confidence"]) >= 0.8 and abs(float(region.get("angle", 0))) <= 10
+    return _caption_credit_layout(frame) or _caption_logo_layout(frame) or any(float(region["confidence"]) >= 0.8 and abs(float(region.get("angle", 0))) <= 10
                and float(region["height"]) >= 0.12
                and abs(float(region["x"]) + float(region["width"]) / 2 - 0.5) <= 0.12
                and ((float(region["width"]) >= 0.45 and float(region["y"]) >= 0.25)
                     or (float(region["width"]) >= 0.35 and float(region["y"]) >= 0.45))
                for region in frame.get("items", []))
+
+
+def _caption_logo_layout(frame: dict) -> bool:
+    regions = [_caption_geometry(region) for region in frame.get("items", [])]
+    for title in regions:
+        center = title["x"] + title["width"] / 2
+        if not (title["confidence"] >= 0.8 and abs(title.get("angle", 0)) <= 10
+                and title["height"] >= 0.18 and title["width"] >= 0.35
+                and 0.25 <= title["y"] <= 0.65 and abs(center - 0.5) <= 0.12):
+            continue
+        rows = []
+        # Cropping first can leave only the lowest word of a stacked logo.
+        for region in regions:
+            if (region["confidence"] >= 0.8 and abs(region.get("angle", 0)) <= 10
+                    and region["text"].isupper() and 0.025 <= region["height"] <= 0.10
+                    and 0.03 <= region["y"] <= 0.30 and region["width"] >= 0.04
+                    and region["y"] + region["height"] <= title["y"] + 0.01
+                    and abs(region["x"] + region["width"] / 2 - center) <= 0.06):
+                row_center = region["y"] + region["height"] / 2
+                if not any(abs(row_center - prior) <= 0.025 for prior in rows):
+                    rows.append(row_center)
+        if len(rows) >= 2:
+            return True
+    return False
 
 
 def caption_retry_indices(frames: list[dict], timestamps: list[float], fps: float = 2) -> list[int]:
