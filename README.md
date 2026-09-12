@@ -12,7 +12,7 @@
 **The universal subtitle and audio AI toolkit.**  
 *Clean SDH, auto-sync, shift, convert, extract, and translate with zero setup.*
 
-[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
@@ -363,7 +363,25 @@ Every uploaded subtitle is screened against excellence guards:
 * **Zero SDH:** Sound effects, speaker prefixes, and musical cues must be absent.
 * **Layout and encoding:** Dialogue lines must fit within 42 characters per line, with no collapsed speaker rows and valid UTF-8.
 * **Content ledger:** An SQLite database (`contributions.db`) tracks uploaded content hashes to prevent repeated submissions.
-
+ 
+---
+ 
+### 12. Native Vision OCR Speech Gap Recovery (`subzero fill-gaps` / `subzero ocr-sync`)
+ 
+Recovers burned-in open captions (e.g. whispered dialogue, challenge instructions, location text) that were omitted from broadcast SDH tracks:
+ 
+```console
+# Audit gaps between dialogue cues and recover on-screen captions via Apple Vision OCR
+subzero fill-gaps movie.mkv movie.pt-BR.srt --target-lang pt-BR
+ 
+# Dry run: audit dialogue gaps without modifying subtitle file
+subzero fill-gaps episode.mkv episode.pt-BR.srt --dry-run
+```
+ 
+* **Speech Gap Detection:** Compares audio speech activity against existing subtitle timing intervals, identifying speech gaps larger than a configurable minimum duration.
+* **Apple Vision OCR:** Uses native macOS Vision framework (`VNRecognizeTextRequest`) with fast ffmpeg keyframe seeking to read burned-in titles at negligible overhead.
+* **Seamless Cue Injection:** Translates recovered text to the target language and injects the new cues in chronological order with deduplication against surrounding dialogue.
+ 
 ---
 
 ## Integration with Media Servers

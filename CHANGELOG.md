@@ -5,6 +5,17 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-09-12
+
+### Added
+- Speech gap analysis and native Apple Vision OCR caption recovery (`subzero fill-gaps` / `subzero ocr-sync`): audits audio speech intervals against subtitle timing, extracts frames across gaps, and recovers burned-in dialogue omitted from broadcast SDH tracks.
+- Dynamic half-split fallback for Ollama and TranslateGemma translation: automatically bisects cue batches on line-count mismatches to prevent progressive cue drift.
+- Fast seek frame extraction: leverages input-level seeking (`-ss` before `-i`) and duration limits in ffmpeg for near-instantaneous frame sampling across speech gaps.
+
+### Fixed
+- Lone surrogate character handling: safely handles unpaired unicode surrogates from LLM outputs using replacement encoding during file writes.
+- Markdown code block extraction: reliably parses formatted code blocks returned by local LLMs in subtitle translation.
+
 ## [1.9.0] - 2026-09-12
 
 ### Added
