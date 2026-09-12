@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.9.0"
+version = "1.10.0"
 description = "Subtitle cleanup, conversion, timestamp adjustment, extraction, and translation, with a media-library worker"
 readme = "README.md"
 license = "MIT"

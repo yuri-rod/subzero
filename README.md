@@ -12,7 +12,7 @@
 Subtitle cleanup, conversion, timestamp shifting, extraction, and translation.
 Use the CLI or Python library for subtitle files. Video operations need FFmpeg, and translation needs a configured provider.
 
-[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
@@ -347,7 +347,25 @@ The contributor checks subtitles before upload:
 * **Zero SDH:** Sound effects, speaker prefixes, and musical cues must be absent.
 * **Layout and encoding:** Dialogue lines must fit within 42 characters per line, with no collapsed speaker rows and valid UTF-8.
 * **Content ledger:** An SQLite database (`contributions.db`) tracks uploaded content hashes to prevent repeated submissions.
-
+ 
+---
+ 
+### 12. Recover burned-in captions (`subzero fill-gaps` / `subzero ocr-sync`)
+ 
+Recovers burned-in open captions (e.g. whispered dialogue, challenge instructions, location text) that were omitted from broadcast SDH tracks:
+ 
+```console
+# Audit gaps between dialogue cues and recover on-screen captions via Apple Vision OCR
+subzero fill-gaps movie.mkv movie.pt-BR.srt --target-lang pt-BR
+ 
+# Dry run: audit dialogue gaps without modifying subtitle file
+subzero fill-gaps episode.mkv episode.pt-BR.srt --dry-run
+```
+ 
+* Compare speech activity with subtitle intervals and identify gaps longer than the configured minimum.
+* Read burned-in captions with Apple Vision (`VNRecognizeTextRequest`) on frames extracted by FFmpeg.
+* Translate recovered text, remove duplicates against nearby dialogue, and insert cues in timestamp order.
+ 
 ---
 
 ## Media server integration
