@@ -10,7 +10,7 @@
 ```
 
 **The universal subtitle and audio AI toolkit.**  
-*Clean SDH, auto-sync, shift, convert, extract, and translate with zero setup.*
+*Clean SDH, speech gap analysis with Apple Vision OCR caption recovery, auto-sync, local AI translation, container extraction, format conversion, and automated media server daemon.*
 
 [![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -29,11 +29,13 @@ Most subtitle workflows are fragmented between slow Python 2 legacy scripts, hea
 * **Zero Dependencies:** Pure Python standard library core. Starts in under 20ms with negligible RAM usage.
 * **Smart SDH Removal:** Strips sound cues (`[LAUGHTER]`, `(SIGHS)`, `♪`), speaker labels, and HTML/ASS tags without corrupting real dialogue.
 * **Dual-Speaker Repair:** Automatically fixes collapsed dialogue lines and normalizes speaker dashes.
-* **Timing verification:** Checks subtitle activity against local speech detection across the movie, with explicit pass, reject and inconclusive results.
+* **Burned-In Caption Recovery (Apple Vision OCR):** Audits speech intervals against subtitle timing to detect uncaptioned dialogue, extracts keyframes across gaps, and recovers burned-in text using native macOS Vision.
+* **Local AI Translation:** Translates subtitles into target languages via Ollama (TranslateGemma) and OpenAI-compatible APIs, with recursive half-split fallback for line count drift and cast gender maps.
+* **Timing Verification & Auto-Delay:** Checks subtitle activity against local speech detection and computes container audio stream delay for exact synchronization.
 * **Direct Video Extraction:** Pulls soft subtitle tracks from Matroska (`.mkv`), MP4, MOV, WebM, and AVI files.
-* **Local AI Translation:** Translates entire series into target languages using local Ollama LLMs with cue-preserving batching.
 * **Universal Format Engine:** Losslessly converts between SRT, WebVTT, ASS, SSA, and MicroDVD formats.
-* **Self-Hosted Ready:** Runs as a standalone background watcher for Jellyfin, Plex, Sonarr, and Radarr libraries.
+* **Automated Media Daemon:** Background watcher and FastAPI worker service integrated with Jellyfin, Plex, Sonarr, and Radarr libraries.
+* **OpenSubtitles Community Contributions:** Generates 64-bit MovieHashes and publishes verified subtitles screened against strict excellence quality guards.
 
 ---
 
@@ -66,12 +68,15 @@ Most subtitle workflows are fragmented between slow Python 2 legacy scripts, hea
 | :--- | :---: | :---: | :---: | :---: |
 | **Zero Runtime Dependencies** | **Yes** (pure Python) | No | No (heavy stack) | Yes (binary only) |
 | **SDH Removal + Line Repair** | **Yes** | Yes (regex only) | Basic | No |
+| **Burned-In Caption Recovery (Vision OCR)** | **Yes** (Apple Vision) | No | No | No |
+| **Speech Gap Audio Analysis** | **Yes** | No | No | No |
 | **Container Audio Delay Sync** | **Yes** | No | No | Manual scripting |
-| **Local LLM Translation (Ollama)** | **Yes** | No | API keys only | No |
+| **Local LLM Translation (Ollama/Gemma)** | **Yes** (with fallback) | No | API keys only | No |
 | **Direct Container Extraction** | **Yes** | No | Yes | Complex syntax |
 | **Format Conversion (SRT/VTT/ASS)** | **Yes** | No | No | Basic |
 | **Interactive Terminal Menu** | **Yes** | No | Web UI only | No |
-| **OpenSubtitles MovieHash** | **Yes** | No | Internal only | No |
+| **OpenSubtitles MovieHash & Upload** | **Yes** | No | Internal only | No |
+| **Media Server Integration (Jellyfin/Plex/Sonarr)** | **Yes** | No | Web UI only | No |
 | **Startup Latency** | **<20ms** | ~200ms | Multi-second | <50ms |
 
 ---
