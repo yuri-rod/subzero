@@ -611,7 +611,8 @@ def test_full_caption_scan_uses_bounded_overlapping_windows_and_preserves_cue_ed
     scanned = []
 
     def scan(video, intervals, **kwargs):
-        scanned.extend(intervals)
+        if kwargs.get("fps", 2) == 2:
+            scanned.extend(intervals)
         return [(119.55, "Keep this secret."), (120.05, "Keep this secret."), (120.55, "")]
 
     with patch("subzero.ocr._scan_caption_frames", side_effect=scan):
@@ -624,7 +625,102 @@ def test_full_caption_scan_uses_bounded_overlapping_windows_and_preserves_cue_ed
 def test_full_caption_scan_does_not_extend_a_short_observed_caption():
     with patch("subzero.ocr._scan_caption_frames", return_value=[(10.2, "Go!"), (10.35, "")]):
         cues = ocr.extract_all_captions("video.mkv", 30)
-    assert [(cue.start, cue.end) for cue in cues] == [("00:00:10,200", "00:00:10,350")]
+    assert [(cue.start, cue.end) for cue in cues] == [("00:00:10,200", "00:00:10,275")]
+
+
+def test_caption_transition_windows_cover_sampling_brackets_and_merge_neighbors():
+    frames = [(9.5, ""), (10.001, "Keep this secret."), (10.502, "Keep this secret!"),
+              (11.003, "Tell nobody."), (11.504, ""), (12.005, "")]
+    assert ocr.caption_transition_windows(frames, 30) == [(9.5, 12.004)]
+
+
+def test_dense_timing_replaces_coarse_observations_and_stops_at_actual_blank():
+    coarse = [(9.5, ""), (10.01, "Keep this secret."), (10.51, "Keep this secret."), (11.01, "")]
+    dense = [(9.51, ""), (9.61, ""), (9.71, "Keep this secret."), (9.81, "Keep this secret."),
+             (10.11, "Keep this secret."), (10.41, "Keep this secret."),
+             (10.81, "Keep this secret."), (10.91, ""), (11.01, ""), (11.11, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense) as scan:
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 30)
+    assert scan.call_args.kwargs["fps"] == 10
+    assert scan.call_args.kwargs["retry_all"] is True
+    assert [(cue.start, cue.end) for cue in cues] == [("00:00:09,660", "00:00:10,860")]
+
+
+def test_dense_timing_preserves_the_coarse_middle_of_a_long_caption():
+    coarse = [(0, ""), (0.5, "Keep this secret."), (1, "Keep this secret."),
+              (1.5, "Keep this secret."), (2, "Keep this secret."), (2.5, "Keep this secret."),
+              (3, "Keep this secret."), (3.5, "")]
+    dense = [(0, ""), (0.1, ""), (0.2, "Keep this secret."), (0.8, "Keep this secret."),
+             (3, "Keep this secret."), (3.1, "Keep this secret."), (3.2, ""), (3.9, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 5)
+    assert [(cue.start, cue.end) for cue in cues] == [("00:00:00,150", "00:00:03,150")]
+
+
+def test_dense_timing_clamps_transition_windows_and_last_caption_to_eof():
+    coarse = [(0.025, "Keep this secret."), (0.526, "Keep this secret.")]
+    assert ocr.caption_transition_windows(coarse, 0.8) == [(0, 0.8)]
+    with patch("subzero.ocr._scan_caption_frames", return_value=[
+            (0.025, "Keep this secret."), (0.725, "Keep this secret.")]):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 0.8)
+    assert [(cue.start, cue.end) for cue in cues] == [("00:00:00,025", "00:00:00,800")]
+
+
+def test_dense_timing_skips_video_with_no_recognized_captions():
+    with patch("subzero.ocr._scan_caption_frames") as scan:
+        assert ocr.refine_caption_timing("video.mkv", [(0, ""), (0.5, "")], 1) == []
+    scan.assert_not_called()
+
+
+def test_dense_timing_keeps_supported_caption_text_when_a_dense_frame_loses_a_line():
+    complete = "I feel like we can work together\nif we keep this secret."
+    coarse = [(0, ""), (0.5, complete), (1, complete), (1.5, complete), (2, "")]
+    dense = [(0.1, ""), (0.2, complete), (0.3, complete), (0.7, "if we keep this secret."),
+             (0.8, "if we keep this secret."), (0.9, complete), (1.1, complete),
+             (1.6, complete), (1.7, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 3)
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [("00:00:00,150", "00:00:01,650", complete)]
+
+
+def test_dense_timing_does_not_add_a_second_line_before_any_full_caption_was_observed():
+    first, second = "I feel like we can work together", "if we keep this secret."
+    complete = first + "\n" + second
+    coarse = [(0, ""), (0.5, complete), (1, complete), (1.5, "")]
+    dense = [(0.1, ""), (0.2, second), (0.3, complete), (0.8, complete), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [cue.text for cue in cues] == [second, complete]
+
+
+def test_dense_timing_confirmation_is_local_to_each_repeated_caption_run():
+    first, second = "Keep this secret between us.", "Nobody else should know."
+    complete = first + "\n" + second
+    coarse = [(0, ""), (0.5, complete), (1, complete), (1.5, ""),
+              (9.5, ""), (10, complete), (10.5, complete), (11, "")]
+    dense = [(0.4, complete), (1.1, complete), (1.2, ""), (9.5, ""),
+             (9.6, second), (9.7, second), (9.8, complete), (10.2, complete), (10.6, complete), (10.7, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 12)
+    assert [cue.text for cue in cues] == [complete, second, complete]
+
+
+@pytest.mark.parametrize("dense", [[], [(0.4, ""), (0.5, ""), (0.6, ""), (1, ""), (1.1, "")]])
+def test_dense_timing_reports_a_stable_caption_lost_by_the_dense_scan(dense):
+    coarse = [(0, ""), (0.5, "Keep this secret."), (1, "Keep this secret."), (1.5, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense), \
+         pytest.raises(RuntimeError, match="Dense caption verification lost a confirmed caption"):
+        ocr.refine_caption_timing("video.mkv", coarse, 2)
+
+
+@pytest.mark.parametrize("changed", ["I really want to work with Kyla.", "I really don't want to work with Kyle."])
+def test_dense_timing_retains_explicit_new_names_and_negation(changed):
+    first = "I really want to work with Kyle."
+    coarse = [(0, first), (0.5, first), (1, first), (1.5, "")]
+    dense = [(0, first), (0.1, first), (0.2, changed), (0.3, first), (0.8, first), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [cue.text for cue in cues] == [first, changed, first]
 
 
 def test_frame_sampling_keeps_input_pts_instead_of_rewriting_a_fixed_fps_grid(tmp_path):

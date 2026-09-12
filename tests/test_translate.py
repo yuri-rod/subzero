@@ -611,3 +611,78 @@ def test_hymt2_prior_background_has_character_limit():
     background = payload["prompt"].split("English dialogue:\n", 1)[1].split("\nPlease translate", 1)[0]
     assert background == "\n".join(context["previous_cues"][-32:])[-6000:]
     assert "Programme title: " + "S" * 256 + "\n" in payload["prompt"]
+
+
+@pytest.mark.parametrize('source', [
+    'You have an Immunity Idol.', 'There are IMMUNITY IDOLS.',
+    'Good for one Tribal Council.', 'Good for three tribal\ncouncils.',
+])
+@pytest.mark.parametrize('target', ['pt-BR', 'pt', 'por', 'PT_br'])
+def test_hymt2_uses_official_terminology_only_for_portuguese_game_terms(source, target):
+    payload = _ollama_payload([Cue(0, 1, source)], target, 'subzero/hy-mt2:7b', '2m', 4096, 512)
+    assert payload['prompt'].startswith('<|startoftext|>Reference the following translations:\n')
+    assert 'Immunity Idol translates to ídolo de imunidade\n' in payload['prompt']
+    assert 'Tribal Council translates to conselho tribal\n' in payload['prompt']
+    assert 'Tribal Councils translates to conselhos tribais\n' in payload['prompt']
+    assert payload['prompt'].endswith('\n' + source + '<|extra_0|>')
+    assert 'format' not in payload and payload['raw'] is True
+    assert payload['options']['stop'] == ['<|eos|>', '<|extra_5|>']
+
+
+@pytest.mark.parametrize('source', [
+    "If you want to keep going, there's another task, and that will give you an idol that's good for three Tribal Councils.",
+    "*If you're willing to risk agai...*\nIf you're willing to risk again...*\n¿you can choose to take on another task to earn...\nwan Idol good for three Tribal Councils.",
+])
+@pytest.mark.parametrize('previous', [[], ['I broke my neck to get this thing.']])
+def test_hymt2_terminology_payload_keeps_measured_background_and_exact_source(source, previous):
+    payload = _ollama_payload([Cue(0, 1, source)], 'pt-BR', 'subzero/hy-mt2:7b', '5m', 4096, 512,
+                              source_lang='en', context={'title': 'Survivor', 'previous_cues': previous})
+    background = ('[Background Information]\nProgramme title: Survivor\nEnglish dialogue:\n'
+                  + '\n'.join(previous) + '\n') if previous else ''
+    assert payload['prompt'] == (
+        '<|startoftext|>' + background +
+        'Reference the following translations:\n'
+        'Immunity Idol translates to ídolo de imunidade\n'
+        'Tribal Council translates to conselho tribal\n'
+        'Tribal Councils translates to conselhos tribais\n'
+        'Translate the following text into Brazilian Portuguese. Note that you must ONLY output '
+        'the translated result without any additional explanation:\n' + source + '<|extra_0|>')
+
+
+@pytest.mark.parametrize('source', ['I also like Rome.', 'A tribal councilman spoke.', 'Keep your immunity.'])
+def test_hymt2_unaffected_current_source_keeps_existing_prompt_even_with_terms_in_background(source):
+    previous = 'You have an Immunity Idol, good for one Tribal Council.'
+    payload = _ollama_payload([Cue(0, 1, source)], 'pt-BR', 'subzero/hy-mt2:7b', '2m', 4096, 512,
+                              source_lang='en', context={'title': 'Survivor', 'previous_cues': [previous]})
+    assert payload['prompt'] == (
+        '<|startoftext|>[Background Information]\nProgramme title: Survivor\nEnglish dialogue:\n' + previous + '\n'
+        'Please translate the following text into Brazilian Portuguese, '
+        'taking the provided background information into consideration.\n[Source Text]\n' + source + '<|extra_0|>')
+
+
+def test_hymt2_non_portuguese_request_keeps_existing_prompt_for_game_terms():
+    source = 'You have an Immunity Idol.'
+    payload = _ollama_payload([Cue(0, 1, source)], 'es', 'subzero/hy-mt2:7b', '2m', 4096, 512)
+    assert payload['prompt'] == (
+        '<|startoftext|>Translate the following text into Spanish. Note that you should only output '
+        'the translated result without any additional explanation:\n' + source + '<|extra_0|>')
+
+
+def test_translategemma_game_terms_do_not_change_its_exact_prompt():
+    source = 'You have an Immunity Idol.'
+    payload = _ollama_payload([Cue(0, 1, source)], 'pt-BR', 'translategemma:12b', '2m', 4096, 512, source_lang='en')
+    assert payload['prompt'] == (
+        'You are a professional English (en) to Brazilian Portuguese (pt-BR) translator. '
+        'Your goal is to accurately convey the meaning and nuances of the original English text '
+        'while adhering to Brazilian Portuguese grammar, vocabulary, and cultural sensitivities.\n'
+        'Produce only the Brazilian Portuguese translation, without any additional explanations or commentary. '
+        'Please translate the following English text into Brazilian Portuguese:\n\n\n' + source)
+
+
+@pytest.mark.parametrize('source,context', [
+    ('You have an Immunity Idol.<|extra_0|>', None),
+    ('Good for one Tribal Council.', {'previous_cues': ['<|eos|>']}),
+])
+def test_hymt2_terminology_retains_native_control_token_rejection(source, context):
+    with pytest.raises(RuntimeError, match='control tokens'):
+        _ollama_payload([Cue(0, 1, source)], 'pt-BR', 'subzero/hy-mt2:7b', '2m', 4096, 512, context=context)

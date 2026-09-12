@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retain single-line and two-line captions when Vision's bounding boxes fluctuate between frames, confirm candidate text against nearby frames, and reject rotated prop text.
 - Include native caption recovery in verified English translation jobs on macOS, controlled by `OCR_ENABLED`.
 - Scan the full supported video duration during English source regeneration so burned-in captions are recovered even when they overlap existing dialogue. Translate source cues once and combine simultaneous dialogue into output intervals without overlaps; CLI gap filling remains limited to subtitle gaps.
+- Refine recovered caption boundaries with dense native frame samples around text transitions.
+- Use Hy-MT2 terminology prompts for Portuguese game terms and reject English `Immunity Idol` and `Tribal Council` terms left in Portuguese dialogue.
 - Remove automatic discovery of the retired worker configuration directory while retaining explicit `--env` selection and CLI compatibility.
 - Correct CLI examples, model configuration, dependency requirements, and format support in the README.
 - Set the package minimum to Python 3.10 and align CI with the worker's runtime requirements.

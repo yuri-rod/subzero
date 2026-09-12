@@ -51,6 +51,7 @@ EN_CLAUSE = re.compile(
     r"|(?:i'm|you're|he's|she's|it's|we're|they're|i've|you've|we've|they've))"
     r"\s+[a-z]+\b"
 )
+EN_GAME_TERMS = re.compile(r"\b(?:immunity\s+idols?|tribal\s+councils?)\b")
 
 
 def check_language_completeness(text: str, target_lang: str | None) -> tuple[bool, str]:
@@ -62,7 +63,7 @@ def check_language_completeness(text: str, target_lang: str | None) -> tuple[boo
             "Falha no guard de traducao: trecho nao traduzido "
             f"no bloco {index} em {cue.start}"
         )
-        if EN_CLAUSE.search(dialogue):
+        if EN_CLAUSE.search(dialogue) or EN_GAME_TERMS.search(dialogue):
             return False, reason
         words = LANGUAGE_WORD.findall(dialogue)
         for start in range(len(words)):

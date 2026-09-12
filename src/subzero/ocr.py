@@ -472,6 +472,8 @@ def _scan_caption_frames(
     ignore_patterns: Iterable[re.Pattern] = DEFAULT_IGNORE_PATTERNS,
     progress: Callable[[int, int], None] | None = None,
     center_tolerance: float | None = 0.12,
+    *,
+    retry_all: bool = False,
 ) -> list[tuple[float, str]]:
     if not gaps:
         return []
@@ -513,7 +515,8 @@ def _scan_caption_frames(
                     raise RuntimeError("ffmpeg did not return timestamped caption frames")
                 by_file = _vision_frames(binary, frames)
                 ordered = [by_file[frame.name] for frame in frames]
-                selected = caption_retry_indices(ordered, timestamps, fps)
+                selected = ([index for index, frame in enumerate(ordered) if not _caption_title_card(frame)]
+                            if retry_all else caption_retry_indices(ordered, timestamps, fps))
                 if selected:
                     retry_frames = [frames[index] for index in selected]
                     retried = _vision_frames(binary, retry_frames, caption_region=True)
@@ -577,9 +580,85 @@ def extract_all_captions(video: str | Path, duration: float, *,
         frames = _scan_caption_frames(video, [(max(0, start - 1), min(duration, end + 1))])
         detections.extend((timestamp, text) for timestamp, text in frames if start <= timestamp < end)
         if progress:
-            progress(index + 1, len(starts))
-    detections.append((duration, ""))
-    return cluster_ocr_detections(detections, min_duration=0, max_gap=0.75, sample_duration=0.5)
+            progress(int(50 * (index + 1) / len(starts)), 100)
+    return refine_caption_timing(video, detections, duration, progress=progress)
+
+
+def caption_transition_windows(detections: list[tuple[float, str]], duration: float) -> list[tuple[float, float]]:
+    windows = []
+    previous_words = []
+    previous_time = None
+    for timestamp, text in sorted(detections) + [(duration, "")]:
+        words = _caption_words(text)
+        if words != previous_words:
+            before = previous_time if previous_time is not None else timestamp - 0.5
+            start = max(0, timestamp - 0.75, min(before, timestamp - 0.5))
+            end = min(duration, timestamp + 0.5)
+            if windows and start <= windows[-1][1] + 0.1:
+                windows[-1] = (windows[-1][0], end)
+            elif end > start:
+                windows.append((start, end))
+        previous_words, previous_time = words, timestamp
+    return [(round(start, 3), round(end, 3)) for start, end in windows]
+
+
+def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]], duration: float, *,
+                          progress: Callable[[int, int], None] | None = None) -> list[Cue]:
+    windows = caption_transition_windows(detections, duration)
+    if not windows:
+        if progress:
+            progress(100, 100)
+        return []
+
+    def dense_progress(done: int, total: int):
+        if progress:
+            progress(50 + int(50 * done / max(1, total)), 100)
+
+    dense = _scan_caption_frames(video, windows, fps=10, retry_all=True, progress=dense_progress)
+    anchors = []
+    for cue in cluster_ocr_detections(detections, min_duration=0, max_gap=0.75, sample_duration=0.5):
+        stamp = TIME.search(f"{cue.start} --> {cue.end}")
+        start, end = _to_seconds(*stamp.groups()[:4]), _to_seconds(*stamp.groups()[4:])
+        words = _caption_words(cue.text)
+        support = [timestamp for timestamp, text in detections
+                   if start - 0.001 <= timestamp < end and _caption_words(text) == words]
+        anchors.append((start, end, cue.text, support))
+    stabilized = []
+    for timestamp, text in dense:
+        words = _caption_words(text)
+        matches = []
+        for start, end, caption, support in anchors:
+            if not words or not start - 0.75 <= timestamp <= end + 0.75:
+                continue
+            expected = _caption_words(caption)
+            exact = words == expected
+            partial_line = (len(words) >= 3 and support and min(support) <= timestamp <= max(support)
+                            and any(words == _caption_words(line) for line in caption.splitlines()))
+            flicker = (len(expected) >= 5 and not _protected_caption_change(text, caption)
+                       and _single_character_change("".join(words), "".join(expected)))
+            if exact or (len(support) >= 2 and (partial_line or flicker)):
+                matches.append((int(exact), start <= timestamp <= end,
+                                -abs(timestamp - (start + end) / 2), caption))
+        stabilized.append((timestamp, max(matches)[-1] if matches else text))
+    combined = {round(timestamp, 3): text for timestamp, text in detections
+                if not any(start <= timestamp < end for start, end in windows)}
+    combined.update((round(timestamp, 3), text) for timestamp, text in stabilized if 0 <= timestamp < duration)
+    for start, end, caption, support in anchors:
+        if len(support) >= 2 and not any(start - 0.75 <= timestamp <= end + 0.75
+                                        and _caption_words(text) == _caption_words(caption)
+                                        for timestamp, text in combined.items()):
+            raise RuntimeError(f"Dense caption verification lost a confirmed caption near {start:.3f}s")
+    combined[duration] = ""
+    edges = []
+    previous = None
+    for timestamp, text in sorted(combined.items()):
+        boundary = timestamp
+        if (previous is not None and timestamp != duration and 0 < timestamp - previous[0] <= 0.151
+                and _caption_words(text) != _caption_words(previous[1])):
+            boundary = (timestamp + previous[0]) / 2
+        edges.append((boundary, text))
+        previous = timestamp, text
+    return cluster_ocr_detections(edges, min_duration=0, max_gap=0.75, sample_duration=0.5)
 
 
 def cue_start_seconds(c: Cue) -> float:
