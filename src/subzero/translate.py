@@ -392,5 +392,5 @@ def translate_file(
 
     raw_srt = dump_srt(translated)
     fixed = fix_text(raw_srt, Options(max_line=42, preserve_breaks=False))
-    out_path.write_text(fixed.text, encoding="utf-8")
+    out_path.write_text(fixed.text, encoding="utf-8", errors="replace")
     return out_path

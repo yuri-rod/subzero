@@ -306,7 +306,7 @@ def fill_subtitle_gaps(
         except Exception:
             sanitized = rendered
         fixed = fix_text(sanitized, Options(max_line=42, preserve_breaks=False))
-        out_path.write_text(fixed.text, encoding="utf-8")
+        out_path.write_text(fixed.text, encoding="utf-8", errors="replace")
 
     return GapReport(
         total_gaps=len(gaps),
