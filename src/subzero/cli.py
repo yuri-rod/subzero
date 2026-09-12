@@ -329,6 +329,43 @@ def cmd_sync(args) -> int:
         return 1
 
 
+def cmd_fill_gaps(args) -> int:
+    try:
+        require_ffmpeg()
+    except ToolError as e:
+        print(f"subzero fill-gaps: {e}", file=sys.stderr)
+        return 2
+    try:
+        from .ocr import fill_subtitle_gaps
+
+        target_lang = None if (args.to or "").lower() in ("none", "raw", "keep") else args.to
+        rep = fill_subtitle_gaps(
+            video=args.video,
+            subtitle_path=args.subtitle,
+            output=args.output,
+            target_lang=target_lang,
+            provider=args.provider,
+            model=args.model,
+            url=args.url,
+            api_key=args.api_key,
+            cache_dir=getattr(args, "cache", None),
+            dry_run=args.dry_run,
+        )
+        verb = "found" if args.dry_run else "injected"
+        dest = rep.target or args.subtitle
+        print(
+            f"fill-gaps: {verb} {rep.cues_recovered} cues across "
+            f"{rep.total_gaps} speech gaps ({rep.speech_seconds:.1f}s speech) -> {dest}"
+        )
+        if rep.cues and args.dry_run:
+            for c in rep.cues:
+                print(f"[{c.start} --> {c.end}] {c.text}")
+        return 0
+    except Exception as e:                                  # noqa: BLE001
+        print(f"subzero fill-gaps error: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_translate(args) -> int:
     files = collect(args.paths, args.pattern, args.skip)
     if not files:
@@ -532,6 +569,19 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--cache", default=str(Path.home()/'.cache/subzero/references'), help="cache directory for speech reference")
     sync.add_argument("--dry-run", action="store_true", help="report without writing")
     sync.set_defaults(func=cmd_sync)
+
+    gaps = sub.add_parser("fill-gaps", aliases=["ocr-sync"], help="recover burned-in captions from speech gaps using video OCR")
+    gaps.add_argument("video", help="video file path")
+    gaps.add_argument("subtitle", help="subtitle file path")
+    gaps.add_argument("-o", "--output", metavar="PATH", help="output subtitle path")
+    gaps.add_argument("--to", default="pt-BR", help="target translation language (default pt-BR, use none to keep original)")
+    gaps.add_argument("--provider", default="ollama", choices=["ollama", "openai", "openrouter", "groq", "deepseek"], help="LLM provider (default: ollama)")
+    gaps.add_argument("--model", default=None, help="LLM model name (defaults to translategemma:4b)")
+    gaps.add_argument("--url", default=None, help="custom API base URL / Ollama host")
+    gaps.add_argument("--api-key", default=None, help="API key for cloud LLM providers")
+    gaps.add_argument("--cache", default=str(Path.home()/'.cache/subzero/references'), help="cache directory for speech reference")
+    gaps.add_argument("--dry-run", action="store_true", help="report without writing")
+    gaps.set_defaults(func=cmd_fill_gaps)
 
     trans = sub.add_parser("translate", help="translate subtitle file using Ollama or OpenAI-compatible LLMs")
     trans.add_argument("paths", nargs="+", help="subtitle files or directories")
