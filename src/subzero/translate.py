@@ -95,6 +95,24 @@ def _parse_lines(response_text: str) -> list[str]:
     if not isinstance(response_text, str) or len(response_text.encode("utf-8")) > MAX_RESPONSE_BYTES:
         return []
     response_text = response_text.strip()
+    if response_text.startswith("```"):
+        lines = response_text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        response_text = "\n".join(lines).strip()
+    if not response_text.startswith("["):
+        start_bracket = response_text.find("[")
+        end_bracket = response_text.rfind("]")
+        if start_bracket != -1 and end_bracket > start_bracket:
+            candidate = response_text[start_bracket:end_bracket + 1]
+            try:
+                candidate_data = json.loads(candidate)
+                if isinstance(candidate_data, list):
+                    response_text = candidate
+            except ValueError:
+                pass
     if response_text.startswith("["):
         try:
             rows = json.loads(response_text)
@@ -145,6 +163,7 @@ def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, 
             f"Your goal is to accurately convey the meaning and nuances of the original {source} text "
             f"while adhering to {target} grammar, vocabulary, and cultural sensitivities.\n" + guidance +
             f"Produce only the {target} translation, without any additional explanations or commentary. "
+            f"Keep character names, proper nouns, and show titles in their original form. "
             f"Please translate the following {source} text into {target}:\n\n\n"
             + json.dumps([{"id": i, "text": c.text} for i, c in enumerate(cues, start=1)], ensure_ascii=False)
         )
@@ -165,13 +184,18 @@ def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, 
 
 
 def _translate_lines(cues, target_lang, client, depth=0, source_lang=None):
+    lines = []
     for _ in range(2):
-        lines = (client.translate_block(cues, target_lang, source_lang=source_lang)
-                 if source_lang else client.translate_block(cues, target_lang))
+        try:
+            lines = (client.translate_block(cues, target_lang, source_lang=source_lang)
+                     if source_lang else client.translate_block(cues, target_lang))
+        except TypeError:
+            lines = client.translate_block(cues, target_lang)
         if (isinstance(lines, list) and len(lines) == len(cues)
                 and all(isinstance(line, str) and line.strip() for line in lines)):
             return [line.strip() for line in lines]
-    if len(cues) > 1 and depth < 2:
+    mismatched = isinstance(lines, list) and len(lines) > 0 and len(lines) != len(cues)
+    if len(cues) > 1 and (depth < 2 or mismatched):
         mid = len(cues) // 2
         return (_translate_lines(cues[:mid], target_lang, client, depth + 1, source_lang)
                 + _translate_lines(cues[mid:], target_lang, client, depth + 1, source_lang))
@@ -326,12 +350,18 @@ def translate_file(
     batch_size: int = 20,
     progress: Callable[[int, int], None] | None = None,
     cast: str | dict | None = None,
+    source_lang: str | None = None,
 ) -> Path:
     p = Path(path)
     content, _ = read(p)
     cues = parse_srt(content)
     if not cues:
         raise ValueError(f"No cues found in {p}")
+
+    if not source_lang:
+        lower_stem = p.stem.lower()
+        if lower_stem.endswith(".en") or lower_stem.endswith(".eng"):
+            source_lang = "en"
 
     if provider.lower() in ("openai", "openrouter", "groq", "deepseek"):
         base_url = url or (
@@ -347,7 +377,8 @@ def translate_file(
         chosen_model = model or "gemma3:12b"
         client = OllamaClient(url=chosen_url, model=chosen_model, cast=cast)
 
-    translated = translate_cues(cues, target_lang, client, batch_size=batch_size, progress=progress)
+    translated = translate_cues(cues, target_lang, client, batch_size=batch_size,
+                                progress=progress, source_lang=source_lang)
 
     if output:
         out_path = Path(output)
