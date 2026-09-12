@@ -330,6 +330,8 @@ Whisper transcribes the source language; Ollama translates into the requested ta
 
 Hy-MT2 joins bounded consecutive fragments from the same speaker, translates each sentence unit once, and distributes the generated words across the original cue timestamps. Batches keep these units together. Complete units can use up to 32 preceding source cues, capped at 6,000 characters, plus the programme title. The context excludes the current unit and later dialogue; unfinished fragments receive no background context.
 
+For Portuguese output, source units containing `Immunity Idol` or `Tribal Council` use [Tencent's terminology prompt](https://github.com/Tencent-Hunyuan/Hy-MT2#hy-mt2-translation-task-instruction-examples-chinese-english-comparison) with the Portuguese game terms, including plurals. The language guard rejects these terms if they remain in English.
+
 TranslateGemma remains supported when explicitly selected. It receives its exact documented single-user prompt, including two blank lines before the source text, and requires known source and target languages. Validation rejects empty, truncated, malformed, or untranslated output before installation.
 
 For TranslateGemma in the CLI, name an English input `episode.en.srt` or `episode.eng.srt` so the source language can be identified. Worker translation sources carry their language explicitly.
@@ -402,6 +404,10 @@ sidecar. It scans the full supported video duration for burned-in English captio
 including captions shown while another person is speaking in the subtitle track.
 The worker uses this same source scan for ordinary verified English translation
 jobs when `OCR_ENABLED=1`.
+
+The source scan samples at two frames per second, then scans caption transitions at ten frames per second to refine their starts and ends. Timestamps come from the selected input frames. Native recognition and frame sampling still limit timing precision; this does not establish word-level audio alignment.
+
+If the dense scan loses a caption confirmed by repeated source frames, recovery stops for review and keeps the installed subtitle.
 
 Each dialogue cue and recovered caption retains its timing through translation
 and cleanup. Hy-MT2 translates sentence units once. When captions overlap, the

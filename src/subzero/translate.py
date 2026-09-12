@@ -42,10 +42,17 @@ LANG_ALIASES = {
 }
 
 MAX_RESPONSE_BYTES = 131072
-TRANSLATION_PROMPT_VERSION = "native-hymt2-prior-sentences-7"
+TRANSLATION_PROMPT_VERSION = "native-hymt2-prior-terminology-8"
 TRANSLATION_CONTEXT_CUES = 32
 TRANSLATION_CONTEXT_CHARS = 6000
 NATIVE_CONTROL = re.compile(r"<(?:[|｜ｆｈｺｂ]|/?(?:think|suggested_response)\b)")
+GAME_TERMS = re.compile(r"\b(?:immunity\s+idols?|tribal\s+councils?)\b", re.I)
+PT_GAME_TERMINOLOGY = (
+    "Reference the following translations:\n"
+    "Immunity Idol translates to ídolo de imunidade\n"
+    "Tribal Council translates to conselho tribal\n"
+    "Tribal Councils translates to conselhos tribais\n"
+)
 
 FEMININE = {"f", "fem", "feminine", "feminino", "feminina", "female", "mulher"}
 MASCULINE = {"m", "masc", "masculine", "masculino", "male", "homem"}
@@ -326,11 +333,20 @@ def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, 
         if not _sentence_complete(cues[0].text):
             context = None
         context = _previous_context([], context)
+        background = ""
         if context["previous_cues"]:
             background = (
                 f"Programme title: {context['title']}\nEnglish dialogue:\n"
                 + "\n".join(context["previous_cues"]) + "\n"
             )
+        if target_code in {"pt", "pt-BR"} and GAME_TERMS.search(cues[0].text):
+            prompt = (
+                ("[Background Information]\n" + background if background else "")
+                + PT_GAME_TERMINOLOGY
+                + f"Translate the following text into {target}. Note that you must ONLY output "
+                "the translated result without any additional explanation:\n" + cues[0].text
+            )
+        elif background:
             prompt = (
                 "[Background Information]\n" + background +
                 f"Please translate the following text into {target}, "
