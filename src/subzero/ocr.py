@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .caption_quality import validate_caption_readings
 from .caption_scan_cache import CaptionScanCache
 from .convert import Cue, dump_srt, parse_srt
 from .core import Options, fix_text, read
@@ -28,7 +29,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 2
+CAPTION_SCAN_VERSION = 3
 
 
 @dataclass
@@ -210,7 +211,7 @@ def _caption_regions(frame: dict, center_tolerance: float | None, max_height: fl
         if (confidence >= 0.8 and height >= 0.12 and abs(x + width / 2 - 0.5) <= 0.12
                 and ((width >= 0.45 and y >= 0.25) or (width >= 0.35 and y >= 0.45))):
             return []
-        if (confidence >= 0.8 and 0.03 <= y <= 0.25 and 0.045 <= height <= max_height
+        if (confidence >= 0.8 and 0.03 <= y <= 0.19 and 0.045 <= height <= max_height
                 and width >= 0.04 and (center_tolerance is None
                                       or abs(x + width / 2 - 0.5) <= center_tolerance)):
             regions.append({**region, "x": x, "y": y, "width": width, "height": height})
@@ -754,6 +755,14 @@ def _stabilize_dense_readings(detections: list[tuple[float, str]]) -> list[tuple
     return stable
 
 
+def _normalize_english_caption(text: str) -> str:
+    text = re.sub(r"(?<!\w)([Ii]|[Yy]ou|[Hh]e|[Ss]he|[Ii]t|[Ww]e|[Tt]hey)(['’])[Il]{2}(?!\w)",
+                  lambda match: match[1] + match[2] + "ll", text)
+    return re.sub(r"(?<!\w)(ain|aren|can|couldn|daren|didn|doesn|don|hadn|hasn|haven|isn|mightn|mustn|"
+                  r"needn|oughtn|shan|shouldn|wasn|weren|won|wouldn)[ \t]+t(?![\w-])",
+                  lambda match: match[1] + "'t", text)
+
+
 def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]], duration: float, *,
                           progress: Callable[[int, int], None] | None = None,
                           scan_cache: CaptionScanCache | None = None) -> list[Cue]:
@@ -778,7 +787,8 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
                 scan_cache.write([window], frames, fps=10, retry_all=True)
             dense.extend(frames)
             dense_progress(index, len(windows))
-    dense = _stabilize_dense_readings(dense)
+    detections = [(timestamp, _normalize_english_caption(text)) for timestamp, text in detections]
+    dense = _stabilize_dense_readings([(timestamp, _normalize_english_caption(text)) for timestamp, text in dense])
     anchors = []
     for cue in cluster_ocr_detections(detections, min_duration=0, max_gap=0.75, sample_duration=0.5):
         stamp = TIME.search(f"{cue.start} --> {cue.end}")
@@ -915,6 +925,7 @@ def fill_subtitle_gaps(
 
     to_merge = recovered
     if target_lang and target_lang.lower() not in ("en", "eng"):
+        validate_caption_readings(recovered)
         if provider.lower() in ("openai", "openrouter", "groq", "deepseek"):
             base_url = url or (
                 "https://openrouter.ai/api/v1" if provider.lower() == "openrouter" else

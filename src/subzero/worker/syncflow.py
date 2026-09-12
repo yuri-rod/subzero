@@ -9,6 +9,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
+from subzero.caption_quality import validate_caption_readings
 from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
 from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
@@ -28,7 +29,7 @@ from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, tran
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
-OCR_SOURCE_VERSION = 10
+OCR_SOURCE_VERSION = 12
 
 
 def digest(text):
@@ -61,7 +62,7 @@ def validate_ocr_source(source, complete, reference, *, all_captions=False):
     anchors = Counter((c.start, c.end, c.text) for c in original)
     gaps = uncovered_intervals([(0, duration)], [(c.start, c.end) for c in original])
     previous_start = previous_ocr_end = 0.0
-    additions = 0
+    additions = []
     for cue in parse(complete):
         if (not math.isfinite(cue.start + cue.end) or cue.start < previous_start
                 or cue.start < 0 or cue.end <= cue.start or cue.end > duration):
@@ -76,10 +77,11 @@ def validate_ocr_source(source, complete, reference, *, all_captions=False):
         if not all_captions and not any(start <= cue.start and cue.end <= end for start, end in gaps):
             raise RuntimeError('Recovered caption overlaps dialogue or leaves the scanned gaps')
         previous_ocr_end = cue.end
-        additions += 1
+        additions.append(cue)
     if any(anchors.values()):
         raise RuntimeError('Caption recovery changed or removed an original English cue')
-    return Report('pass', f'Original audio-aligned cues preserved; {additions} frame-timed OCR captions added',
+    validate_caption_readings(parse_srt(dump(additions)))
+    return Report('pass', f'Original audio-aligned cues preserved; {len(additions)} frame-timed OCR captions added',
                   anchor_report.windows)
 
 

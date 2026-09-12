@@ -25,6 +25,17 @@ def test_caption_admission_preserves_both_white_lines_and_censored_fragments():
     assert ocr.caption_text(off_center) == "Find the"
 
 
+def test_caption_row_origin_limit_keeps_the_full_height_of_an_upper_line():
+    frame = {"items": [region("Keep this secret.", y=0.19), region("Tell nobody.")]}
+    assert ocr.caption_text(frame) == "Keep this secret.\nTell nobody."
+
+
+def test_caption_admission_excludes_higher_white_rows_without_using_the_words():
+    frame = {"items": [region("Keep this secret.", y=0.193), region("Tell nobody.", y=0.245)]}
+    assert ocr.caption_text(frame) == ""
+    assert ocr.recover_caption_runs([frame] * 3, {index: frame for index in range(3)}, [0, 0.1, 0.2]) == [""] * 3
+
+
 def test_caption_admission_vetoes_four_row_credit_layout_before_region_retry():
     frame = {"items": [region(f"Text row {index}", y=y) for index, y in enumerate((0.10, 0.16, 0.22, 0.28))]}
     assert ocr.caption_text(frame) == ""
