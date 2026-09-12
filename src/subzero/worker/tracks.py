@@ -308,6 +308,16 @@ def deliver(media: Media, cues: list[Cue], lang: str, jellyfin, bare: bool = Fal
     if not cues:
         raise RuntimeError("legenda vazia, nada foi gravado")
     path = sidecar_path(media.path, lang, bare=bare)
-    Path(path).write_text(dump(cues), encoding="utf-8")
+    target = Path(path)
+    target.write_text(dump(cues), encoding="utf-8")
+    video = Path(media.path)
+    for p in video.parent.glob(f"{video.stem}*.srt"):
+        try:
+            if p.resolve() == target.resolve():
+                continue
+            if not bare and p.name == f"{video.stem}.srt":
+                p.unlink(missing_ok=True)
+        except OSError:
+            pass
     jellyfin.refresh(media.item_id)
     return path
