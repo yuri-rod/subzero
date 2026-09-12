@@ -107,11 +107,24 @@ class SyncFlow:
                         old = target.read_text(encoding='utf-8-sig')
                         shutil.copy2(target,backup/f'{job.target_lang}-{digest(old)}.srt')
                     os.replace(tmp,target)
+                    self.prune_sidecars(media, target, job.target_lang)
             finally:
                 tmp.unlink(missing_ok=True)
         self.state.audit(key,job.target_lang,digest(text),'pass',report.json())
         self.service.jellyfin.refresh(media.item_id)
         return str(target)
+
+    def prune_sidecars(self, media, target: Path, lang: str):
+        video = Path(media.path)
+        bare = self.service._bare(lang)
+        for path in video.parent.glob(f"{video.stem}*.srt"):
+            try:
+                if path.resolve() == target.resolve():
+                    continue
+                if not bare and path.name == f"{video.stem}.srt":
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def stage(self, key, lang, text):
         folder = self.cache/'candidates'/key/lang

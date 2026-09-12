@@ -432,3 +432,17 @@ def test_rebuild_does_not_transcribe_after_source_translation_failure(setup, mon
     assert job.state=='needs_review'
     assert job.kind=='rebuild'
     assert not Path(media.path).with_suffix('.pt-BR.srt').exists()
+
+
+def test_install_prunes_bare_srt_when_installing_tagged_sub(setup):
+    flow,jobs,provider,media=setup
+    bare = Path(media.path).with_suffix('.srt')
+    bare.write_text('old bare sub')
+    assert bare.exists()
+    provider.download = lambda fid: dialogue()
+    job = run(flow, jobs, 'refetch')
+    assert job.state == 'done'
+    target = Path(job.result_path)
+    assert target.exists()
+    assert target.name.endswith('.pt-BR.srt')
+    assert not bare.exists()
