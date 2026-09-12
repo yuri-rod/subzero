@@ -108,7 +108,8 @@ def _parse_lines(response_text: str) -> list[str]:
                     or type(row["id"]) is not int or row["id"] != index
                     or not isinstance(row["text"], str) or not row["text"].strip()):
                 return []
-            out.append(" ".join(row["text"].split()))
+            clean_lines = [re.sub(r"[ \t]+", " ", l).strip() for l in row["text"].splitlines() if l.strip()]
+            out.append("\n".join(clean_lines))
         return out
     out = []
     for line in response_text.splitlines():

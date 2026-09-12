@@ -113,3 +113,12 @@ def test_sanitize_to_excellence_fixes_pt_mt_capitalization():
     cleaned = sanitize_to_excellence(dirty, "pt-BR")
     assert check_excellence_guards(cleaned, "pt-BR").ok
     assert "não sempre foi" in cleaned.lower()
+
+
+def test_guards_reject_half_translated_subtitles():
+    pt_cues = [f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\nEu não sei o que você está dizendo." for i in range(1, 25)]
+    en_cues = [f"{i}\n00:01:{i:02d},000 --> 00:01:{i:02d},500\nI told you that with this they were about what there have from the." for i in range(25, 40)]
+    half_translated = "\n\n".join(pt_cues + en_cues) + "\n"
+    report = check_excellence_guards(half_translated, "pt-BR")
+    assert not report.ok
+    assert "nao traduzido" in report.reason

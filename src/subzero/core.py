@@ -14,12 +14,15 @@ ASS = re.compile(r"\{[^}]*\}")
 TAG = re.compile(r"</?[a-z][^>]*>", re.I)
 MUSIC = re.compile(r"[\u266a\u266b\u2669\u266c]")
 CAPS_LABEL = r"[A-Z\u00c0-\u00dc\u00c7][A-Z\u00c0-\u00dc\u00c70-9 .'#\-]{1,20}"
-# a second speaker's dash, with or without the space some releases omit
-SPEAKER_DASH = re.compile(r"\S\s+-\s*\S")
-PUNCT_DASH = re.compile(r'[.!?…:\u2026"\'\u201d\u2019]\s*-\s*\S')
+PUNCT_DASH = re.compile(
+    r'[.!?…:\u2026"\'\u201d\u2019»]--?\s*-\s*(?:\S|<[a-z])'
+    r'|[.!?…:\u2026"\'\u201d\u2019»]\s*-\s*(?:\S|<[a-z])'
+    r'|--\s*-\s*(?:\S|<[a-z])'
+)
 SPLIT_DIALOGUE = re.compile(
-    r"\s+(?=(?:<[a-z][^>]*>\s*)?-\s*\S)"
-    r"|(?<=[.!?…:\u2026\"\'\u201d\u2019])\s*(?=(?:<[a-z][^>]*>\s*)?-\s*\S)"
+    r'(?<=[.!?…:\u2026"\'\u201d\u2019»])\s*(?=(?:<[a-z][^>]*>\s*)?-\s*\S)'
+    r'|(?<=--)\s*(?=(?:<[a-z][^>]*>\s*)?-\s*\S)'
+    rf'|\s+(?=(?:<[a-z][^>]*>\s*)?-\s*{CAPS_LABEL}:)'
 )
 SPLIT_DASH = re.compile(r"\s+-\s*(?=\S)")
 BREAK_AFTER = re.compile(r"[.,;:!?\u2026]$")
@@ -122,7 +125,7 @@ def is_collapsed(line: str) -> bool:
         return False
     if line.startswith("-"):
         rest = line.lstrip("- ")
-        return bool(SPEAKER_DASH.search(rest) or PUNCT_DASH.search(rest) or re.search(rf"\s-\s*{CAPS_LABEL}:", rest))
+        return bool(PUNCT_DASH.search(rest) or re.search(rf"\s-\s*{CAPS_LABEL}:", rest))
     return bool(PUNCT_DASH.search(line) or re.search(rf"\s-\s*{CAPS_LABEL}:", line))
 
 

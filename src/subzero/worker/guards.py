@@ -20,6 +20,26 @@ UNCLOSED_TAG = re.compile(r"<[a-zA-Z]+(?![^<>\n]*>)")
 PT_MT_CAPS = re.compile(r"(?<=[a-z\u00e0-\u00fa,;])\s+(Não|Com|Para|Por|Que)\s+(?=[a-z\u00e0-\u00fa])")
 
 
+PT_WORDS = {"você", "não", "que", "com", "para", "está", "ele", "ela", "isso", "aqui", "tinha", "muito", "mais", "sobre", "tudo"}
+EN_WORDS = {"the", "you", "that", "with", "this", "they", "from", "have", "what", "were", "about", "there", "their", "would"}
+
+
+def check_language_completeness(text: str, target_lang: str | None) -> tuple[bool, str]:
+    if not target_lang or not target_lang.lower().startswith("pt"):
+        return True, "pass"
+    blocks = [b.strip() for b in text.replace("\r\n", "\n").split("\n\n") if b.strip()]
+    if len(blocks) < 20:
+        return True, "pass"
+    tail_len = min(50, max(10, len(blocks) // 5))
+    tail_text = " ".join(blocks[-tail_len:]).lower()
+    words = re.findall(r"\b[a-zà-ú]+\b", tail_text)
+    en_hits = sum(1 for w in words if w in EN_WORDS)
+    pt_hits = sum(1 for w in words if w in PT_WORDS)
+    if en_hits >= 15 and pt_hits < 3:
+        return False, f"Falha no guard de traducao: final da legenda nao traduzido ({en_hits} termos em ingles vs {pt_hits} em portugues)"
+    return True, "pass"
+
+
 @dataclass(frozen=True)
 class GuardReport:
     ok: bool
@@ -38,7 +58,7 @@ def check_excellence_guards(
     2. Sem SDH: zero marcacoes sonoras, notas musicais ou rotulos de locutor.
     3. Sem colisoes: dialogos com multiplos locutores devidamente separados.
     4. Formatacao e limites: linhas dentro do limite maximo de caracteres e tags validas.
-    5. Qualidade de traducao: deteccao de artefatos grosseiros de traducao automatica.
+    5. Qualidade de traducao: deteccao de artefatos grosseiros e completude da traducao.
     6. Estrutura integra: arquivo nao vazio com blocos de tempo validos.
     """
     if accepted_langs and target_lang:
@@ -52,6 +72,9 @@ def check_excellence_guards(
         mt_matches = PT_MT_CAPS.findall(text)
         if mt_matches:
             return GuardReport(False, f"Falha no guard de traducao: contem {len(mt_matches)} particulas capitalizadas no meio da frase")
+        lang_ok, lang_reason = check_language_completeness(text, target_lang)
+        if not lang_ok:
+            return GuardReport(False, lang_reason)
     try:
         st = analyze(text, opts)
     except Exception as err:

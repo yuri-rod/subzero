@@ -307,15 +307,20 @@ def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progr
 def deliver(media: Media, cues: list[Cue], lang: str, jellyfin, bare: bool = False) -> str:
     if not cues:
         raise RuntimeError("legenda vazia, nada foi gravado")
+    from .service import same_language
     path = sidecar_path(media.path, lang, bare=bare)
     target = Path(path)
     target.write_text(dump(cues), encoding="utf-8")
     video = Path(media.path)
+    embedded_langs = {getattr(s, "lang", "").lower() for s in getattr(media, "embedded", [])}
     for p in video.parent.glob(f"{video.stem}*.srt"):
         try:
             if p.resolve() == target.resolve():
                 continue
             if not bare and p.name == f"{video.stem}.srt":
+                p.unlink(missing_ok=True)
+            tag = p.name[len(video.stem) + 1:-4].lower()
+            if tag and any(same_language(tag, el) for el in embedded_langs if el):
                 p.unlink(missing_ok=True)
         except OSError:
             pass

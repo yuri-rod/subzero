@@ -117,11 +117,15 @@ class SyncFlow:
     def prune_sidecars(self, media, target: Path, lang: str):
         video = Path(media.path)
         bare = self.service._bare(lang)
+        embedded_langs = {getattr(s, "lang", "").lower() for s in getattr(media, "embedded", [])}
         for path in video.parent.glob(f"{video.stem}*.srt"):
             try:
                 if path.resolve() == target.resolve():
                     continue
                 if not bare and path.name == f"{video.stem}.srt":
+                    path.unlink(missing_ok=True)
+                tag = path.name[len(video.stem) + 1:-4].lower()
+                if tag and any(same_language(tag, el) for el in embedded_langs if el):
                     path.unlink(missing_ok=True)
             except OSError:
                 pass
@@ -176,7 +180,7 @@ class SyncFlow:
                 self.state.audit(key,job.target_lang,digest(text),'pass',report.json())
                 return str(path)
             if report.status == 'pass' and not guard.ok:
-                cleaned = sanitize_to_excellence(text)
+                cleaned = sanitize_to_excellence(text, job.target_lang, self.accepted_langs)
                 clean_report = verify_text(cleaned,reference)
                 clean_guard = check_excellence_guards(cleaned,job.target_lang)
                 if clean_report.status == 'pass' and clean_guard.ok:
@@ -244,7 +248,7 @@ class SyncFlow:
                 # gastar cota com ela de novo em nenhum video
                 self.state.update(key,job.target_lang,candidate.file_id,status='broken')
                 continue
-            text = sanitize_to_excellence(raw)
+            text = sanitize_to_excellence(raw, job.target_lang, self.accepted_langs)
             if len(text.encode()) > 2_000_000:
                 self.state.update(key,job.target_lang,candidate.file_id,status='oversized')
                 continue
@@ -270,7 +274,7 @@ class SyncFlow:
             text = path.read_text(encoding='utf-8')
             if path.stem != digest(text):
                 continue
-            text = sanitize_to_excellence(text)
+            text = sanitize_to_excellence(text, job.target_lang, self.accepted_langs)
             report = verify_text(text,reference)
             guard = check_excellence_guards(text,job.target_lang)
             if report.status == 'pass' and guard.ok:
@@ -280,7 +284,7 @@ class SyncFlow:
                 continue
             scale,offset = change
             repaired,_ = shift_timestamps(text,offset,scale)
-            repaired = sanitize_to_excellence(repaired)
+            repaired = sanitize_to_excellence(repaired, job.target_lang, self.accepted_langs)
             if verify_text(repaired,reference).status != 'pass':
                 continue
             report = verify_text(repaired,reference,phase=45)
@@ -342,7 +346,7 @@ class SyncFlow:
             except RuntimeError as err:
                 return self.review(media,job,key,f'Translation failed: {err}')
         raw = dump(cues)
-        text = sanitize_to_excellence(raw)
+        text = sanitize_to_excellence(raw, job.target_lang, self.accepted_langs)
         report = verify_text(text,reference)
         guard = check_excellence_guards(text,job.target_lang)
         if report.status == 'pass' and guard.ok:
@@ -392,11 +396,11 @@ class SyncFlow:
         if not same_language(detected,job.target_lang):
             cues = self.translate_cues(cues,job.target_lang,progress,source_lang=detected)
         raw = dump(cues)
-        text = sanitize_to_excellence(raw)
+        text = sanitize_to_excellence(raw, job.target_lang, self.accepted_langs)
         report = verify_text(text,reference,phase=45)
         self.stage(key,job.target_lang,text)
         guard = check_excellence_guards(text,job.target_lang)
         if report.status == 'pass' and guard.ok:
             return self.install(media,job,key,text,report)
-        reason = report.reason if not guard.ok else guard.reason
+        reason = guard.reason if not guard.ok else report.reason
         self.review(media,job,key,f'All stages exhausted: {reason}')
