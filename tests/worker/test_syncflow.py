@@ -1245,6 +1245,35 @@ def test_ocr_source_validation_rejects_overlap_with_retained_music(repair_flow):
         validate_ocr_source(source, augmented, reference)
 
 
+@pytest.mark.parametrize('cached', [False, True])
+def test_repair_rejects_unstable_ocr_before_translation_and_keeps_review_source(repair_flow, monkeypatch, cached):
+    import json
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    original = parse(reference['text'])
+    extra = [Cue(0, 1, 1.7, 'I found the second key.'),
+             Cue(0, 1.7, 1.8, '1 found the second key.'),
+             Cue(0, 1.8, 2.5, 'I found the second key.')]
+    invalid = dump(sorted(original + extra, key=lambda cue: cue.start))
+    if cached:
+        flow.service.ollama.failure = 'Translation unavailable'
+        assert run(flow, jobs, 'repair').state == 'needs_review'
+        cache = next((flow.cache / 'ocr-sources').rglob('*.json'))
+        cache.write_text(json.dumps({'text': invalid, 'digest': syncflow.digest(invalid)}))
+    def recover(video, subtitle_path, **kwargs):
+        Path(kwargs['output']).write_text(invalid)
+        return SimpleNamespace(cues_recovered=len(extra))
+    def no_translation(*args, **kwargs):
+        raise AssertionError('Unstable OCR must not reach translation')
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
+    monkeypatch.setattr(syncflow, 'translate', no_translation)
+    job = run(flow, jobs, 'repair')
+    assert job.state == 'needs_review'
+    assert 'Unstable OCR caption readings' in job.message
+    assert target.read_text() == 'broken old translation'
+    assert any(path.read_text() == invalid for path in (flow.cache / 'candidates').glob('*/en/*.srt'))
+
+
 def test_repair_translates_simultaneous_captions_once_then_composes_display(repair_flow, monkeypatch):
     from subzero.worker import syncflow
     flow, jobs, media, target, reference, complete, calls = repair_flow
