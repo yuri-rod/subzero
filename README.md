@@ -12,7 +12,7 @@
 Subtitle cleanup, conversion, timestamp shifting, extraction, and translation.
 Use the CLI or Python library for subtitle files. Video operations need FFmpeg, and translation needs a configured provider.
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
