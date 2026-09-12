@@ -1,4 +1,5 @@
 import json
+import math
 import subprocess
 import tempfile
 import threading
@@ -7,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
-from subzero.translate import MAX_RESPONSE_BYTES, _ollama_payload, _parse_lines, _translate_lines
+from subzero.translate import MAX_RESPONSE_BYTES, _is_native_translation, _ollama_payload, _parse_lines, _parse_ollama_response, _translate_lines
 
 from .jellyfin import Media
 from .srt import Cue, chunks, dump
@@ -132,11 +133,18 @@ def shift(cues: list[Cue], offset: float) -> list[Cue]:
 
 def extract_audio(video_path: str, duration: float = 0, progress: Progress = lambda p, n: None,
                   popen=subprocess.Popen) -> str:
-    wav = Path(tempfile.gettempdir()) / f"srt-{abs(hash(video_path))}.wav"
+    with tempfile.NamedTemporaryFile(prefix="subzero-audio-", suffix=".wav", delete=False) as handle:
+        wav = Path(handle.name)
     cmd = ["ffmpeg", "-nostdin", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000",
            "-f", "wav", str(wav)]
-    run_ffmpeg(cmd, duration, progress, "extraindo audio", popen=popen)
-    return str(wav)
+    complete = False
+    try:
+        run_ffmpeg(cmd, duration, progress, "extraindo audio", popen=popen)
+        complete = True
+        return str(wav)
+    finally:
+        if not complete:
+            wav.unlink(missing_ok=True)
 
 
 class ModelHolder:
@@ -156,7 +164,25 @@ class ModelHolder:
     def load(self):
         if self.model is None:
             from faster_whisper import WhisperModel
-            self.model = WhisperModel(self.name, device=self.device, compute_type=self.compute_type)
+            from faster_whisper.utils import download_model
+            from huggingface_hub.errors import LocalEntryNotFoundError
+
+            snapshot = Path(self.name).expanduser()
+            if not snapshot.is_dir():
+                try:
+                    snapshot = Path(download_model(self.name, local_files_only=True))
+                except LocalEntryNotFoundError as err:
+                    raise RuntimeError(f"Whisper model {self.name!r} is not cached locally; prepare the model before starting the worker") from err
+            for filename in ("model.bin", "config.json", "tokenizer.json"):
+                try:
+                    with (snapshot / filename).open("rb") as handle:
+                        handle.read(1)
+                except FileNotFoundError as err:
+                    raise RuntimeError(f"Whisper cache is incomplete: missing {filename}; prepare the model before starting the worker") from err
+                except PermissionError as err:
+                    raise RuntimeError(f"Whisper cache is not readable: {snapshot / filename}") from err
+            self.model = WhisperModel(str(snapshot), device=self.device, compute_type=self.compute_type,
+                                      local_files_only=True)
         return self.model
 
     def unload(self) -> None:
@@ -189,14 +215,24 @@ def _transcribe(audio_path: str, holder: ModelHolder, progress: Progress) -> tup
     model = holder.load()
     try:
         segments, info = model.transcribe(audio_path, vad_filter=True, beam_size=5)
-        total = max(1.0, float(getattr(info, "duration", 0) or 0))
+        duration = float(getattr(info, "duration", 0) or 0)
+        bounded = math.isfinite(duration) and duration > 0
+        total = max(1.0, duration) if bounded else 1.0
         cues: list[Cue] = []
         for seg in segments:
             text = (seg.text or "").strip()
             if not text:
                 continue
-            cues.append(Cue(len(cues) + 1, float(seg.start), float(seg.end), text))
-            progress("transcrevendo", int(min(99, float(seg.end) / total * 100)))
+            start, end = float(seg.start), float(seg.end)
+            if not math.isfinite(start) or not math.isfinite(end):
+                continue
+            start = max(0.0, start)
+            if bounded:
+                end = min(duration, end)
+            if end <= start:
+                continue
+            cues.append(Cue(len(cues) + 1, start, end, text))
+            progress("transcrevendo", int(min(99, end / total * 100)))
         language = getattr(info, "language", "") or "und"
     finally:
         holder.unload()
@@ -256,10 +292,16 @@ class Ollama:
         except (httpx.HTTPError, OSError):
             pass
 
-    def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None) -> list[str]:
+    def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
         import httpx
+        if _is_native_translation(self.model) and len(cues) > 1:
+            return [line for index, cue in enumerate(cues)
+                    for line in _translate_lines([cue], target_lang, self, source_lang=source_lang, context=context or {
+                        "previous": "\n".join(c.text for c in cues[max(0, index - 2):index]),
+                        "following": "\n".join(c.text for c in cues[index + 1:index + 3]),
+                    })]
         payload = _ollama_payload(cues, target_lang, self.model, self.keep_alive,
-                                  self.num_ctx, self.num_predict, source_lang)
+                                  self.num_ctx, self.num_predict, source_lang, context=context)
         last_err = None
         for attempt in range(3):
             try:
@@ -272,7 +314,7 @@ class Ollama:
                         body = r.json()
                     except (ValueError, UnicodeError):
                         return []
-                    return self._lines(body.get("response", "")) if isinstance(body, dict) else []
+                    return _parse_ollama_response(body, native=_is_native_translation(self.model))
                 if r.status_code == 404:
                     raise RuntimeError("Ollama model is not installed")
                 if 400 <= r.status_code < 500:
@@ -290,12 +332,13 @@ class Ollama:
 
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-              strict: bool = False, source_lang: str | None = None) -> list[Cue]:
+              strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
     done: list[Cue] = []
     blocks = list(chunks(cues, BLOCK))
     for n, block in enumerate(blocks, start=1):
         try:
-            lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang)
+            options = {'context': context} if context is not None else {}
+            lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang, **options)
         except RuntimeError as err:
             raise RuntimeError(f'Falha no bloco {n}: {err}') from None
         for cue, text in zip(block, lines):

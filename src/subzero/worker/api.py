@@ -134,6 +134,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     def health() -> dict:
         thread = getattr(app.state, "runner_thread", None)
         return {"version": __version__, "gpu": free_vram_mb(), "model": cfg.whisper_model,
+                "translation_model": cfg.ollama_model,
                 "auto": cfg.auto_enabled, "queued": len(store.active()),
                 "runner": bool(thread and thread.is_alive())}
 

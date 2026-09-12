@@ -32,13 +32,14 @@ def test_health_reports_the_worker(client):
     assert body["version"]
     assert "gpu" in body
     assert body["model"] == "large-v3"
+    assert body["translation_model"] == "subzero/hy-mt2:7b"
 
 
 def test_config_defaults():
     cfg = Config.load({"JELLYFIN_URL": "http://x", "JELLYFIN_API_KEY": "k", "BEARER_TOKEN": "t"})
     assert cfg.daily_download_budget == 15
     assert cfg.auto_langs == ["pt-BR"]
-    assert cfg.ollama_model == "gemma3:12b"
+    assert cfg.ollama_model == "subzero/hy-mt2:7b"
 
 
 def test_config_demands_the_essentials():

@@ -1,26 +1,80 @@
 import hashlib
+import json
+import math
 import os
 import re
 import shutil
 import stat
 import tempfile
+from collections import Counter
 from pathlib import Path
 
+from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
 from subzero.shift import shift_timestamps
-from subzero.timing import correction
+from subzero.timing import Report, correction
+from subzero.translate import TRANSLATION_PROMPT_VERSION, _is_native_translation, _is_translategemma
 
-from .guards import check_excellence_guards, sanitize_to_excellence
+from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
 from .moviehash import moviehash
 from .service import same_language
-from .srt import dump, parse, strip_hearing_impaired
+from .srt import Cue, dump, parse, strip_hearing_impaired
 from .syncstore import SyncStore, broken_file_ids
 from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, transcribe, translate
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
+OCR_SOURCE_VERSION = 4
+
+
 def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def read_gap_source(path):
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > 2_000_000:
+        raise RuntimeError('Gap recovery requires a regular subtitle file under 2 MB')
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    with os.fdopen(os.open(path, flags), 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not os.path.samestat(before, info) or info.st_size > 2_000_000:
+            raise RuntimeError('Subtitle changed before gap recovery')
+        raw = handle.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise RuntimeError('Subtitle grew beyond the gap recovery limit')
+    return raw.decode('utf-8-sig')
+
+
+def validate_ocr_source(source, complete, reference):
+    anchor_report = verify_text(source, reference)
+    if anchor_report.status != 'pass':
+        raise RuntimeError(f'Original subtitles failed audio timing validation: {anchor_report.reason}')
+    duration = float(reference.get('duration') or 0)
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError('Video duration is missing from OCR validation')
+    original = parse(source)
+    anchors = Counter((c.start, c.end, c.text) for c in original)
+    gaps = uncovered_intervals([(0, duration)], [(c.start, c.end) for c in original])
+    previous_start = previous_ocr_end = 0.0
+    additions = 0
+    for cue in parse(complete):
+        if (not math.isfinite(cue.start + cue.end) or cue.start < previous_start
+                or cue.start < 0 or cue.end <= cue.start or cue.end > duration):
+            raise RuntimeError('Recovered captions have invalid ordering or timestamps')
+        previous_start = cue.start
+        anchor = (cue.start, cue.end, cue.text)
+        if anchors[anchor]:
+            anchors[anchor] -= 1
+            continue
+        if cue.start < previous_ocr_end or not any(start <= cue.start and cue.end <= end for start, end in gaps):
+            raise RuntimeError('Recovered caption overlaps dialogue or leaves the scanned gaps')
+        previous_ocr_end = cue.end
+        additions += 1
+    if any(anchors.values()):
+        raise RuntimeError('Caption recovery changed or removed an original English cue')
+    return Report('pass', f'Original audio-aligned cues preserved; {additions} frame-timed OCR captions added',
+                  anchor_report.windows)
 
 
 class SyncFlow:
@@ -72,7 +126,7 @@ class SyncFlow:
         self.state.audit(key,job.target_lang,digest(text),'inconclusive',{'reason':reason})
         self.jobs.needs_review(job.id,reason)
 
-    def install(self, media, job, key, text, report):
+    def install(self, media, job, key, text, report, expected_source=None):
         if report.status != 'pass':
             raise ValueError('Only validated subtitles can be installed')
         self.active(job)
@@ -103,6 +157,10 @@ class SyncFlow:
                     state = db.execute('SELECT state FROM jobs WHERE id=?',(job.id,)).fetchone()
                     if state is None or state['state'] != 'running':
                         raise RuntimeError('Subtitle job cancelled before installation')
+                    if expected_source is not None:
+                        source, source_digest = expected_source
+                        if target != source or digest(read_gap_source(target)) != source_digest:
+                            raise RuntimeError('Subtitle changed during gap recovery')
                     if target.exists():
                         old = target.read_text(encoding='utf-8-sig')
                         shutil.copy2(target,backup/f'{job.target_lang}-{digest(old)}.srt')
@@ -147,7 +205,7 @@ class SyncFlow:
         if excluded(media.path,self.cfg.excluded_paths):
             raise RuntimeError('Media library is excluded')
         key = fingerprint(media.path)
-        kind = job.kind if job.kind in ('audit','refetch','resync','embedded_translate','rebuild') else 'audit'
+        kind = job.kind if job.kind in ('audit','refetch','resync','embedded_translate','rebuild','recover_gaps','repair') else 'audit'
         if self.cfg.sync_audit_only:
             kind = 'audit'
         audio_lang = (media.audio_lang or '').strip()
@@ -298,6 +356,50 @@ class SyncFlow:
             raise RuntimeError('Ollama is not configured')
         self.service.ollama.ensure_available()
 
+    def recover_gaps(self, media, job, key, reference, progress):
+        target = self.installed(media, job.target_lang)
+        original = read_gap_source(target)
+
+        def ocr_progress(done, total):
+            progress('recuperando legendas com Apple Vision', int(90 * done / max(1, total)))
+
+        try:
+            if not parse(original):
+                raise RuntimeError('Gap recovery requires existing subtitle cues')
+            if not same_language(job.target_lang, 'en'):
+                self.translation_ready()
+            with tempfile.TemporaryDirectory(prefix='ocr-', dir=self.cache) as folder:
+                source = Path(folder) / 'source.srt'
+                output = Path(folder) / 'recovered.srt'
+                source.write_text(original, encoding='utf-8')
+                progress('recuperando legendas com Apple Vision', 0)
+                self.active(job)
+                recovered = fill_subtitle_gaps(
+                    media.path, source, output=output, target_lang=job.target_lang,
+                    provider='ollama', model=self.cfg.ollama_model, url=self.cfg.ollama_url,
+                    cache_dir=self.cache / 'references', backup=False, progress=ocr_progress,
+                )
+                self.active(job)
+                if not recovered.cues_recovered:
+                    raise RuntimeError('Apple Vision found no captions to add')
+                text = output.read_text(encoding='utf-8-sig')
+                text = sanitize_to_excellence(text, job.target_lang, self.accepted_langs)
+                report = validate_ocr_source(original, text, reference)
+                guard = check_excellence_guards(text, job.target_lang, self.accepted_langs)
+                if report.status != 'pass' or not guard.ok:
+                    reason = guard.reason if not guard.ok else report.reason
+                    raise RuntimeError(f'Merged subtitle failed validation: {reason}')
+                return self.install(media, job, key, text, report,
+                                    expected_source=(target, digest(original)))
+        except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
+            self.active(job)
+            reason = f'Gap recovery failed: {err}'
+            self.state.audit(key, job.target_lang, digest(original), 'inconclusive', {'reason': reason})
+            self.jobs.needs_review(job.id, reason)
+        finally:
+            if self.service.ollama is not None:
+                self.service.ollama.release()
+
     def translate_cues(self, cues, lang, progress, source_lang=None):
         self.translation_ready()
         try:
@@ -305,11 +407,204 @@ class SyncFlow:
         finally:
             self.service.ollama.release()
 
-    def source_sidecar(self, media, reference):
+    def ocr_source(self, media, job, key, reference, source, progress):
+        baseline = verify_text(source, reference)
+        if baseline.status != 'pass':
+            raise RuntimeError(f'English source failed audio timing validation: {baseline.reason}')
+        folder = self.cache / 'ocr-sources' / key
+        folder.mkdir(parents=True, exist_ok=True)
+        cache = folder / f'{digest(str(OCR_SOURCE_VERSION) + ":" + source)}.json'
+        if cache.exists():
+            try:
+                cached = json.loads(read_gap_source(cache))
+                text = cached.get('text') if isinstance(cached, dict) else None
+                if isinstance(text, str) and cached.get('digest') == digest(text):
+                    validate_ocr_source(source, text, reference)
+                    progress('reutilizando fonte em ingles com Apple Vision', 30)
+                    return text
+            except (ValueError, UnicodeError, RuntimeError):
+                pass
+
+        def ocr_progress(done, total):
+            progress('recuperando fonte em ingles com Apple Vision', int(30 * done / max(1, total)))
+
+        with tempfile.TemporaryDirectory(prefix='ocr-source-', dir=self.cache) as tmp_dir:
+            input_path = Path(tmp_dir) / 'source.srt'
+            output_path = Path(tmp_dir) / 'complete.srt'
+            input_path.write_text(source, encoding='utf-8')
+            progress('recuperando fonte em ingles com Apple Vision', 0)
+            self.active(job)
+            recovered = fill_subtitle_gaps(media.path, input_path, output=output_path,
+                                          target_lang='en', backup=False,
+                                          cache_dir=self.cache / 'references', progress=ocr_progress)
+            self.active(job)
+            text = read_gap_source(output_path) if recovered.cues_recovered else source
+            candidate = self.stage(key, 'en', text)
+        if fingerprint(media.path) != key:
+            raise RuntimeError('Video changed during English caption recovery')
+        legacy_report = verify_text(text, reference)
+        failure = None
+        try:
+            source_report = validate_ocr_source(source, text, reference)
+        except RuntimeError as err:
+            failure = str(err)
+            source_report = Report('reject', failure)
+        diagnostics = self.cache / 'ocr-validation' / key
+        diagnostics.mkdir(parents=True, exist_ok=True)
+        (diagnostics / cache.name).write_text(json.dumps({
+            'source_digest': digest(source), 'candidate_digest': digest(text),
+            'candidate': str(candidate), 'source': baseline.json(),
+            'merged_audio_metric': legacy_report.json(), 'validation': source_report.json(),
+        }, ensure_ascii=False), encoding='utf-8')
+        if failure:
+            raise RuntimeError(f'{failure}; OCR candidate retained at {candidate}')
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder,
+                                         suffix='.tmp', delete=False) as handle:
+            tmp = Path(handle.name)
+            try:
+                json.dump({'text': text, 'digest': digest(text)}, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+                self.active(job)
+                os.replace(tmp, cache)
+            finally:
+                tmp.unlink(missing_ok=True)
+        return text
+
+    def repair_translation(self, job, key, cues, progress, *, title=''):
+        ollama = self.service.ollama
+        title = ' '.join(title.split())[:256]
+        settings = {
+            'source': digest(dump(cues)), 'target_lang': job.target_lang, 'source_lang': 'en',
+            'model': getattr(ollama, 'model', getattr(self.cfg, 'ollama_model', '')),
+            'url': getattr(ollama, 'url', getattr(self.cfg, 'ollama_url', '')),
+            'num_ctx': getattr(ollama, 'num_ctx', getattr(self.cfg, 'ollama_num_ctx', 4096)),
+            'num_predict': getattr(ollama, 'num_predict', getattr(self.cfg, 'ollama_num_predict', 2048)),
+            'prompt_version': TRANSLATION_PROMPT_VERSION, 'block_size': 20,
+            'title': title, 'previous_cues': 32, 'following_cues': 8, 'passage_chars': 6000,
+        }
+        use_context = _is_native_translation(settings['model']) and not _is_translategemma(settings['model'])
+        folder = self.cache / 'translations' / key / digest(json.dumps(settings, sort_keys=True))
+        folder.mkdir(parents=True, exist_ok=True)
+        completed = []
+
+        def valid_block(source, translated):
+            if len(translated) != len(source):
+                return False
+            if any((a.start, a.end) != (b.start, b.end) or not b.text.strip()
+                   for a, b in zip(source, translated)):
+                return False
+            text = sanitize_to_excellence(dump(strip_hearing_impaired(translated)),
+                                          job.target_lang, self.accepted_langs)
+            if [(c.start, c.end) for c in parse(text)] != [(c.start, c.end) for c in source]:
+                return False
+            return check_language_completeness(text, job.target_lang)[0]
+
+        try:
+            for start in range(0, len(cues), 20):
+                self.active(job)
+                block = cues[start:start + 20]
+                source = dump(block)
+                cache = folder / f'{start:06d}.json'
+                translated = None
+                if cache.exists():
+                    try:
+                        cached = json.loads(read_gap_source(cache))
+                        text = cached.get('text') if isinstance(cached, dict) else None
+                        if (isinstance(text, str) and cached.get('source') == source
+                                and cached.get('digest') == digest(text)):
+                            candidate = parse(text)
+                            if valid_block(block, candidate):
+                                translated = [Cue(a.index, b.start, b.end, b.text)
+                                              for a, b in zip(block, candidate)]
+                    except (ValueError, UnicodeError):
+                        pass
+                if translated is None:
+                    options = {}
+                    if use_context:
+                        previous = '\n'.join(c.text for c in cues[max(0, start - 32):start])
+                        current = '\n'.join(c.text for c in block)[:settings['passage_chars']]
+                        following = '\n'.join(c.text for c in cues[start + 20:start + 28])
+                        remaining = max(0, settings['passage_chars'] - len(current) - 2)
+                        after = min(len(following), remaining // 5)
+                        before = min(len(previous), remaining - after)
+                        after = min(len(following), remaining - before)
+                        passage = '\n'.join(part for part in (
+                            previous[-before:] if before else '', current, following[:after]) if part)
+                        options['context'] = {'title': title, 'passage': passage}
+                    translated = translate(block, job.target_lang, ollama,
+                                           lambda *_: self.active(job), strict=True, source_lang='en', **options)
+                    self.active(job)
+                    if not valid_block(block, translated):
+                        raise RuntimeError(f'Translation block at cue {start + 1} is incomplete or untranslated')
+                    text = dump(translated)
+                    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder,
+                                                     suffix='.tmp', delete=False) as handle:
+                        tmp = Path(handle.name)
+                        try:
+                            json.dump({'source': source, 'text': text, 'digest': digest(text)},
+                                      handle, ensure_ascii=False)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                            self.active(job)
+                            os.replace(tmp, cache)
+                        finally:
+                            tmp.unlink(missing_ok=True)
+                completed.extend(translated)
+                progress(f'traduzindo legendas {len(completed)}/{len(cues)}',
+                         30 + int(65 * len(completed) / len(cues)))
+            return completed
+        finally:
+            ollama.release()
+
+    def repair(self, media, job, key, reference, progress):
+        target = self.installed(media, job.target_lang)
+        original = read_gap_source(target)
+        try:
+            source = reference.get('text', '')
+            if (not same_language(reference.get('language', 'und'), 'en')
+                    or not source or verify_text(source, reference).status != 'pass'):
+                sidecar = self.source_sidecar(media, reference, languages=('en',))
+                if sidecar is None:
+                    raise RuntimeError('Full repair requires a verified English subtitle source')
+                source = sidecar[0]
+            source = dump([cue for cue in parse(source) if strip_hearing_impaired([cue])])
+            if not same_language(job.target_lang, 'en'):
+                self.translation_ready()
+            english = self.ocr_source(media, job, key, reference, source, progress)
+            self.active(job)
+            self.stage(key, 'en', english)
+            cues = [cue for cue in parse(english) if strip_hearing_impaired([cue])]
+            translated = cues
+            if not same_language(job.target_lang, 'en'):
+                translated = self.repair_translation(job, key, cues, progress,
+                                                     title=media.series_name or media.name)
+            self.active(job)
+            if [(c.start, c.end) for c in translated] != [(c.start, c.end) for c in cues]:
+                raise RuntimeError('Translation changed source cue timing or count')
+            text = dump(strip_hearing_impaired(translated))
+            text = sanitize_to_excellence(text, job.target_lang, self.accepted_langs)
+            self.stage(key, job.target_lang, text)
+            if [(c.start, c.end) for c in parse(text)] != [(c.start, c.end) for c in cues]:
+                raise RuntimeError('Subtitle cleanup changed dialogue timing or count')
+            report = validate_ocr_source(source, english, reference)
+            guard = check_excellence_guards(text, job.target_lang, self.accepted_langs)
+            if report.status != 'pass' or not guard.ok:
+                reason = guard.reason if not guard.ok else report.reason
+                raise RuntimeError(f'Regenerated subtitle failed validation: {reason}')
+            return self.install(media, job, key, text, report,
+                                expected_source=(target, digest(original)))
+        except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
+            self.active(job)
+            reason = f'Full repair failed: {err}'
+            self.state.audit(key, job.target_lang, digest(original), 'inconclusive', {'reason': reason})
+            self.jobs.needs_review(job.id, reason)
+
+    def source_sidecar(self, media, reference, languages=None):
         video = Path(media.path)
         prefix = video.stem+'.'
         paths = sorted(video.parent.glob('*.srt'))
-        for lang in getattr(self.cfg,'translate_from',['en']):
+        for lang in languages if languages is not None else getattr(self.cfg,'translate_from',['en']):
             for path in paths:
                 if not path.stem.startswith(prefix):
                     continue

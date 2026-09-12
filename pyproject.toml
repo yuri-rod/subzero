@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.10.0"
+version = "1.10.1"
 description = "Universal subtitle & audio AI toolkit: clean SDH, speech gap analysis with Apple Vision OCR caption recovery, auto-sync, local LLM translation, container extraction, format conversion, and automated media server daemon"
 readme = "README.md"
 license = "MIT"
@@ -92,6 +92,9 @@ Funding = "https://buymeacoffee.com/yurirod"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+subzero = ["vision_ocr.swift"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

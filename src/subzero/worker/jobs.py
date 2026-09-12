@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 KINDS = ("embedded", "opensubtitles", "whisper", "translate",
-         "audit", "refetch", "resync", "embedded_translate", "rebuild")
+         "audit", "refetch", "resync", "embedded_translate", "rebuild", "recover_gaps", "repair")
 
 # jobs automaticos (watcher) tentam de novo sozinhos; manuais falham na hora porque
 # tem alguem olhando a tela esperando

@@ -12,7 +12,7 @@
 **The universal subtitle and audio AI toolkit.**  
 *Clean SDH, speech gap analysis with Apple Vision OCR caption recovery, auto-sync, local AI translation, container extraction, format conversion, and automated media server daemon.*
 
-[![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.1-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
@@ -339,7 +339,7 @@ For a 16 GB Apple Silicon machine, this is a starting configuration to compare a
 WHISPER_MODEL=large-v3-turbo
 WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
-OLLAMA_MODEL=translategemma:4b
+OLLAMA_MODEL=subzero/hy-mt2:7b
 OLLAMA_NUM_CTX=4096
 OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m
@@ -347,7 +347,20 @@ OLLAMA_KEEP_ALIVE=2m
 
 The current transcription backend uses the CPU on Apple Silicon. Keep `large-v3` available for difficult recordings; a short local comparison does not establish which model is best for every language or release. Whisper transcribes the source language, and Ollama handles translation into Brazilian Portuguese.
 
-TranslateGemma uses its translation-specific prompt when the source and target languages are known. The worker passes the subtitle language or Whisper's detected language. Other models and unknown language tags use the general subtitle prompt. Structured output preserves cue order and count, but does not guarantee translation quality.
+TranslateGemma receives its exact documented single-user prompt, including two blank lines before the source text. It requires known source and target languages. Hy-MT2 uses its documented background/source format and translates one cue per request. Repair supplies surrounding English dialogue and the programme title as context. Both paths preserve the source cue map; validation rejects empty, truncated, malformed, or untranslated output before installation.
+
+The default model is a local Hy-MT2 7B Q6_K package. The community 7B package needs a different prompt template from the smaller variants, and its EOS metadata incorrectly identifies `$` as an end token. Prepare a separate corrected copy before selecting it:
+
+```sh
+ollama pull kaelri/hy-mt2:7b
+subzero_model_file=$(ollama show kaelri/hy-mt2:7b --modelfile | sed -n 's/^FROM //p')
+subzero_model_stage="$HOME/.cache/subzero/models/hy-mt2-7b"
+mkdir -p "$(dirname "$subzero_model_stage")"
+python3 -m subzero.hymt2 "$subzero_model_file" "$subzero_model_stage"
+ollama create subzero/hy-mt2:7b -f "$subzero_model_stage/Modelfile"
+```
+
+The preparation command requires a new staging directory. It changes only the EOS metadata in the copy and verifies the copied bytes, retaining the original model and tensor weights. `verification.json` records the hashes. The template and end tokens follow [Tencent's 7B tokenizer](https://huggingface.co/tencent/Hy-MT2-7B/blob/main/chat_template.jinja). No subtitle content leaves the configured local Ollama endpoint.
 
 For a dedicated Ollama server on a small machine, set `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_MAX_LOADED_MODELS=1` in the server environment. Keep it bound to loopback when the worker runs on the same host.
 
@@ -373,7 +386,7 @@ Every uploaded subtitle is screened against excellence guards:
  
 ### 12. Native Vision OCR Speech Gap Recovery (`subzero fill-gaps` / `subzero ocr-sync`)
  
-Recovers burned-in open captions (e.g. whispered dialogue, challenge instructions, location text) that were omitted from broadcast SDH tracks:
+Recovers burned-in open captions (e.g. whispered dialogue and challenge instructions) that were omitted from broadcast SDH tracks:
  
 ```console
 # Audit gaps between dialogue cues and recover on-screen captions via Apple Vision OCR
@@ -382,6 +395,40 @@ subzero fill-gaps movie.mkv movie.pt-BR.srt --target-lang pt-BR
 # Dry run: audit dialogue gaps without modifying subtitle file
 subzero fill-gaps episode.mkv episode.pt-BR.srt --dry-run
 ```
+
+The macOS worker exposes the same recovery as an explicit `recover_gaps` job through
+`POST /jobs`, with `itemId` and `targetLang` (for example, `pt-BR`). It reads the
+existing target sidecar, recovers captions with Apple Vision, and translates them
+using `OLLAMA_URL` and `OLLAMA_MODEL`. The merged file must pass timing and subtitle
+checks before installation. The worker backs up the original under
+`SYNC_CACHE/backups` and preserves it when recovery, translation, or validation
+fails. This job does not download subtitles or regenerate the episode from audio.
+Regular audits do not run OCR; `SYNC_AUDIT_ONLY=1` prevents replacement.
+
+Use `kind: "repair"` with the same endpoint when the existing translation needs
+to be regenerated. Repair requires a verified English embedded track or English
+sidecar. It adds missing burned-in English captions with Apple Vision, then sends
+all dialogue through the configured local translator. Speaker labels remain
+available as translation context and are removed from the delivered subtitle.
+With Hy-MT2, each 20-cue block shares the programme title and nearby English
+dialogue (up to 32 preceding and 8 following cues). This background is capped at
+6,000 characters; each request still translates only its current cue.
+Cue timing and count must survive translation and cleanup, and the regenerated
+file must pass the worker's timing and language checks before replacement.
+
+Complete English and regenerated target subtitles are retained under
+`SYNC_CACHE/candidates`. English OCR results are cached under
+`SYNC_CACHE/ocr-sources`, keyed by video fingerprint, source content, and OCR
+version. Translation retries reuse this source without rescanning the video.
+Repair preserves the installed target on failure or cancellation and rejects
+replacement if that target changed while the job was running. It does not fall
+back to downloads or audio transcription.
+
+Successful translation blocks are saved atomically under `SYNC_CACHE/translations`.
+An interrupted repair resumes from these blocks after checking the exact source,
+output integrity, timing, cue count, and target language. Changing the English
+source, configured model, context or output limits, or translation prompt version
+starts a new translation cache. Partial progress is never installed as a sidecar.
  
 * **Speech Gap Detection:** Compares audio speech activity against existing subtitle timing intervals, identifying speech gaps larger than a configurable minimum duration.
 * **Apple Vision OCR:** Uses native macOS Vision framework (`VNRecognizeTextRequest`) with fast ffmpeg keyframe seeking to read burned-in titles at negligible overhead.

@@ -47,7 +47,15 @@ def build_reference(video, cache_dir):
     key = fingerprint(video)
     cache = Path(cache_dir)/f'{key}.json'
     if cache.exists():
-        return json.loads(cache.read_text())
+        reference = json.loads(cache.read_text())
+        if 'duration' not in reference:
+            info = json.loads(_run(['ffprobe','-v','error','-show_entries','format=duration',
+                                   '-of','json',str(video)],stdout=subprocess.PIPE).stdout)
+            duration = float(info.get('format',{}).get('duration') or 0)
+            if not 120 <= duration <= 14400:
+                raise ValueError('Audio verification supports videos from two minutes to four hours')
+            reference['duration'] = duration
+        return reference
     video = str(Path(video).resolve(strict=True))
     info = json.loads(_run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',video],
                            stdout=subprocess.PIPE).stdout)
@@ -73,7 +81,7 @@ def build_reference(video, cache_dir):
             for chunk in get_speech_timestamps(wave[start:start+block],opts):
                 speech.append(((start+chunk['start'])/16000,(start+chunk['end'])/16000))
         del wave
-    reference = {'fingerprint':key,'speech':speech,'spans':[], 'text':'',
+    reference = {'fingerprint':key,'duration':duration,'speech':speech,'spans':[], 'text':'',
                  'audio_index':audio['index'],'language':audio.get('tags',{}).get('language','und')}
     for stream in dialogue_tracks(streams):
         text = _run(['ffmpeg','-v','error','-nostdin','-i',video,'-map',f'0:{stream["index"]}',

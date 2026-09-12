@@ -16,13 +16,14 @@ struct OCRResult: Codable {
     let file: String
     let items: [OCRItem]
     let subtitleText: String
+    var error: String? = nil
 }
 
 func processImage(path: String) -> OCRResult {
     let url = URL(fileURLWithPath: path)
     guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
           let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-        return OCRResult(file: path, items: [], subtitleText: "")
+        return OCRResult(file: path, items: [], subtitleText: "", error: "Cannot decode image")
     }
 
     let request = VNRecognizeTextRequest()
@@ -56,19 +57,17 @@ func processImage(path: String) -> OCRResult {
             )
             items.append(item)
 
-            // Subtitle area filter: lower 40% of screen (y in [0.0, 0.40] in Vision coordinates)
             if box.origin.y <= 0.40 {
                 subtitleLines.append((y: Double(box.origin.y), text: str))
             }
         }
 
-        // Sort subtitle lines top to bottom (higher y first)
         subtitleLines.sort { $0.y > $1.y }
         let joinedSubtitles = subtitleLines.map { $0.text }.joined(separator: "\n")
 
         return OCRResult(file: path, items: items, subtitleText: joinedSubtitles)
     } catch {
-        return OCRResult(file: path, items: [], subtitleText: "")
+        return OCRResult(file: path, items: [], subtitleText: "", error: error.localizedDescription)
     }
 }
 
@@ -93,6 +92,9 @@ var results: [OCRResult] = []
 for file in files {
     let res = processImage(path: file)
     results.append(res)
+    if let failure = res.error {
+        fputs("Vision OCR failed for \(file): \(failure)\n", stderr)
+    }
     if !asJson {
         if !res.subtitleText.isEmpty {
             print("[\(file)]:\n\(res.subtitleText)\n")
@@ -106,4 +108,7 @@ if asJson {
     if let data = try? encoder.encode(results), let str = String(data: data, encoding: .utf8) {
         print(str)
     }
+}
+if results.contains(where: { $0.error != nil }) {
+    exit(1)
 }
