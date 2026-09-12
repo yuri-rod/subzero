@@ -44,6 +44,26 @@ def test_translation_parser_preserves_multiline_dialogue():
     assert _parse_lines(payload) == ["- Ola.\n- Jeff.", "Tudo bem."]
 
 
+def test_translation_parser_accepts_markdown_code_fences_and_preamble():
+    with_fences = "```json\n[{\"id\":1,\"text\":\"Ola\"},{\"id\":2,\"text\":\"Mundo\"}]\n```"
+    assert _parse_lines(with_fences) == ["Ola", "Mundo"]
+    with_preamble = "Aqui está a tradução solicitada:\n[{\"id\":1,\"text\":\"Ola\"},{\"id\":2,\"text\":\"Mundo\"}]"
+    assert _parse_lines(with_preamble) == ["Ola", "Mundo"]
+
+
+def test_translation_recovers_from_alignment_mismatch_via_half_split():
+    class MismatchClient:
+        def translate_block(self, cues, target_lang, source_lang=None):
+            # Model returns M != N if batch has more than 2 items
+            if len(cues) > 2:
+                return [f"pt-{c.text}" for c in cues[:-1]]
+            return [f"pt-{c.text}" for c in cues]
+
+    cues = [Cue(i, i + 1, f"dialogue_{i}") for i in range(8)]
+    translated = translate_cues(cues, "pt-BR", MismatchClient())
+    assert [c.text for c in translated] == [f"pt-dialogue_{i}" for i in range(8)]
+
+
 def test_translation_retries_then_splits_without_changing_timings():
     calls = []
 
