@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from subzero.core import Options, Stats, analyze, fix_text
@@ -15,6 +16,9 @@ EXCELLENCE_OPTIONS = Options(
     strip_labels=True,
 )
 
+UNCLOSED_TAG = re.compile(r"<[a-zA-Z]+(?![^<>\n]*>)")
+PT_MT_CAPS = re.compile(r"(?<=[a-z\u00e0-\u00fa,;])\s+(Não|Com|Para|Por|Que)\s+(?=[a-z\u00e0-\u00fa])")
+
 
 @dataclass(frozen=True)
 class GuardReport:
@@ -29,12 +33,19 @@ def check_excellence_guards(
     accepted_langs: tuple[str, ...] | list[str] | None = None,
     opts: Options = EXCELLENCE_OPTIONS,
 ) -> GuardReport:
-    """Check accepted languages, subtitle structure, SDH, dialogue layout, and line length."""
+    """Check accepted languages, subtitle structure, SDH, dialogue layout,
+    line length, valid tags, and common translation artifacts."""
     if accepted_langs and target_lang:
         if not any(same_language(target_lang, al) for al in accepted_langs):
             return GuardReport(False, f"Idioma nao aceito pelo worker: esperado {accepted_langs}, recebido {target_lang}")
     if not text or not text.strip():
         return GuardReport(False, "Legenda vazia")
+    if UNCLOSED_TAG.search(text):
+        return GuardReport(False, "Falha no guard de formatacao: contem tags HTML malformadas ou nao fechadas")
+    if target_lang and target_lang.lower().startswith("pt"):
+        mt_matches = PT_MT_CAPS.findall(text)
+        if mt_matches:
+            return GuardReport(False, f"Falha no guard de traducao: contem {len(mt_matches)} particulas capitalizadas no meio da frase")
     try:
         st = analyze(text, opts)
     except Exception as err:
@@ -50,6 +61,9 @@ def check_excellence_guards(
     return GuardReport(True, "pass", st)
 
 
+PT_MT_FIX = re.compile(r"(?<=[a-z\u00e0-\u00fa,;])(\s+)(Não|Com|Para|Por|Que)(\s+)(?=[a-z\u00e0-\u00fa])")
+
+
 def sanitize_to_excellence(
     text: str,
     target_lang: str | None = None,
@@ -62,6 +76,9 @@ def sanitize_to_excellence(
     guard = check_excellence_guards(text, target_lang=target_lang, accepted_langs=accepted_langs, opts=opts)
     if guard.ok:
         return text
+    text = UNCLOSED_TAG.sub("", text)
+    if target_lang and target_lang.lower().startswith("pt"):
+        text = PT_MT_FIX.sub(lambda m: f"{m.group(1)}{m.group(2).lower()}{m.group(3)}", text)
     result = fix_text(text, opts)
     out = result.text.replace("\r\n", "\n")
     return out.rstrip("\n") + "\n"

@@ -89,11 +89,13 @@ def rules_for(opts: Options) -> _Rules:
     if roles:
         # a role optionally followed by a qualifier: "man 2:", "voz masculina:"
         parts.append(rf"(?:{roles})(?:\s+(?:[a-z\u00e0-\u00ff]+|\d+)){{0,2}}")
-    label = re.compile(rf"^\s*(?:{'|'.join(parts)}):(?!\d)(?:\s+|$)")
+    label = re.compile(rf"^\s*(?:\[|\()?\s*(?:{'|'.join(parts)}):(?!\d)(?:\s+|(?=<[a-z])|$)")
     spans = []
-    if opts.strip_brackets:
+    if opts.strip_brackets and opts.strip_parens:
+        spans.append(r"[\[(][^\])]*[\])]")
+    elif opts.strip_brackets:
         spans.append(r"\[[^\]]*\]")
-    if opts.strip_parens:
+    elif opts.strip_parens:
         spans.append(r"\([^)]*\)")
     rules = _Rules(label=label, spans=re.compile("|".join(spans)) if spans else None)
     _CACHE[opts] = rules
@@ -133,7 +135,13 @@ def balance(text: str, limit: int) -> list[str]:
     def clean_len(s: str) -> int:
         return len(TAG.sub("", s).strip())
 
-    if clean_len(text) <= limit or " " not in text:
+    if clean_len(text) <= limit:
+        return [text]
+    if " " not in text:
+        cut = re.search(r"[-.](?=[A-Za-z0-9])", text[limit // 2 : limit + 4])
+        if cut:
+            idx = limit // 2 + cut.end()
+            return [text[:idx], text[idx:]]
         return [text]
     mid = len(text) / 2
     best = None
@@ -157,11 +165,11 @@ def balance(text: str, limit: int) -> list[str]:
         return [text]
     _, left, right = best
     out = []
-    if clean_len(left) > limit and " " in left:
+    if clean_len(left) > limit:
         out.extend(balance(left, limit))
     else:
         out.append(left)
-    if clean_len(right) > limit and " " in right:
+    if clean_len(right) > limit:
         out.extend(balance(right, limit))
     else:
         out.append(right)
@@ -176,6 +184,11 @@ def strip_sdh(body: str, opts: Options) -> str:
         body = rules.spans.sub(" ", body)
     if opts.strip_music:
         body = MUSIC.sub(" ", body)
+    if opts.strip_brackets:
+        body = re.sub(r"(^|[\n\r])\s*-\s*\[\s*(?=[A-Za-z\u00c0-\u00dc\u00c7])", r"\1- ", body)
+        body = re.sub(r"(^|[\n\r]|<[a-z][^>]*>)\s*\[\s*(?=[A-Za-z\u00c0-\u00dc\u00c7])(?![^\[\]\n]*\])", r"\1", body)
+    if opts.strip_parens:
+        body = re.sub(r"(^|[\n\r]|<[a-z][^>]*>)\s*\(\s*(?=[A-Za-z\u00c0-\u00dc\u00c7])(?![^()\n]*\))", r"\1", body)
     lines = []
     for line in body.split("\n"):
         line = re.sub(r"\s{2,}", " ", line).strip()
@@ -197,14 +210,20 @@ def strip_label(part: str, opts: Options) -> str:
         return part.strip()
     lead = "- " if part.lstrip().startswith("-") else ""
     body = part.lstrip()[1:].strip() if lead else part
+    if opts.strip_brackets:
+        body = re.sub(r"^\[(?=[A-Za-z\u00c0-\u00dc\u00c70-9 .'#\-]{1,20}:)\s*", "", body)
+    if opts.strip_parens:
+        body = re.sub(r"^\((?=[A-Za-z\u00c0-\u00dc\u00c70-9 .'#\-]{1,20}:)\s*", "", body)
     body = rules_for(opts).label.sub("", body, count=1)
     body = body.lstrip(": ").strip()
+    body = re.sub(r"^(<[a-z][^>]*>)\s+", r"\1", body, flags=re.I)
     return (lead + body).strip() if body else ""
 
 
 def rewrap(text: str, opts: Options) -> str:
     """Rebuild a cue's line breaks from scratch."""
     open_tag, body, close_tag = _tag_split(text)
+    body = re.sub(r"(</[a-z][^>]*>)\s*(-(?:\s*[A-Za-z\u00c0-\u00dc\u00c7]|\s*\S))", r"\1 \2", body, flags=re.I)
     body = " ".join(l.strip() for l in body.split("\n") if l.strip())
     if not body:
         return ""
