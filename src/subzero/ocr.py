@@ -195,9 +195,10 @@ def extract_and_ocr_gaps(
         for idx, (g_start, g_end) in enumerate(gaps, start=1):
             gap_dir = work_dir / f"gap_{idx:03d}"
             gap_dir.mkdir(parents=True, exist_ok=True)
+            dur = max(0.5, g_end - g_start)
             cmd = [
-                "ffmpeg", "-y", "-ss", f"{g_start:.3f}", "-to", f"{g_end:.3f}",
-                "-i", str(video), "-vf", f"fps={fps}", "-q:v", "2",
+                "ffmpeg", "-y", "-ss", f"{g_start:.3f}", "-i", str(video),
+                "-t", f"{dur:.3f}", "-vf", f"fps={fps}", "-q:v", "2",
                 str(gap_dir / "f_%03d.jpg"),
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
