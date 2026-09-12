@@ -26,6 +26,7 @@ from .extract import (
 )
 from .merge import merge_cues, merge_files
 from .moviehash import moviehash
+from .ocr import GapReport, extract_and_ocr_gaps, fill_subtitle_gaps, find_speech_gaps
 from .shift import calculate_fps_factor, shift_file, shift_timestamps
 from .sync import auto_sync_file, probe_audio_delay
 from .translate import OllamaClient, OpenAIClient, translate_cues, translate_file
@@ -35,6 +36,7 @@ __all__ = [
     "Cue",
     "ExtractResult",
     "ConvertResult",
+    "GapReport",
     "OllamaClient",
     "OpenAIClient",
     "Options",
@@ -52,7 +54,10 @@ __all__ = [
     "dump_ass",
     "dump_srt",
     "dump_vtt",
+    "extract_and_ocr_gaps",
     "extract_from_video",
+    "fill_subtitle_gaps",
+    "find_speech_gaps",
     "fix_file",
     "fix_text",
     "keep_breaks",

@@ -67,3 +67,19 @@ def test_worker_contribute_action_parses():
     assert args.action == "contribute"
     assert args.port == 9000
 
+
+def test_fill_gaps_cli_parsing_and_alias():
+    from subzero.cli import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["fill-gaps", "vid.mkv", "sub.srt", "--to", "pt-BR", "--dry-run"])
+    assert args.command == "fill-gaps"
+    assert args.video == "vid.mkv"
+    assert args.subtitle == "sub.srt"
+    assert args.to == "pt-BR"
+    assert args.dry_run is True
+
+    alias_args = parser.parse_args(["ocr-sync", "vid.mkv", "sub.srt"])
+    assert alias_args.command == "ocr-sync"
+    assert alias_args.video == "vid.mkv"
+    assert alias_args.subtitle == "sub.srt"
+

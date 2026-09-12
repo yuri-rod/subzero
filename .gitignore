@@ -12,3 +12,4 @@ uv.lock
 *.db
 watch.json
 logs/
+tools/vision_ocr
