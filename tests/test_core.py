@@ -182,6 +182,18 @@ class TestAnalyze:
         st = analyze(src)
         assert st.long_lines == 1
 
+    def test_ignores_mid_sentence_asides_and_ranges(self):
+        src = cue("- O fato de eu ter chegado tão perto - oh, foi doloroso.")
+        st = analyze(src)
+        assert st.collapsed == 0
+        src2 = cue("- Ele tinha entre 20 - 30 anos.")
+        assert analyze(src2).collapsed == 0
+
+    def test_rewrap_preserves_single_speaker_aside(self):
+        src = "- O fato de eu ter chegado perto - oh, foi doloroso."
+        out = fix_text(cue(src)).text
+        assert "- oh, foi doloroso." not in out
+
 
 class TestEdgeCases:
     def test_mismatched_brackets_stripped(self):

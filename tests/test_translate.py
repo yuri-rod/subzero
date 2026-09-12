@@ -39,6 +39,11 @@ def test_translation_parser_accepts_structured_cues():
     assert _parse_lines('[{"id":1,"text":"Ola"},{"id":2,"text":"Jeff"}]') == ["Ola", "Jeff"]
 
 
+def test_translation_parser_preserves_multiline_dialogue():
+    payload = '[{"id":1,"text":"- Ola.\\n- Jeff."},{"id":2,"text":"Tudo bem."}]'
+    assert _parse_lines(payload) == ["- Ola.\n- Jeff.", "Tudo bem."]
+
+
 def test_translation_retries_then_splits_without_changing_timings():
     calls = []
 

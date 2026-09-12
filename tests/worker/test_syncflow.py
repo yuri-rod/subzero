@@ -446,3 +446,19 @@ def test_install_prunes_bare_srt_when_installing_tagged_sub(setup):
     assert target.exists()
     assert target.name.endswith('.pt-BR.srt')
     assert not bare.exists()
+
+
+def test_install_prunes_intermediate_sidecars_matching_embedded_tracks(setup):
+    flow,jobs,provider,media=setup
+    intermediate = Path(media.path).parent / f"{Path(media.path).stem}.en.srt"
+    intermediate.write_text('extracted intermediate en sub')
+    assert intermediate.exists()
+    # media has embedded stream with lang='eng'
+    from types import SimpleNamespace
+    media.embedded = [SimpleNamespace(index=2, lang='eng', codec='subrip', title='English', external=False)]
+    provider.download = lambda fid: dialogue()
+    job = run(flow, jobs, 'refetch')
+    assert job.state == 'done'
+    target = Path(job.result_path)
+    assert target.exists()
+    assert not intermediate.exists()
