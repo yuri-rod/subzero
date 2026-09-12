@@ -8,6 +8,7 @@ import re
 import time
 import urllib.request
 import urllib.error
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -41,7 +42,9 @@ LANG_ALIASES = {
 }
 
 MAX_RESPONSE_BYTES = 131072
-TRANSLATION_PROMPT_VERSION = "native-hymt2-passage-5"
+TRANSLATION_PROMPT_VERSION = "native-hymt2-prior-sentences-7"
+TRANSLATION_CONTEXT_CUES = 32
+TRANSLATION_CONTEXT_CHARS = 6000
 NATIVE_CONTROL = re.compile(r"<(?:[|｜ｆｈｺｂ]|/?(?:think|suggested_response)\b)")
 
 FEMININE = {"f", "fem", "feminine", "feminino", "feminina", "female", "mulher"}
@@ -151,6 +154,118 @@ def _is_native_translation(model: str) -> bool:
     return model.rsplit("/", 1)[-1].split(":", 1)[0].lower() in {"translategemma", "hy-mt2"}
 
 
+SPEAKER = re.compile(r"(?m)^\s*(?:[-\u2013\u2014]\s*)?([A-Z][A-Z0-9 '\-]{1,40}):\s*")
+DIALOGUE_TURN = re.compile(r"(?m)^\s*[-\u2013\u2014]\s*\S")
+SUBTITLE_FORMATTING = re.compile(r"<[^>]*>|\{[^}]*\}")
+
+
+def _sentence_complete(text):
+    text = re.sub(r"<[^>]*>", "", text).strip()
+    text = re.sub(r"\s*[\[(][^()\[\]]{1,80}[\])]\s*$", "", text)
+    text = text.rstrip('"\'”’)]}').rstrip()
+    return bool(text) and text[-1] in ".!?" and not text.endswith("...")
+
+
+def _cue_seconds(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    hours, minutes, seconds = value.replace(",", ".").split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def sentence_units(cues):
+    unit = []
+    for cue in cues:
+        if unit:
+            gap = _cue_seconds(cue.start) - _cue_seconds(unit[-1].end)
+            previous = [SUBTITLE_FORMATTING.sub("", c.text) for c in unit]
+            following = SUBTITLE_FORMATTING.sub("", cue.text)
+            previous_speakers = set(SPEAKER.findall("\n".join(previous)))
+            next_speakers = set(SPEAKER.findall(following))
+            if (_sentence_complete(unit[-1].text) or not 0 <= gap <= 0.5
+                    or DIALOGUE_TURN.search(previous[-1]) or DIALOGUE_TURN.search(following)
+                    or (next_speakers and next_speakers != previous_speakers)
+                    or len(previous_speakers | next_speakers) > 1
+                    or len(unit) >= 8 or sum(len(c.text) for c in unit) + len(cue.text) > 800
+                    or _cue_seconds(cue.end) - _cue_seconds(unit[0].start) > 20):
+                yield unit
+                unit = []
+        unit.append(cue)
+    if unit:
+        yield unit
+
+
+def translation_blocks(cues, batch_size, model):
+    if batch_size < 1:
+        raise ValueError("Translation batch size must be positive")
+    if not _is_native_translation(model) or _is_translategemma(model):
+        yield from chunks(cues, batch_size)
+        return
+    block = []
+    for unit in sentence_units(cues):
+        if block and len(block) + len(unit) > batch_size:
+            yield block
+            block = []
+        block.extend(unit)
+    if block:
+        yield block
+
+
+def reflow_translation(cues, text):
+    if len(cues) == 1:
+        return [text]
+    prefix = ""
+    speaker = SPEAKER.match(text)
+    if speaker:
+        prefix, text = text[:speaker.end()].strip(), text[speaker.end():]
+    words = text.split()
+    if len(words) < len(cues):
+        raise RuntimeError("Translated sentence has fewer words than subtitle anchors")
+    weights = [max(1, len(" ".join(SPEAKER.sub("", cue.text).split()))) for cue in cues]
+    total = sum(weights)
+    consumed = 0
+    start = 0
+    lines = []
+    for index, weight in enumerate(weights):
+        consumed += weight
+        end = min(len(words) - (len(cues) - index - 1), max(start + 1, round(len(words) * consumed / total)))
+        lines.append(" ".join(words[start:end]))
+        start = end
+    if prefix:
+        lines[0] = prefix + "\n" + lines[0]
+    return lines
+
+
+def _previous_context(cues, context=None):
+    context = context or {}
+    previous = (list(context.get("previous_cues", [])) + [c.text for c in cues])[-TRANSLATION_CONTEXT_CUES:]
+    excess = len("\n".join(previous)) - TRANSLATION_CONTEXT_CHARS
+    while previous and excess > 0:
+        if len(previous[0]) > excess:
+            previous[0] = previous[0][excess:]
+            break
+        excess -= len(previous.pop(0)) + 1
+    return {"title": " ".join(context.get("title", "").split())[:256], "previous_cues": previous}
+
+
+def _translate_sentence_units(cues, target_lang, client, source_lang=None, context=None):
+    lines = []
+    start = 0
+    for unit in sentence_units(cues):
+        speaker = SPEAKER.match(unit[0].text)
+        parts = [unit[0].text]
+        for cue in unit[1:]:
+            repeated = SPEAKER.match(cue.text)
+            parts.append(cue.text[repeated.end():] if speaker and repeated
+                         and speaker.group(1) == repeated.group(1) else cue.text)
+        joined = replace(unit[0], end=unit[-1].end, text="\n".join(parts))
+        neighbors = _previous_context(cues[:start], context)
+        translated = _translate_lines([joined], target_lang, client, source_lang=source_lang, context=neighbors)
+        lines.extend(reflow_translation(unit, translated[0]))
+        start += len(unit)
+    return lines
+
+
 def _parse_ollama_response(body, native: bool = False) -> list[str]:
     if not isinstance(body, dict):
         return []
@@ -208,11 +323,13 @@ def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, 
             raise RuntimeError("Hy-MT2 requires an explicit known target language")
         if len(cues) != 1:
             raise RuntimeError("Hy-MT2 requires exactly one subtitle per request")
-        if context and any(context.get(key) for key in ("passage", "previous", "following")):
+        if not _sentence_complete(cues[0].text):
+            context = None
+        context = _previous_context([], context)
+        if context["previous_cues"]:
             background = (
-                f"Programme title: {context.get('title', '')}\nEnglish dialogue:\n{context['passage']}\n"
-                if context.get("passage") else
-                f"Previous dialogue: {context.get('previous', '')}\nFollowing dialogue: {context.get('following', '')}\n"
+                f"Programme title: {context['title']}\nEnglish dialogue:\n"
+                + "\n".join(context["previous_cues"]) + "\n"
             )
             prompt = (
                 "[Background Information]\n" + background +
@@ -300,6 +417,8 @@ class OllamaClient:
         self.num_predict = num_predict
 
     def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
+        if _is_native_translation(self.model) and not _is_translategemma(self.model) and len(cues) > 1:
+            return _translate_sentence_units(cues, target_lang, self, source_lang, context)
         if _is_native_translation(self.model) and len(cues) > 1:
             return [line for index, cue in enumerate(cues)
                     for line in _translate_lines([cue], target_lang, self, source_lang=source_lang, context=context or {
@@ -415,10 +534,13 @@ def translate_cues(
     progress: Callable[[int, int], None] | None = None,
     source_lang: str | None = None,
 ) -> list[Cue]:
-    blocks = list(chunks(cues, batch_size))
+    model = getattr(client, "model", "")
+    blocks = list(translation_blocks(cues, batch_size, model))
     translated: list[Cue] = []
     for idx, block in enumerate(blocks, start=1):
-        lines = _translate_lines(block, target_lang, client, source_lang=source_lang)
+        context = (_previous_context(cues[:len(translated)])
+                   if _is_native_translation(model) and not _is_translategemma(model) else None)
+        lines = _translate_lines(block, target_lang, client, source_lang=source_lang, context=context)
         for cue, text in zip(block, lines):
             translated.append(Cue(cue.start, cue.end, text))
         if progress:

@@ -85,7 +85,7 @@ def test_incomplete_translation_never_writes_target(tmp_path, monkeypatch):
     target.write_text("existing subtitle")
     calls = []
 
-    def reply(*args):
+    def reply(*args, **kwargs):
         calls.append(1)
         return []
 
@@ -367,13 +367,13 @@ def test_native_translation_rejects_incomplete_or_structured_response(monkeypatc
 
 def test_hymt2_uses_official_context_format_outside_current_source():
     source = "PROBST:\nGet your chest out."
-    context = {"previous": "Bring the three chests here.", "following": "The puzzle makers take over."}
+    context = {"title": "Island game", "previous_cues": ["Bring the three chests here."],
+               "following": "The puzzle makers take over.", "passage": "Unsafe shared passage."}
     payload = _ollama_payload([Cue(1, 2, source)], "pt-BR", "kaelri/hy-mt2:7b", "2m", 4096, 512,
                               source_lang="en", context=context)
     assert payload["prompt"] == (
         "<|startoftext|>[Background Information]\n"
-        "Previous dialogue: Bring the three chests here.\n"
-        "Following dialogue: The puzzle makers take over.\n"
+        "Programme title: Island game\nEnglish dialogue:\nBring the three chests here.\n"
         "Please translate the following text into Brazilian Portuguese, "
         "taking the provided background information into consideration.\n"
         "[Source Text]\nPROBST:\nGet your chest out.<|extra_0|>"
@@ -398,7 +398,7 @@ def test_hymt2_refuses_multiple_sources_in_one_request():
                         "kaelri/hy-mt2:7b", "2m", 4096, 512)
 
 
-def test_standalone_native_translation_uses_two_neighbors_and_keeps_context_on_retry(monkeypatch):
+def test_standalone_native_translation_uses_only_prior_cues_across_blocks_and_retries(monkeypatch):
     from io import BytesIO
     prompts = []
     replies = iter(["Um.", "Dois.", "", "Três.", "Quatro.", "Cinco."])
@@ -411,16 +411,17 @@ def test_standalone_native_translation_uses_two_neighbors_and_keeps_context_on_r
 
     monkeypatch.setattr("urllib.request.urlopen", request)
     cues = [Cue(i, i + 0.5, text) for i, text in enumerate(["One.", "Two.", "Three.", "Four.", "Five."])]
-    translated = translate_cues(cues, "pt-BR", OllamaClient(model="kaelri/hy-mt2:7b"), source_lang="en")
+    translated = translate_cues(cues, "pt-BR", OllamaClient(model="kaelri/hy-mt2:7b"), source_lang="en", batch_size=2)
     assert [cue.text for cue in translated] == ["Um.", "Dois.", "Três.", "Quatro.", "Cinco."]
     assert [(cue.start, cue.end) for cue in translated] == [(0, 0.5), (1, 1.5), (2, 2.5), (3, 3.5), (4, 4.5)]
     middle_header, middle_source = prompts[2].split("\n[Source Text]\n", 1)
     assert middle_source == "Three.<|extra_0|>"
-    assert all(text in middle_header for text in ["One.", "Two.", "Four.", "Five."])
+    assert all(text in middle_header for text in ["One.", "Two."])
+    assert all(text not in middle_header for text in ["Three.", "Four.", "Five."])
     assert prompts[2] == prompts[3]
     first_header = prompts[0].split("\n[Source Text]\n", 1)[0]
-    assert "Two." in first_header and "Three." in first_header
-    assert "Four." not in first_header and "Five." not in first_header
+    assert "Background Information" not in first_header
+    assert all(text not in first_header for text in ["Two.", "Three.", "Four.", "Five."])
 
 
 @pytest.mark.parametrize("model", ["kaelri/hy-mt2:1.8b", "kaelri/hy-mt2:30b-a3b", "kaelri/hy-mt2:latest"])
@@ -459,10 +460,11 @@ def test_hymt2_raw_source_cannot_inject_model_control_tokens():
                         "kaelri/hy-mt2:7b", "2m", 4096, 512)
 
 
-def test_hymt2_shared_passage_stays_outside_current_source(monkeypatch):
+def test_hymt2_updates_prior_history_per_unit_and_discards_shared_passage(monkeypatch):
     from io import BytesIO
     prompts = []
-    context = {"title": "Island game", "passage": "Dig up the chest. Move it to the puzzle."}
+    context = {"title": "Island game", "previous_cues": ["Dig up the chest."],
+               "passage": "Unsafe current and future dialogue.", "following": "Future dialogue."}
 
     def request(req, timeout):
         prompts.append(json.loads(req.data)["prompt"])
@@ -474,8 +476,138 @@ def test_hymt2_shared_passage_stays_outside_current_source(monkeypatch):
     OllamaClient(model="kaelri/hy-mt2:7b").translate_block(
         [Cue(1, 2, "You're good."), Cue(3, 4, "Get it out.")], "pt-BR", source_lang="en", context=context)
     headers = [prompt.split("\n[Source Text]\n")[0] for prompt in prompts]
-    assert len(headers) == 2 and headers[0] == headers[1]
-    assert "Programme title: Island game" in headers[0]
-    assert context["passage"] in headers[0]
+    assert len(headers) == 2 and headers[0] != headers[1]
+    assert all("Programme title: Island game" in h and "Dig up the chest." in h for h in headers)
+    assert "You're good." not in headers[0] and "You're good." in headers[1]
+    assert all("Get it out." not in h and "Unsafe" not in h and "Future" not in h for h in headers)
     assert prompts[0].endswith("\nYou're good.<|extra_0|>")
     assert prompts[1].endswith("\nGet it out.<|extra_0|>")
+
+
+def test_hymt2_translates_continuation_once_and_reflows_every_word(monkeypatch):
+    from io import BytesIO
+    prompts = []
+    generated = "GABE:\nQuero ser o primeiro rosto no Monte Rushmore da nova era."
+
+    def request(req, timeout):
+        prompts.append(json.loads(req.data)["prompt"])
+        response = BytesIO(json.dumps({"response": generated, "done": True, "done_reason": "stop"}).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", request)
+    cues = [Cue("00:00:08,174", "00:00:09,909", "GABE:\nI want to be the very first head"),
+            Cue("00:00:09,976", "00:00:12,278", "on the Mount Rushmore of the new era.")]
+    translated = translate_cues(cues, "pt-BR", OllamaClient(), source_lang="en")
+    assert len(prompts) == 1
+    assert all(cue.text in prompts[0] for cue in cues)
+    assert [word for cue in translated for word in cue.text.split()] == generated.split()
+    assert [(cue.start, cue.end) for cue in translated] == [(cue.start, cue.end) for cue in cues]
+    assert all(cue.text.strip() for cue in translated)
+
+
+def test_sentence_units_stop_at_speakers_dialogue_turns_gaps_and_complete_sentences():
+    from subzero.translate import sentence_units
+    cues = [Cue(0, 1, "GABE:\nI want"), Cue(1.05, 2, "to win."),
+            Cue(2.05, 3, "Another thought"), Cue(3.05, 4, "CAROLINE:\nI will"),
+            Cue(4.05, 5, "-Hi.\n-Hello."), Cue(5.05, 6, "I thought"),
+            Cue(7, 8, "about it."), Cue(8.05, 9, "A new sentence.")]
+    assert [len(unit) for unit in sentence_units(cues)] == [2, 1, 1, 1, 1, 1, 1]
+
+
+@pytest.mark.parametrize('opening,closing', [('<i>', '</i>'), ('{\\i1}', '{\\i0}')])
+@pytest.mark.parametrize('first,second', [
+    ('GABE: I want', 'CAROLINE: I disagree.'),
+    ('- I want', 'to win.'),
+    ('I want', '- I disagree.'),
+])
+def test_sentence_units_keep_formatted_speakers_and_turns_separate(opening, closing, first, second):
+    from subzero.translate import sentence_units
+    cues = [Cue(0, 1, opening + first + closing), Cue(1.1, 2, opening + second + closing)]
+    original = [(c.start, c.end, c.text) for c in cues]
+    units = list(sentence_units(cues))
+    assert [len(unit) for unit in units] == [1, 1]
+    assert [(c.start, c.end, c.text) for unit in units for c in unit] == original
+
+
+def test_sentence_batch_boundary_does_not_cut_a_continuation():
+    from subzero.translate import translation_blocks
+    cues = [Cue(i, i + 0.5, "Hello.") for i in range(19)]
+    cues += [Cue(19, 19.5, "I look like somebody"), Cue(19.55, 20, "who would not hurt a fly.")]
+    assert [len(block) for block in translation_blocks(cues, 20, "subzero/hy-mt2:7b")] == [19, 2]
+    assert [len(block) for block in translation_blocks(cues, 20, "translategemma:4b")] == [20, 1]
+
+
+def test_incomplete_sentence_unit_has_no_background_context():
+    payload = _ollama_payload([Cue(0, 1, "I spent")], "pt-BR", "subzero/hy-mt2:7b", "2m", 4096, 512,
+                              source_lang="en", context={"previous_cues": ["I was in foster care."],
+                                                         "following": "five years in foster care."})
+    assert "foster" not in payload["prompt"]
+    assert "Background" not in payload["prompt"]
+
+
+def test_sentence_units_are_bounded_and_redistribution_fails_if_words_are_missing():
+    from subzero.translate import sentence_units, reflow_translation
+    cues = [Cue(i, i + 0.95, "another fragment") for i in range(12)]
+    assert [len(unit) for unit in sentence_units(cues)] == [8, 4]
+    with pytest.raises(RuntimeError, match="fewer words"):
+        reflow_translation(cues[:3], "Só dois")
+
+
+def test_sentence_join_does_not_repeat_the_same_speaker_label(monkeypatch):
+    from io import BytesIO
+    prompts = []
+
+    def request(req, timeout):
+        prompts.append(json.loads(req.data)["prompt"])
+        response = BytesIO(json.dumps({"response": "GABE:\nEu quero vencer.", "done": True, "done_reason": "stop"}).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", request)
+    cues = [Cue(0, 1, "GABE:\nI want"), Cue(1.05, 2, "GABE:\nto win.")]
+    lines = OllamaClient().translate_block(cues, "pt-BR", "en")
+    source = prompts[0].split("[Source Text]\n")[-1]
+    assert source.count("GABE:") == 1
+    assert "I want\nto win." in source
+    assert " ".join(lines).split() == "GABE: Eu quero vencer.".split()
+
+
+@pytest.mark.parametrize("cues", [
+    [Cue(0, 12, "a long sentence"), Cue(12.05, 24, "continues here")],
+    [Cue(0, 1, "word " * 100), Cue(1.05, 2, "word " * 100)],
+    [Cue(0, 2, "overlapping speech"), Cue(1, 3, "another voice")],
+])
+def test_sentence_units_respect_duration_size_and_overlapping_speech(cues):
+    from subzero.translate import sentence_units
+    assert [len(unit) for unit in sentence_units(cues)] == [1, 1]
+
+
+def test_hymt2_prior_history_is_bounded_and_excludes_current_sentence(monkeypatch):
+    from io import BytesIO
+    prompts = []
+
+    def request(req, timeout):
+        prompts.append(json.loads(req.data)["prompt"])
+        response = BytesIO(json.dumps({"response": "A fala.", "done": True, "done_reason": "stop"}).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", request)
+    cues = [Cue(i, i + .9, f"Earlier cue {i}.") for i in range(34)]
+    cues += [Cue(34, 34.9, "I spent"), Cue(35, 35.9, "five years in foster care.")]
+    translate_cues(cues, "pt-BR", OllamaClient(), source_lang="en")
+    header, source = prompts[-1].split("\n[Source Text]\n")
+    assert "Earlier cue 0." not in header and "Earlier cue 1." not in header
+    assert all(f"Earlier cue {i}." in header for i in range(2, 34))
+    assert "I spent" not in header and "foster care" not in header
+    assert source == "I spent\nfive years in foster care.<|extra_0|>"
+
+
+def test_hymt2_prior_background_has_character_limit():
+    context = {"title": "S" * 1000, "previous_cues": [f"Cue {i}: " + "x" * 500 for i in range(40)]}
+    payload = _ollama_payload([Cue(0, 1, "Current source.")], "pt-BR", "subzero/hy-mt2:7b",
+                              "2m", 4096, 512, source_lang="en", context=context)
+    background = payload["prompt"].split("English dialogue:\n", 1)[1].split("\nPlease translate", 1)[0]
+    assert background == "\n".join(context["previous_cues"][-32:])[-6000:]
+    assert "Programme title: " + "S" * 256 + "\n" in payload["prompt"]

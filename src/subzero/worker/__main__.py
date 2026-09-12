@@ -32,7 +32,6 @@ def find_env_file(custom: str | Path | None = None) -> Path | None:
         Path.cwd() / ".env",
         Path(__file__).resolve().parents[3] / ".env",
         Path.home() / ".config/subzero/.env",
-        Path.home() / ".config/srtworker/.env",
     ]:
         if candidate.exists():
             return candidate

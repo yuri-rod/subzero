@@ -11,7 +11,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -51,13 +53,6 @@ def get_vision_ocr_bin() -> str | None:
         return which_bin
 
     swift_src = Path(__file__).resolve().parent / "vision_ocr.swift"
-    if not swift_src.is_file():
-        swift_src = Path(__file__).resolve().parent.parent.parent / "tools" / "vision_ocr.swift"
-
-    repo_bin = Path(__file__).resolve().parent.parent.parent / "tools" / "vision_ocr"
-    if (repo_bin.is_file() and os.access(repo_bin, os.X_OK)
-            and (not swift_src.is_file() or repo_bin.stat().st_mtime >= swift_src.stat().st_mtime)):
-        return str(repo_bin)
 
     if swift_src.is_file() and sys.platform == "darwin":
         cache_bin = Path.home() / ".cache" / "subzero" / "bin" / "vision_ocr"
@@ -81,7 +76,6 @@ def find_speech_gaps(
     video: str | Path,
     subtitle_content: str,
     min_duration: float = 1.0,
-    max_coverage: float = 0.15,
     cache_dir: str | Path | None = None,
 ) -> list[tuple[float, float]]:
     cache = cache_dir or Path.home() / ".cache" / "subzero" / "references"
@@ -136,6 +130,7 @@ def clean_ocr_text(
     text: str,
     ignore_patterns: Iterable[re.Pattern] = DEFAULT_IGNORE_PATTERNS,
 ) -> str:
+    ignore_patterns = tuple(ignore_patterns)
     text = re.sub(r"[ạẠỊ]", "", text)
     text = re.sub(r"\bl(?=['’]ve\b)", "I", text)
     lines: list[str] = []
@@ -146,29 +141,212 @@ def clean_ocr_text(
         if any(pat.search(line) for pat in ignore_patterns):
             continue
         lines.append(line)
-    return "\n".join(lines)
+    cleaned = "\n".join(lines)
+    if any(pattern.search(" ".join(cleaned.split())) for pattern in ignore_patterns):
+        return ""
+    return cleaned
 
 
-def caption_text(frame: dict, center_tolerance: float | None = 0.12) -> str:
-    if not frame.get("items"):
-        return frame["subtitleText"]
-    lines = []
-    for region in frame["items"]:
+def _caption_regions(frame: dict, center_tolerance: float | None, max_height: float = 0.10) -> list[dict]:
+    regions = []
+    for region in frame.get("items", []):
         if not isinstance(region, dict) or not isinstance(region.get("text"), str):
             raise RuntimeError("Vision OCR returned an invalid text region")
         try:
             confidence, x, y, width, height = [float(region[name]) for name in
                                               ("confidence", "x", "y", "width", "height")]
+            angle = float(region.get("angle", 0))
         except (KeyError, TypeError, ValueError) as err:
             raise RuntimeError("Vision OCR returned invalid text coordinates") from err
-        if not all(math.isfinite(value) for value in (confidence, x, y, width, height)):
+        if not all(math.isfinite(value) for value in (confidence, x, y, width, height, angle)):
             raise RuntimeError("Vision OCR returned invalid text coordinates")
-        if confidence >= 0.8 and height >= 0.12 and width >= 0.45 and y >= 0.25 and abs(x + width / 2 - 0.5) <= 0.12:
-            return ""
-        if (confidence >= 0.8 and 0.03 <= y <= 0.25 and 0.045 <= height <= 0.10
+        if abs(angle) > 10:
+            continue
+        if (confidence >= 0.8 and height >= 0.12 and abs(x + width / 2 - 0.5) <= 0.12
+                and ((width >= 0.45 and y >= 0.25) or (width >= 0.35 and y >= 0.45))):
+            return []
+        if (confidence >= 0.8 and 0.03 <= y <= 0.25 and 0.045 <= height <= max_height
                 and width >= 0.04 and (center_tolerance is None
                                       or abs(x + width / 2 - 0.5) <= center_tolerance)):
-            lines.append((y, x, region["text"]))
+            regions.append({**region, "x": x, "y": y, "width": width, "height": height})
+    return regions
+
+
+def _same_caption_position(first: dict, second: dict) -> bool:
+    return (abs(first["x"] + first["width"] / 2 - second["x"] - second["width"] / 2) <= 0.03
+            and abs(first["y"] + first["height"] / 2 - second["y"] - second["height"] / 2) <= 0.04
+            and 0.75 <= first["width"] / second["width"] <= 1.25)
+
+
+def _caption_title_card(frame: dict) -> bool:
+    return any(float(region["confidence"]) >= 0.8 and abs(float(region.get("angle", 0))) <= 10
+               and float(region["height"]) >= 0.12
+               and abs(float(region["x"]) + float(region["width"]) / 2 - 0.5) <= 0.12
+               and ((float(region["width"]) >= 0.45 and float(region["y"]) >= 0.25)
+                    or (float(region["width"]) >= 0.35 and float(region["y"]) >= 0.45))
+               for region in frame.get("items", []))
+
+
+def caption_retry_indices(frames: list[dict], timestamps: list[float], fps: float = 2) -> list[int]:
+    texts = [clean_ocr_text(caption_text(frame,
+             previous=frames[index - 1] if index else None,
+             following=frames[index + 1] if index + 1 < len(frames) else None))
+             if frame.get("items") else "" for index, frame in enumerate(frames)]
+    selected = set()
+    for index in range(len(frames) - 1):
+        if not 0 < timestamps[index + 1] - timestamps[index] <= 1.5 / fps:
+            continue
+        first, second = [_caption_words(text) for text in texts[index:index + 2]]
+        if first == second:
+            continue
+        if first and second and SequenceMatcher(None, " ".join(first), " ".join(second)).ratio() >= 0.65:
+            selected.update(range(max(0, index - 1), min(len(frames), index + 3)))
+        elif index and not first and second == _caption_words(texts[index - 1]):
+            selected.update((index - 1, index, index + 1))
+    return sorted(index for index in selected if not _caption_title_card(frames[index]))
+
+
+def _protected_caption_change(first: str, second: str) -> bool:
+    quoted = first.lstrip().startswith(('"', "'", "“", "‘")) or any(char in first for char in "ạẠỊ")
+    first, second = clean_ocr_text(first), clean_ocr_text(second)
+    left, right = _caption_words(first), _caption_words(second)
+    if _negation_words(left) != _negation_words(right):
+        return True
+    numbers = set("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split())
+    if [word for word in left if word.isdigit() or word in numbers] != [word for word in right if word.isdigit() or word in numbers]:
+        return True
+    if "".join(left).replace("'", "") == "".join(right).replace("'", ""):
+        return False
+    if _changed_caption_names(first, second):
+        contractions = {"it's", "that's", "here's", "there's"}
+        if left and right and right[0] in contractions and left[0][1:] == right[0]:
+            return _changed_caption_names(first[1:], second)
+        if quoted and len(left) == len(right) and all(a == b or a.rstrip("i") == b for a, b in zip(left, right)):
+            return False
+        return True
+    return False
+
+
+def _retry_compatible(first: str, second: str) -> bool:
+    protected = _protected_caption_change(first, second)
+    first, second = clean_ocr_text(first), clean_ocr_text(second)
+    left, right = _caption_words(first), _caption_words(second)
+    if left == right:
+        return True
+    if min(len(left), len(right)) < 3 or protected:
+        return False
+    if len(left) != len(right):
+        return "".join(left).replace("'", "") == "".join(right).replace("'", "")
+    changes = 0
+    for original, candidate in zip(left, right):
+        if original == candidate:
+            continue
+        short, long = sorted((original, candidate), key=len)
+        if not short or not (long.startswith(short) or long.endswith(short)
+                             or original.replace("'", "") == candidate.replace("'", "")):
+            return False
+        changes += max(1, len(long) - len(short))
+    return changes <= 3
+
+
+def recover_caption_runs(frames: list[dict], retries: dict[int, dict], timestamps: list[float],
+                         center_tolerance: float | None = 0.12) -> list[str]:
+    regions = [_caption_regions(frame, center_tolerance) for frame in frames]
+    retried = {index: _caption_regions(frame, center_tolerance) for index, frame in retries.items()
+               if not _caption_title_card(frames[index])}
+    updated = []
+    for index, frame in enumerate(frames):
+        if _caption_title_card(frame):
+            updated.append(frame)
+            continue
+        replacements = list(frame.get("items", []))
+        proposals = regions[index] + retried.get(index, [])
+        for region in proposals:
+            votes = Counter()
+            renderings = Counter()
+            cropped = set()
+            linked = {}
+            for neighbor in range(max(0, index - 6), min(len(frames), index + 7)):
+                if abs(timestamps[neighbor] - timestamps[index]) > 3:
+                    continue
+                seen = set()
+                for candidate in regions[neighbor] + retried.get(neighbor, []):
+                    text = clean_ocr_text(candidate["text"])
+                    if (not text or not _same_caption_position(region, candidate)
+                            or not _retry_compatible(region["text"], text)):
+                        continue
+                    words = tuple(_caption_words(text))
+                    renderings[words, text] += 1
+                    seen.add(words)
+                    if candidate in retried.get(neighbor, []):
+                        cropped.add(words)
+                votes.update(seen)
+                for words in seen:
+                    linked.setdefault(words, set()).update(seen)
+            reachable = {tuple(_caption_words(clean_ocr_text(region["text"])))}
+            pending = list(reachable)
+            while pending:
+                for words in linked.get(pending.pop(), set()) - reachable:
+                    reachable.add(words)
+                    pending.append(words)
+            eligible = [words for words in cropped & reachable if votes[words] >= 2]
+            if not eligible:
+                continue
+            words = max(eligible, key=lambda words: (votes[words], len(words), -len(" ".join(words)), words))
+            chosen = max((text for key, text in renderings if key == words),
+                         key=lambda text: (renderings[words, text], -len(text), text))
+            overlapping = [prior for prior in _caption_regions({"items": replacements}, center_tolerance, max_height=0.18)
+                           if abs(float(prior["y"]) + float(prior["height"]) / 2 - region["y"] - region["height"] / 2) <= 0.04
+                           and region["x"] <= float(prior["x"]) + float(prior["width"]) / 2 <= region["x"] + region["width"]]
+            if any(_protected_caption_change(prior["text"], chosen) for prior in overlapping):
+                continue
+            replacements = [prior for prior in replacements if prior not in overlapping]
+            replacements.append({**region, "text": chosen, "candidates": []})
+        updated.append({**frame, "items": replacements})
+    return [clean_ocr_text(caption_text(frame, center_tolerance,
+            previous=updated[index - 1] if index else None,
+            following=updated[index + 1] if index + 1 < len(updated) else None))
+            for index, frame in enumerate(updated)]
+
+
+def caption_text(frame: dict, center_tolerance: float | None = 0.12, *,
+                 previous: dict | None = None, following: dict | None = None) -> str:
+    if not frame.get("items"):
+        return frame["subtitleText"]
+    before = _caption_regions(previous or {}, center_tolerance)
+    after = _caption_regions(following or {}, center_tolerance)
+    lines = []
+    for region in _caption_regions(frame, center_tolerance, max_height=0.18):
+        first_words = {tuple(_caption_words(prior["text"])) for prior in before if _same_caption_position(region, prior)}
+        last_words = {tuple(_caption_words(later["text"])) for later in after if _same_caption_position(region, later)}
+        text = region["text"]
+        words = tuple(_caption_words(text))
+        for candidate in region.get("candidates", []):
+            if not isinstance(candidate, dict) or not isinstance(candidate.get("text"), str):
+                raise RuntimeError("Vision OCR returned an invalid text candidate")
+            try:
+                confidence = float(candidate["confidence"])
+            except (KeyError, TypeError, ValueError) as err:
+                raise RuntimeError("Vision OCR returned an invalid candidate confidence") from err
+            if not math.isfinite(confidence):
+                raise RuntimeError("Vision OCR returned an invalid candidate confidence")
+            candidate_words = tuple(_caption_words(candidate["text"]))
+            if (text.lstrip().startswith(('"', "'", "“", "‘")) and words and candidate_words
+                    and words[0] != candidate_words[0]):
+                continue
+            changes = sum(max(end_a - start_a, end_b - start_b)
+                          for op, start_a, end_a, start_b, end_b in
+                          SequenceMatcher(None, " ".join(words), " ".join(candidate_words), autojunk=False).get_opcodes()
+                          if op != "equal")
+            if (confidence >= 0.8 and min(len(words), len(candidate_words)) >= 5
+                    and candidate_words in first_words & last_words
+                    and changes <= 2 and _negation_words(words) == _negation_words(candidate_words)
+                    and not _changed_caption_names(text, candidate["text"])):
+                text, words = candidate["text"], candidate_words
+                break
+        if region["height"] > 0.10 and words not in first_words | last_words:
+            continue
+        lines.append((region["y"], region["x"], text))
     lines.sort(key=lambda region: (-region[0], region[1]))
     return "\n".join(text for _, _, text in lines)
 
@@ -183,6 +361,23 @@ def fmt_srt_time(sec: float) -> str:
 
 def _caption_words(text: str) -> list[str]:
     return re.findall(r"[^\W_]+(?:'[^\W_]+)*", text.lower().replace("’", "'"))
+
+
+def _negation_words(words: Iterable[str]) -> list[str]:
+    negations = {"no", "not", "never", "neither", "nor", "nobody", "nothing", "nowhere", "none", "without", "cannot"}
+    return [word for word in words if word in negations or word.endswith("n't")]
+
+
+def _changed_caption_names(first: str, second: str) -> bool:
+    left, right = [re.findall(r"[^\W_]+(?:'[^\W_]+)*", text.replace("’", "'")) for text in (first, second)]
+    first_person = {"I", "I'm", "I've", "I'll", "I'd"}
+    left_names = {word.lower() for word in left[1:] if word[0].isupper() and word not in first_person}
+    right_names = {word.lower() for word in right[1:] if word[0].isupper() and word not in first_person}
+    if left_names != right_names:
+        return True
+    if left and right and left[0][0].isupper() and right[0][0].isupper() and left[0].lower() != right[0].lower():
+        return left[0] not in first_person and right[0] not in first_person
+    return False
 
 
 def _single_character_change(first: str, second: str) -> bool:
@@ -201,13 +396,11 @@ def cluster_ocr_detections(
     detections: list[tuple[float, str]],
     min_duration: float = 1.4,
     max_gap: float = 2.0,
-    fuzzy_ratio: float = 0.92,
     sample_duration: float = 1.0,
 ) -> list[Cue]:
     ordered = sorted(detections)
     stable = list(ordered)
     frame_gap = min(max_gap, sample_duration * 1.5)
-    negations = {"no", "not", "never", "neither", "nor", "nobody", "nothing", "nowhere", "none", "without", "cannot"}
     for index in range(1, len(ordered) - 1):
         before, middle, after = ordered[index - 1:index + 2]
         if not (0 < middle[0] - before[0] <= frame_gap and 0 < after[0] - middle[0] <= frame_gap):
@@ -215,9 +408,9 @@ def cluster_ocr_detections(
         first_words, middle_words, last_words = [_caption_words(text) for _, text in (before, middle, after)]
         if min(len(first_words), len(middle_words)) < 5 or first_words != last_words:
             continue
-        first_negative = [word for word in first_words if word in negations or word.endswith("n't")]
-        middle_negative = [word for word in middle_words if word in negations or word.endswith("n't")]
-        if first_negative == middle_negative and _single_character_change(" ".join(first_words), " ".join(middle_words)):
+        first_negative, middle_negative = _negation_words(first_words), _negation_words(middle_words)
+        if (first_negative == middle_negative and not _changed_caption_names(before[1], middle[1])
+                and _single_character_change("".join(first_words), "".join(middle_words))):
             stable[index] = (middle[0], before[1])
     merged: list[tuple[float, float, str]] = []
     current = None
@@ -243,7 +436,34 @@ def cluster_ocr_detections(
             for start, end, text in merged if end > start]
 
 
-def extract_and_ocr_gaps(
+def _vision_frames(binary: str, frames: list[Path], caption_region: bool = False) -> dict[str, dict]:
+    res = subprocess.run([binary, "--json"] + (["--caption-region"] if caption_region else [])
+                         + [str(frame) for frame in frames],
+             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+             check=False, timeout=max(120, len(frames) * 10))
+    if res.returncode:
+        raise RuntimeError(f"Vision OCR failed: {res.stderr[-400:]}")
+    try:
+        rows = json.loads(res.stdout)
+    except (ValueError, UnicodeError) as err:
+        raise RuntimeError("Vision OCR returned invalid JSON") from err
+    if not isinstance(rows, list) or len(rows) != len(frames):
+        raise RuntimeError("Vision OCR did not return every caption frame")
+    by_file = {}
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get("file"), str)
+                or not isinstance(row.get("subtitleText"), str) or row.get("error")):
+            raise RuntimeError("Vision OCR returned an invalid frame")
+        name = Path(row["file"]).name
+        if name in by_file:
+            raise RuntimeError("Vision OCR returned a duplicate frame")
+        by_file[name] = row
+    if set(by_file) != {frame.name for frame in frames}:
+        raise RuntimeError("Vision OCR returned unexpected caption frames")
+    return by_file
+
+
+def _scan_caption_frames(
     video: str | Path,
     gaps: list[tuple[float, float]],
     ocr_bin: str | None = None,
@@ -252,7 +472,7 @@ def extract_and_ocr_gaps(
     ignore_patterns: Iterable[re.Pattern] = DEFAULT_IGNORE_PATTERNS,
     progress: Callable[[int, int], None] | None = None,
     center_tolerance: float | None = 0.12,
-) -> list[Cue]:
+) -> list[tuple[float, str]]:
     if not gaps:
         return []
 
@@ -261,7 +481,8 @@ def extract_and_ocr_gaps(
     binary = ocr_bin or get_vision_ocr_bin()
     if not binary:
         raise RuntimeError(
-            "vision_ocr tool not found. Compile tools/vision_ocr.swift or set SUBZERO_VISION_OCR."
+            "Apple Vision OCR is unavailable. On macOS, install the Swift compiler for the bundled tool "
+            "or set SUBZERO_VISION_OCR to an existing executable."
         )
 
     recovered = []
@@ -276,7 +497,9 @@ def extract_and_ocr_gaps(
             dur = g_end - g_start
             cmd = [
                 "ffmpeg", "-hide_banner", "-nostdin", "-y", "-ss", f"{g_start:.3f}", "-i", str(video),
-                "-t", f"{dur:.3f}", "-an", "-sn", "-vf", f"fps={fps}:start_time=0,showinfo", "-q:v", "2",
+                "-t", f"{dur:.3f}", "-an", "-sn", "-vf",
+                f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{1 / fps:.9f}),showinfo",
+                "-fps_mode", "vfr", "-q:v", "2",
                 str(gap_dir / "f_%03d.jpg"),
             ]
             try:
@@ -288,33 +511,28 @@ def extract_and_ocr_gaps(
                 timestamps = [float(value) for value in re.findall(r"\bpts_time:([\d.eE+-]+)", decoded.stderr)]
                 if not frames or len(timestamps) < len(frames):
                     raise RuntimeError("ffmpeg did not return timestamped caption frames")
-                res = subprocess.run([binary, "--json"] + [str(frame) for frame in frames],
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                     check=False, timeout=max(120, len(frames) * 10))
-                if res.returncode:
-                    raise RuntimeError(f"Vision OCR failed: {res.stderr[-400:]}")
-                try:
-                    rows = json.loads(res.stdout)
-                except (ValueError, UnicodeError) as err:
-                    raise RuntimeError("Vision OCR returned invalid JSON") from err
-                if not isinstance(rows, list) or len(rows) != len(frames):
-                    raise RuntimeError("Vision OCR did not return every caption frame")
-                by_file = {}
-                for row in rows:
-                    if (not isinstance(row, dict) or not isinstance(row.get("file"), str)
-                            or not isinstance(row.get("subtitleText"), str) or row.get("error")):
-                        raise RuntimeError("Vision OCR returned an invalid frame")
-                    name = Path(row["file"]).name
-                    if name in by_file:
-                        raise RuntimeError("Vision OCR returned a duplicate frame")
-                    by_file[name] = caption_text(row, center_tolerance)
-                if set(by_file) != {frame.name for frame in frames}:
-                    raise RuntimeError("Vision OCR returned unexpected caption frames")
-                detections = [(g_start + timestamp, clean_ocr_text(by_file[frame.name], ignore_patterns))
-                              for frame, timestamp in zip(frames, timestamps) if timestamp < dur]
-                cues = cluster_ocr_detections(detections, min_duration=1 / fps,
-                                             max_gap=1.5 / fps, sample_duration=1 / fps)
-                recovered.extend(clip_cues(cues, [(g_start, g_end)]))
+                by_file = _vision_frames(binary, frames)
+                ordered = [by_file[frame.name] for frame in frames]
+                selected = caption_retry_indices(ordered, timestamps, fps)
+                if selected:
+                    retry_frames = [frames[index] for index in selected]
+                    retried = _vision_frames(binary, retry_frames, caption_region=True)
+                    readings = recover_caption_runs(ordered, {index: retried[frames[index].name] for index in selected},
+                                                    timestamps, center_tolerance)
+                else:
+                    readings = None
+                detections = []
+                for position, (frame, timestamp) in enumerate(zip(frames, timestamps)):
+                    if timestamp >= dur:
+                        continue
+                    previous = (by_file[frames[position - 1].name] if position > 0
+                                and 0 < timestamp - timestamps[position - 1] <= 1.5 / fps else None)
+                    following = (by_file[frames[position + 1].name] if position + 1 < len(frames)
+                                 and 0 < timestamps[position + 1] - timestamp <= 1.5 / fps else None)
+                    text = (readings[position] if readings is not None else
+                            caption_text(by_file[frame.name], center_tolerance, previous=previous, following=following))
+                    detections.append((g_start + timestamp, clean_ocr_text(text, ignore_patterns)))
+                recovered.extend(detections)
             except subprocess.TimeoutExpired as err:
                 raise RuntimeError(f"{err.cmd[0]} timed out during caption extraction") from err
             finally:
@@ -326,6 +544,42 @@ def extract_and_ocr_gaps(
             shutil.rmtree(work_dir, ignore_errors=True)
 
     return recovered
+
+
+def extract_and_ocr_gaps(
+    video: str | Path,
+    gaps: list[tuple[float, float]],
+    ocr_bin: str | None = None,
+    fps: float = 2.0,
+    tmp_dir: Path | None = None,
+    ignore_patterns: Iterable[re.Pattern] = DEFAULT_IGNORE_PATTERNS,
+    progress: Callable[[int, int], None] | None = None,
+    center_tolerance: float | None = 0.12,
+) -> list[Cue]:
+    detections = _scan_caption_frames(video, gaps, ocr_bin, fps, tmp_dir, ignore_patterns,
+                                      progress, center_tolerance)
+    recovered = []
+    for start, end in gaps:
+        frames = [(timestamp, text) for timestamp, text in detections if start <= timestamp < end]
+        cues = cluster_ocr_detections(frames, min_duration=0, max_gap=1.5 / fps, sample_duration=1 / fps)
+        recovered.extend(clip_cues(cues, [(start, end)]))
+    return recovered
+
+
+def extract_all_captions(video: str | Path, duration: float, *,
+                         progress: Callable[[int, int], None] | None = None) -> list[Cue]:
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Caption scanning requires a positive video duration")
+    detections = []
+    starts = range(0, math.ceil(duration), 120)
+    for index, start in enumerate(starts):
+        end = min(duration, start + 120)
+        frames = _scan_caption_frames(video, [(max(0, start - 1), min(duration, end + 1))])
+        detections.extend((timestamp, text) for timestamp, text in frames if start <= timestamp < end)
+        if progress:
+            progress(index + 1, len(starts))
+    detections.append((duration, ""))
+    return cluster_ocr_detections(detections, min_duration=0, max_gap=0.75, sample_duration=0.5)
 
 
 def cue_start_seconds(c: Cue) -> float:
@@ -368,6 +622,7 @@ def fill_subtitle_gaps(
     dry_run: bool = False,
     backup: bool = True,
     progress: Callable[[int, int], None] | None = None,
+    all_captions: bool = False,
 ) -> GapReport:
     sub_p = Path(subtitle_path)
     if sub_p.is_symlink() or not sub_p.is_file():
@@ -378,13 +633,21 @@ def fill_subtitle_gaps(
     existing_cues = parse_srt(content)
     if not existing_cues:
         raise ValueError("Subtitle file has no valid cues")
-    gaps = find_caption_gaps(video, content, cache_dir=cache_dir)
+    if all_captions:
+        ref = build_reference(video, cache_dir or Path.home() / ".cache" / "subzero" / "references")
+        duration = float(ref.get("duration") or 0)
+        if not math.isfinite(duration) or duration <= 0:
+            raise RuntimeError("Video duration is missing from the caption reference")
+        gaps = [(0, duration)]
+    else:
+        gaps = find_caption_gaps(video, content, cache_dir=cache_dir)
     total_speech_sec = sum(end - start for start, end in gaps)
 
     if not gaps:
         return GapReport(total_gaps=0, speech_seconds=0.0, cues_recovered=0, cues=[])
 
-    recovered = extract_and_ocr_gaps(video, gaps, progress=progress)
+    recovered = (extract_all_captions(video, duration, progress=progress) if all_captions else
+                 extract_and_ocr_gaps(video, gaps, progress=progress))
     if not recovered:
         return GapReport(total_gaps=len(gaps), speech_seconds=total_speech_sec, cues_recovered=0, cues=[])
 
@@ -424,14 +687,26 @@ def fill_subtitle_gaps(
         to_merge = [Cue(source.start, source.end, translated.text, source.style)
                     for source, translated in zip(recovered, to_merge)]
 
-    to_merge = clip_cues(to_merge, gaps)
-    to_merge = parse_srt(fix_text(dump_srt(to_merge), Options(max_line=42, preserve_breaks=False)).text)
+    if all_captions:
+        from .caption_timeline import merge_caption_sources
+        combined = merge_caption_sources(existing_cues, to_merge)
+        originals = Counter(existing_cues)
+        to_merge = []
+        for cue in combined:
+            if originals[cue]:
+                originals[cue] -= 1
+            else:
+                to_merge.append(cue)
+    else:
+        to_merge = clip_cues(to_merge, gaps)
+        to_merge = parse_srt(fix_text(dump_srt(to_merge), Options(max_line=42, preserve_breaks=False)).text)
+        combined = sorted(existing_cues + to_merge, key=cue_start_seconds)
 
     out_path = Path(output) if output else sub_p
     if not dry_run and to_merge:
         if out_path.is_symlink():
             raise RuntimeError("Refusing to replace a subtitle symlink")
-        rendered = dump_srt(sorted(existing_cues + to_merge, key=cue_start_seconds))
+        rendered = dump_srt(combined)
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=out_path.parent,
                                          prefix=".subtitle-", suffix=".tmp", delete=False) as handle:
             tmp = Path(handle.name)
