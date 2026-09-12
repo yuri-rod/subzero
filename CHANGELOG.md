@@ -3,6 +3,13 @@
 Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.3] - 2026-09-12
+
+### Fixed
+
+- Prevent region OCR retries from duplicating fragments already contained in a complete native caption line.
+- Cache completed native scan windows so interrupted scans and validation retries can reuse observations without bypassing quality checks.
+
 ## [1.10.2] - 2026-09-12
 
 ### Fixed

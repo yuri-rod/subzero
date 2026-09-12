@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.10.2-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.3-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -408,6 +408,8 @@ jobs when `OCR_ENABLED=1`.
 The source scan samples at two frames per second, then scans caption transitions at ten frames per second to refine their starts and ends. Timestamps come from the selected input frames. Native recognition and frame sampling still limit timing precision; this does not establish word-level audio alignment.
 
 If the dense scan loses a caption confirmed by repeated source frames, recovery stops for review and keeps the installed subtitle.
+
+Completed scan windows are cached under `SYNC_CACHE/caption-scans`, including blank frames. Retries reuse their observed text and timestamps, then rerun caption and timing validation. Changes to the video, recognition version, native executable, macOS, FFmpeg, or scan settings invalidate the affected observations. Temporary video frames are discarded.
 
 Each dialogue cue and recovered caption retains its timing through translation
 and cleanup. Hy-MT2 translates sentence units once. When captions overlap, the
