@@ -1,6 +1,6 @@
 """Subtitle cleanup, conversion, timing, and translation tools."""
 
-__version__ = "1.10.4"
+__version__ = "1.10.5"
 
 from .convert import (
     Cue,

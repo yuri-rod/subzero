@@ -76,7 +76,7 @@ class Service:
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
 
     def _whisper(self, media, job: Job, progress: Progress) -> str:
-        # Release the translation model before loading the transcription model.
+        # The transcription and translation models share device memory.
         if self.ollama is not None:
             self.ollama.release()
         # Read the offset before WAV extraction resets the timestamps.

@@ -141,7 +141,7 @@ def extract_audio(video_path: str, duration: float = 0, progress: Progress = lam
 
 
 class ModelHolder:
-    """Keep Whisper loaded between calls and release its GPU memory before translation."""
+    """Load and release the local Whisper model."""
 
     def __init__(self, name: str, device: str = "cuda", compute_type: str | None = None):
         self.name = name
