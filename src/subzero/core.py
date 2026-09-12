@@ -190,15 +190,21 @@ def strip_sdh(body: str, opts: Options) -> str:
     if opts.strip_brackets:
         body = re.sub(r"(^|[\n\r])\s*-\s*\[\s*(?=[A-Za-z\u00c0-\u00dc\u00c7])", r"\1- ", body)
         body = re.sub(r"(^|[\n\r]|<[a-z][^>]*>)\s*\[\s*(?=[A-Za-z\u00c0-\u00dc\u00c7])(?![^\[\]\n]*\])", r"\1", body)
+        body = re.sub(r"(?m)^\s*-\s*\[\s*$", "", body)
+        body = re.sub(r"(?m)^\s*\[\s*$", "", body)
+        body = re.sub(r"\s*-\s*\[\s*$", "", body)
     if opts.strip_parens:
         body = re.sub(r"(^|[\n\r]|<[a-z][^>]*>)\s*\(\s*(?=[A-Za-z\u00c0-\u00dc\u00c7])(?![^()\n]*\))", r"\1", body)
+        body = re.sub(r"(?m)^\s*-\s*\(\s*$", "", body)
+        body = re.sub(r"(?m)^\s*\(\s*$", "", body)
+        body = re.sub(r"\s*-\s*\(\s*$", "", body)
     lines = []
     for line in body.split("\n"):
         line = re.sub(r"\s{2,}", " ", line).strip()
         if line in {"-", "--", "...", ".", ",", "!", "?"}:
             continue
         line = re.sub(r"^-\s*(?=[.,!?;:])", "", line)
-        if TAG.sub("", line).strip(" -.,!?;:"):
+        if TAG.sub("", line).strip(" -.,!?;:[]()"):
             lines.append(line)
     return "\n".join(lines).strip()
 
