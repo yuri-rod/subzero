@@ -181,3 +181,24 @@ class TestAnalyze:
         src = cue(f"Curto\n{long_line}")
         st = analyze(src)
         assert st.long_lines == 1
+
+
+class TestEdgeCases:
+    def test_mismatched_brackets_stripped(self):
+        assert one("[OFFA) Hello.") == "Hello."
+        assert one("(MÚSICA RETOMA] Hello.") == "Hello."
+
+    def test_unclosed_opening_bracket_dialogue(self):
+        assert one("- [Onde estão as chaves?\n- Mãe?") == "- Onde estão as chaves?\n- Mãe?"
+
+    def test_unclosed_opening_paren_with_tag(self):
+        assert one("<i>(Podemos ver as amostras,\npor favor?</i>") == "<i>Podemos ver as amostras,\npor favor?</i>"
+
+    def test_closing_tag_immediately_before_speaker_dash(self):
+        assert one("<i>-para o primeiro encontro.</i>-MIKE:<i> Beleza.</i>") == "<i>- para o primeiro encontro.</i>\n- <i>Beleza.</i>"
+
+    def test_long_line_without_spaces_is_balanced_on_dots(self):
+        line = "The.Grudge.3.2009.720p.BluRay.DTS.x264-EPiK.English"
+        got = one(line)
+        assert "\n" in got
+        assert all(len(l) <= 42 for l in got.split("\n"))

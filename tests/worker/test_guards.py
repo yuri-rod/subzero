@@ -84,3 +84,32 @@ def test_syncflow_audit_cleans_existing_sdh_subtitle(setup):
     installed_text = path.read_text(encoding="utf-8")
     assert "[music playing]" not in installed_text
     assert check_excellence_guards(installed_text, "pt-BR").ok
+
+
+def test_guards_reject_unclosed_tags():
+    sample = "1\n00:00:01,000 --> 00:00:03,000\n<i\nOla mundo!\n"
+    report = check_excellence_guards(sample, "pt-BR")
+    assert not report.ok
+    assert "malformadas" in report.reason
+
+
+def test_guards_reject_pt_machine_translation_capitalization():
+    sample = "1\n00:00:01,000 --> 00:00:03,000\nTamatoa Não sempre foi assim.\n"
+    report = check_excellence_guards(sample, "pt-BR")
+    assert not report.ok
+    assert "particulas capitalizadas" in report.reason
+
+
+def test_sanitize_to_excellence_cleans_unclosed_tags():
+    dirty = "1\n00:00:01,000 --> 00:00:03,000\n<i\nOla mundo!\n"
+    cleaned = sanitize_to_excellence(dirty, "pt-BR")
+    assert check_excellence_guards(cleaned, "pt-BR").ok
+    assert "<i" not in cleaned
+    assert "Ola mundo!" in cleaned
+
+
+def test_sanitize_to_excellence_fixes_pt_mt_capitalization():
+    dirty = "1\n00:00:01,000 --> 00:00:03,000\nTamatoa Não sempre foi assim.\n"
+    cleaned = sanitize_to_excellence(dirty, "pt-BR")
+    assert check_excellence_guards(cleaned, "pt-BR").ok
+    assert "não sempre foi" in cleaned.lower()

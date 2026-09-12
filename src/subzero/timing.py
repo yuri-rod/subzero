@@ -94,6 +94,10 @@ def evaluate(candidate, reference, tolerance=.5, window_seconds=180, stride=90,
     valid = [w for w in windows if w.confident]
     bad = [w for w in valid if abs(w.offset) > tolerance]
     if bad:
+        if any(abs(w.offset) > 5.0 for w in bad):
+            return Report('reject', 'Severe timing offset detected', windows)
+        if len(bad) >= 3:
+            return Report('reject', 'Repeated timing mismatch across multiple windows', windows)
         consistent = any(b.center-a.center <= stride*1.5 and
                          abs(a.offset-b.offset) <= 6 for a,b in zip(bad,bad[1:]))
         if consistent:

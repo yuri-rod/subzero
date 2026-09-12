@@ -83,3 +83,11 @@ def test_invalid_timestamps_are_rejected():
 def test_repeated_identical_activity_is_ambiguous():
     ref=[(float(t),float(t+2)) for t in range(10,1800,4)]
     assert timing.evaluate(ref,ref).status == 'inconclusive'
+
+
+def test_severe_offset_in_single_window_is_rejected():
+    ref = dialogue()
+    shifted = [(a + (15 if a >= 900 else 0), b + (15 if a >= 900 else 0)) for a, b in ref]
+    report = timing.evaluate(shifted, ref)
+    assert report.status == 'reject'
+    assert 'Severe timing offset' in report.reason or 'mismatch' in report.reason
