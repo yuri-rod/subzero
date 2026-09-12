@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.10.6-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.7-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -385,7 +385,7 @@ subzero fill-gaps episode.mkv episode.pt-BR.srt --dry-run
 
 The CLI scans intervals without dialogue subtitles, including quiet passages without detected speech. Recovered cues are clipped to those intervals so they do not overlap existing dialogue.
 
-Native Vision uses accurate English recognition and language correction. Caption position, size, horizontal angle, and enclosed white lettering filter out unrelated text. Accepted text boxes have their lower edge within the bottom 19% of the frame; recognition extends above that boundary to preserve the full letters. Dense lower-screen credit layouts are excluded. Text boxes on the same physical row are read from left to right. Nearby frames and region retries help resolve text candidates and fluctuating boxes in single-line and two-line captions.
+Native Vision uses accurate English recognition and language correction. Caption position, size, horizontal angle, and enclosed white lettering filter out unrelated text. Accepted text boxes have their lower edge within the bottom 19% of the frame; recognition extends above that boundary to preserve the full letters. Dense lower-screen credit layouts and tall centered titles with stacked uppercase labels are excluded before individual rows are selected. Text boxes on the same physical row are read from left to right. Nearby frames and region retries help resolve text candidates and fluctuating boxes in single-line and two-line captions.
 
 The macOS worker exposes the same recovery as an explicit `recover_gaps` job through
 `POST /jobs`, with `itemId` and `targetLang` (for example, `pt-BR`). It reads the
