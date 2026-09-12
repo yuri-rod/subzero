@@ -731,6 +731,7 @@ def repair_flow(setup, monkeypatch):
         assert kwargs['target_lang'] == 'en'
         assert kwargs['backup'] is False
         assert kwargs['all_captions'] is True
+        assert kwargs['caption_cache_dir'] == flow.cache / 'caption-scans'
         kwargs['progress'](1, 1)
         merged = parse(reference['text'])
         merged.insert(10, cues[10])

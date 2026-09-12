@@ -545,6 +545,28 @@ def test_region_retry_coalesces_native_observed_card_variants():
     assert ocr.recover_caption_runs(frames, retried, stamps) == [caption] * 4
 
 
+def test_region_retry_does_not_duplicate_a_complete_line_as_two_cropped_fragments():
+    caption = "Keep this secret."
+    complete = caption_frame(caption, height=0.070, y=0.093)
+    complete["items"][0].update(x=0.339, width=0.320)
+    split = {"items": [
+        {"text": "Keep this", "confidence": 1, "x": 0.321, "y": 0.113, "width": 0.173, "height": 0.049},
+        {"text": "secret.", "confidence": 1, "x": 0.518, "y": 0.091, "width": 0.143, "height": 0.087},
+    ]}
+    assert ocr.recover_caption_runs([complete] * 3, {index: split for index in range(3)},
+                                    [0, 0.1, 0.2]) == [caption] * 3
+
+
+def test_region_retry_keeps_repeated_words_on_a_separate_physical_line():
+    first, second = "Keep this secret.", "This secret."
+    complete = caption_frame(first, y=0.168)
+    complete["items"].extend(caption_frame(second, y=0.1)["items"])
+    partial = caption_frame(first, y=0.168)
+    frames = [complete, partial, complete]
+    readings = ocr.recover_caption_runs(frames, {1: complete}, [0, 0.1, 0.2])
+    assert readings == [first + "\n" + second] * 3
+
+
 @pytest.mark.parametrize("first,second", [
     ("I think we should vote for Kyle.", "I think we should vote for Kyla."),
     ("Kyle should be joining us soon.", "Kyla should be joining us soon."),

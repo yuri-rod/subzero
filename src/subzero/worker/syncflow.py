@@ -28,7 +28,7 @@ from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, tran
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
-OCR_SOURCE_VERSION = 7
+OCR_SOURCE_VERSION = 8
 
 
 def digest(text):
@@ -453,6 +453,7 @@ class SyncFlow:
             recovered = fill_subtitle_gaps(media.path, input_path, output=output_path,
                                           target_lang='en', backup=False,
                                           cache_dir=self.cache / 'references', progress=ocr_progress,
+                                          caption_cache_dir=self.cache / 'caption-scans',
                                           all_captions=True)
             self.active(job)
             text = read_gap_source(output_path) if recovered.cues_recovered else source
