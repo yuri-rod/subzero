@@ -25,7 +25,7 @@ def test_fmt_srt_time():
     assert fmt_srt_time(3661.123) == "01:01:01,123"
 
 
-def test_ocr_resolver_rebuilds_stale_binary_from_packaged_source(tmp_path, monkeypatch):
+def test_ocr_resolver_ignores_legacy_repo_binary_even_with_newer_timestamp(tmp_path, monkeypatch):
     module = tmp_path / "src/subzero/ocr.py"
     source = module.with_name("vision_ocr.swift")
     source.parent.mkdir(parents=True)
@@ -34,7 +34,8 @@ def test_ocr_resolver_rebuilds_stale_binary_from_packaged_source(tmp_path, monke
     repo_bin.parent.mkdir()
     repo_bin.write_text("stale binary")
     repo_bin.chmod(0o755)
-    os.utime(repo_bin, (1, 1))
+    newer = source.stat().st_mtime + 3600
+    os.utime(repo_bin, (newer, newer))
     monkeypatch.setattr(ocr, "__file__", str(module))
     monkeypatch.delenv("SUBZERO_VISION_OCR", raising=False)
     monkeypatch.setattr(ocr.shutil, "which", lambda cmd: "/usr/bin/swiftc" if cmd == "swiftc" else None)
@@ -107,6 +108,7 @@ def test_clean_ocr_text():
 
 def test_distribution_credit_heading_is_not_dialogue():
     assert clean_ocr_text("GLOBAL CONTENT DISTRIBUTION\nInternational Content Distribution") == ""
+    assert clean_ocr_text("GLOBAL CONTENT\nDISTRIBUTION") == ""
     dialogue = "I work in global content distribution."
     assert clean_ocr_text(dialogue) == dialogue
 
@@ -379,6 +381,101 @@ def test_caption_geometry_discards_background_text():
     assert ocr.caption_text(frame) == "Don't tell anyone.\nKeep this secret."
 
 
+def caption_frame(text, *, height=0.065, y=0.1, candidates=()):
+    return {"subtitleText": text, "items": [
+        {"text": text, "confidence": 1, "x": 0.25, "y": y, "width": 0.5, "height": height,
+         "candidates": [{"text": candidate, "confidence": 1} for candidate in candidates]},
+    ]}
+
+
+def test_neighbor_confirms_single_line_with_oversized_box():
+    text = "I also really like Kishan."
+    frame = caption_frame(text, height=0.115, y=0.08)
+    neighbor = caption_frame(text)
+    assert ocr.caption_text(frame) == ""
+    assert ocr.caption_text(frame, previous=neighbor) == text
+    assert ocr.caption_text(frame, following=neighbor) == text
+
+
+def test_neighbor_preserves_both_lines_when_one_box_grows():
+    first, second = "That gives us four in six.", "Are you down with that?"
+    frame = caption_frame(first, y=0.168)
+    frame["items"].extend(caption_frame(second, height=0.115, y=0.08)["items"])
+    neighbor = caption_frame(first, y=0.168)
+    neighbor["items"].extend(caption_frame(second)["items"])
+    assert ocr.caption_text(frame, following=neighbor) == first + "\n" + second
+
+
+def test_geometry_support_requires_matching_text_and_position():
+    frame = caption_frame("MARKETING MANAGER", height=0.115, y=0.08)
+    assert ocr.caption_text(frame, following=caption_frame("Are you down with that?")) == ""
+    assert ocr.caption_text(frame, following=caption_frame("MARKETING MANAGER", y=0.23)) == ""
+
+
+def test_native_alternative_uses_agreeing_neighbors():
+    expected = "I really want to work with you."
+    frame = caption_frame("Treally want to work with you.", candidates=[expected])
+    neighbor = caption_frame(expected)
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == expected
+    assert ocr.caption_text(frame, previous=neighbor) == frame["subtitleText"]
+
+
+def test_native_alternative_restores_missing_first_person_contraction():
+    expected = "I don't know if I'm doing this right."
+    frame = caption_frame("I don't know if 'm doing this right.", candidates=[expected])
+    neighbor = caption_frame(expected)
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == expected
+
+
+def test_native_alternative_does_not_turn_an_opening_quote_into_a_letter():
+    frame = caption_frame('"an Idol good for three', candidates=["wan Idol good for three"])
+    neighbor = caption_frame("wan Idol good for three")
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == frame["subtitleText"]
+
+
+def test_single_frame_missing_pronoun_and_spacing_use_neighboring_caption():
+    first = "I really want to work with you."
+    for flicker in ("really want to work with you.", "Treally want to work with you."):
+        cues = cluster_ocr_detections([(10, first), (10.5, flicker), (11, first)],
+                                      sample_duration=0.5, max_gap=0.75, min_duration=0.5)
+        assert [cue.text for cue in cues] == [first]
+
+
+def test_slanted_prop_text_is_not_a_caption():
+    frame = caption_frame("Y IT SAFE,")
+    frame["items"][0]["angle"] = 42
+    assert ocr.caption_text(frame) == ""
+    frame = caption_frame("Rome's gone again.")
+    frame["items"][0]["angle"] = -5.47
+    assert ocr.caption_text(frame) == "Rome's gone again."
+
+
+def test_neighbor_consensus_does_not_invent_an_unlisted_reading():
+    frame = caption_frame("Treally want to work with you.")
+    neighbor = caption_frame("I really want to work with you.")
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == frame["subtitleText"]
+
+
+def test_native_alternative_preserves_negation_changes():
+    frame = caption_frame("We should now vote for him.", candidates=["We should not vote for him."])
+    neighbor = caption_frame("We should not vote for him.")
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == frame["subtitleText"]
+
+
+@pytest.mark.parametrize("first,second", [
+    ("I think we should vote for Kyle.", "I think we should vote for Kyla."),
+    ("I think we should vote for Sue.", "I think we should vote for Sam."),
+    ("Kyle should be joining us soon.", "Kyla should be joining us soon."),
+])
+def test_native_alternative_preserves_name_changes(first, second):
+    frame = caption_frame(second, candidates=[first])
+    neighbor = caption_frame(first)
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == second
+    cues = cluster_ocr_detections([(10, first), (10.5, second), (11, first)],
+                                  sample_duration=0.5, max_gap=0.75, min_duration=0.5)
+    assert [cue.text for cue in cues] == [first, second, first]
+
+
 def test_caption_geometry_can_allow_off_center_dialogue():
     frame = {"subtitleText": "Keep this secret.", "items": [
         {"text": "Keep this secret.", "confidence": 1, "x": 0.05, "y": 0.1, "width": 0.35, "height": 0.05},
@@ -405,12 +502,179 @@ def test_large_centered_title_card_is_not_dialogue():
     assert ocr.caption_text(frame) == ""
 
 
+def test_large_upper_logo_suppresses_lower_branding_without_banning_television_dialogue():
+    frame = caption_frame("TELEVISION")
+    frame["items"].append({"text": "STUDIO BRAND", "confidence": 1, "x": 0.32,
+                           "y": 0.75, "width": 0.36, "height": 0.16})
+    assert ocr.caption_text(frame) == ""
+    assert ocr.caption_text(caption_frame("TELEVISION")) == "TELEVISION"
+
+
 def test_corner_logo_does_not_suppress_real_captions():
     frame = {"subtitleText": "LOGO\nKeep this secret.", "items": [
         {"text": "LOGO", "confidence": 1, "x": 0.90, "y": 0.07, "width": 0.07, "height": 0.05},
         {"text": "Keep this secret.", "confidence": 1, "x": 0.25, "y": 0.10, "width": 0.50, "height": 0.064},
     ]}
     assert ocr.caption_text(frame) == "Keep this secret."
+
+
+def test_region_retry_restores_missing_second_line_without_changing_timing():
+    first = "I'd just like to say my piece first"
+    second = "before we, like, talk it through."
+    complete = caption_frame(first, y=0.168)
+    complete["items"].extend(caption_frame(second)["items"])
+    partial = caption_frame(first, y=0.168)
+    partial["items"].extend(caption_frame("before we, like, falk it through.", height=0.11, y=0.075)["items"])
+    frames = [complete, partial, complete]
+    stamps = [4211.3, 4211.8, 4212.3]
+    assert ocr.caption_retry_indices(frames, stamps) == [0, 1, 2]
+    readings = ocr.recover_caption_runs(frames, {1: complete}, stamps)
+    cues = cluster_ocr_detections(list(zip(stamps, readings)), min_duration=0.5,
+                                  max_gap=0.75, sample_duration=0.5)
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [
+        ("01:10:11,300", "01:10:12,800", first + "\n" + second)]
+
+
+def test_region_retry_coalesces_native_observed_card_variants():
+    caption = "It's only day one and already your first setback."
+    variants = ["Pit's only day one and already your first setback.", caption,
+                "iIt's only day one and already your first setback.", caption]
+    frames = [caption_frame(text) for text in variants]
+    retried = {index: caption_frame(caption) for index in range(4)}
+    stamps = [1506.5 + index / 2 for index in range(4)]
+    assert ocr.recover_caption_runs(frames, retried, stamps) == [caption] * 4
+
+
+@pytest.mark.parametrize("first,second", [
+    ("I think we should vote for Kyle.", "I think we should vote for Kyla."),
+    ("Kyle should be joining us soon.", "Kyla should be joining us soon."),
+    ("I think we should vote for Sue.", "I think we should vote for Sam."),
+    ("We should not vote for him.", "We should now vote for him."),
+    ("We can get two extra votes.", "We can get ten extra votes."),
+])
+def test_region_retry_preserves_names_negation_and_number_changes(first, second):
+    frames = [caption_frame(first), caption_frame(second), caption_frame(first)]
+    retried = {index: caption_frame(first) for index in range(3)}
+    assert ocr.recover_caption_runs(frames, retried, [0, 0.5, 1]) == [first, second, first]
+
+
+def test_region_retry_keeps_full_frame_title_card_veto():
+    credit = caption_frame("TELEVISION")
+    credit["items"].append({"text": "STUDIO BRAND", "confidence": 1, "x": 0.32,
+                           "y": 0.75, "width": 0.36, "height": 0.16})
+    frames = [credit, credit, credit]
+    retried = {index: caption_frame("TELEVISION") for index in range(3)}
+    assert ocr.caption_retry_indices(frames, [0, 0.5, 1]) == []
+    assert ocr.recover_caption_runs(frames, retried, [0, 0.5, 1]) == ["", "", ""]
+
+
+def test_region_retry_does_not_add_an_uncorroborated_prop_line():
+    original = caption_frame("Keep this secret.")
+    prop = caption_frame("KEEP YOUR VOTE SAFE", y=0.168)
+    prop["items"].extend(original["items"])
+    assert ocr.recover_caption_runs([original] * 3, {1: prop}, [0, 0.5, 1]) == ["Keep this secret."] * 3
+
+
+def test_region_retry_needs_same_frame_evidence_before_merging_real_word_changes():
+    first, second = "I could turn here right now.", "I could return here right now."
+    frames = [caption_frame(first), caption_frame(second), caption_frame(first)]
+    assert ocr.recover_caption_runs(frames, dict(enumerate(frames)), [0, 0.5, 1]) == [first, second, first]
+
+
+def test_gap_extraction_runs_native_region_retry_for_partial_captions(tmp_path):
+    first, second = "I'd just like to say my piece first", "before we, like, talk it through."
+    complete = caption_frame(first, y=0.168)
+    complete["items"].extend(caption_frame(second)["items"])
+    partial = caption_frame(first, y=0.168)
+    called = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "ffmpeg":
+            for index in range(3):
+                (Path(cmd[-1]).parent / f"f_{index + 1:03d}.jpg").touch()
+            return subprocess.CompletedProcess(cmd, 0, "", "pts_time:0\npts_time:0.5\npts_time:1")
+        region = "--caption-region" in cmd
+        called.append(region)
+        filenames = cmd[3:] if region else cmd[2:]
+        rows = [{**(partial if not region and Path(filename).name == "f_002.jpg" else complete),
+                 "file": filename} for filename in filenames]
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+
+    with patch("subprocess.run", side_effect=run):
+        cues = extract_and_ocr_gaps("video.mkv", [(4211.3, 4212.8)], ocr_bin="vision_ocr", tmp_dir=tmp_path)
+    assert called == [False, True]
+    assert [cue.text for cue in cues] == [first + "\n" + second]
+    assert (cues[0].start, cues[0].end) == ("01:10:11,300", "01:10:12,800")
+
+
+def test_full_caption_scan_uses_bounded_overlapping_windows_and_preserves_cue_edges():
+    scanned = []
+
+    def scan(video, intervals, **kwargs):
+        scanned.extend(intervals)
+        return [(119.55, "Keep this secret."), (120.05, "Keep this secret."), (120.55, "")]
+
+    with patch("subzero.ocr._scan_caption_frames", side_effect=scan):
+        cues = ocr.extract_all_captions("video.mkv", 241)
+    assert scanned == [(0, 121), (119, 241), (239, 241)]
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [
+        ("00:01:59,550", "00:02:00,550", "Keep this secret.")]
+
+
+def test_full_caption_scan_does_not_extend_a_short_observed_caption():
+    with patch("subzero.ocr._scan_caption_frames", return_value=[(10.2, "Go!"), (10.35, "")]):
+        cues = ocr.extract_all_captions("video.mkv", 30)
+    assert [(cue.start, cue.end) for cue in cues] == [("00:00:10,200", "00:00:10,350")]
+
+
+def test_frame_sampling_keeps_input_pts_instead_of_rewriting_a_fixed_fps_grid(tmp_path):
+    commands = []
+
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[0] == "ffmpeg":
+            (Path(cmd[-1]).parent / "f_001.jpg").touch()
+            return subprocess.CompletedProcess(cmd, 0, "", "pts_time:0.033367")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps([
+            {"file": cmd[-1], "subtitleText": "Keep this secret."}]), "")
+
+    with patch("subprocess.run", side_effect=run):
+        cues = extract_and_ocr_gaps("video.mkv", [(100, 101)], ocr_bin="vision_ocr", tmp_dir=tmp_path)
+    filter_graph = commands[0][commands[0].index("-vf") + 1]
+    assert "select=" in filter_graph and "showinfo" in filter_graph and "fps=" not in filter_graph
+    assert commands[0][commands[0].index("-fps_mode") + 1] == "vfr"
+    assert cues[0].start == "00:01:40,033"
+
+
+def test_full_caption_recovery_preserves_distinct_overlapping_atomic_cues(tmp_path):
+    source = tmp_path / "source.srt"
+    original = "1\n00:24:28,133 --> 00:24:30,168\nMe too. Me too.\n\n"
+    source.write_text(original)
+    output = tmp_path / "complete.srt"
+    recovered = Cue("00:24:28,534", "00:24:30,035", "I also like Rome.")
+    with patch("subzero.ocr.build_reference", return_value={"duration": 5150.976}), \
+         patch("subzero.ocr.extract_all_captions", return_value=[recovered]) as scan, \
+         patch("subzero.ocr.fix_text", side_effect=AssertionError("Atomic cues must not be overlap-clipped")):
+        report = fill_subtitle_gaps("video.mkv", source, output=output, all_captions=True,
+                                   target_lang="en", backup=False)
+    scan.assert_called_once_with("video.mkv", 5150.976, progress=None)
+    assert parse_srt(output.read_text()) == parse_srt(original) + [recovered]
+    assert report.cues == [recovered] and report.cues_recovered == 1
+    assert source.read_text() == original
+
+
+def test_full_caption_recovery_reports_only_additions_after_source_deduplication(tmp_path):
+    source = tmp_path / "source.srt"
+    original = "1\n00:00:01,000 --> 00:00:04,000\nKeep this secret.\n\n"
+    source.write_text(original)
+    output = tmp_path / "complete.srt"
+    duplicate = Cue("00:00:01,050", "00:00:04,050", "Keep this secret.")
+    with patch("subzero.ocr.build_reference", return_value={"duration": 120}), \
+         patch("subzero.ocr.extract_all_captions", return_value=[duplicate]):
+        report = fill_subtitle_gaps("video.mkv", source, output=output, all_captions=True,
+                                   target_lang="en", backup=False)
+    assert report.cues_recovered == 0 and report.cues == []
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("failure", ["ffmpeg", "vision", "json", "missing_frame"])

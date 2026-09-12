@@ -730,6 +730,7 @@ def repair_flow(setup, monkeypatch):
         assert Path(subtitle_path).read_text() == reference['text']
         assert kwargs['target_lang'] == 'en'
         assert kwargs['backup'] is False
+        assert kwargs['all_captions'] is True
         kwargs['progress'](1, 1)
         merged = parse(reference['text'])
         merged.insert(10, cues[10])
@@ -755,6 +756,117 @@ def test_repair_replaces_entire_translation_from_english_and_ocr(repair_flow):
     assert list((flow.cache / 'candidates').glob('*/pt-BR/*.srt'))
     assert list((flow.cache / 'backups').rglob('*.srt'))[0].read_text() == 'broken old translation'
     assert not list(flow.cache.glob('ocr-*tmp*'))
+
+
+def test_automatic_english_translation_recovers_ocr_for_new_target(repair_flow):
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    flow.cfg.ocr_enabled = True
+    target.unlink()
+    job = run(flow, jobs, 'embedded_translate')
+    assert job.state == 'done'
+    assert len(calls) == 1
+    assert spans(target.read_text()) == spans(complete)
+    assert len(flow.service.ollama.source_cues) == len(parse(complete))
+    assert all('SAM:' in cue.text for cue in flow.service.ollama.source_cues)
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_automatic_ocr_failure_never_installs_incomplete_translation(repair_flow, monkeypatch, existing):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    flow.cfg.ocr_enabled = True
+    if not existing:
+        target.unlink()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('Apple Vision unavailable')
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', fail)
+    job = run(flow, jobs, 'embedded_translate')
+    assert job.state == 'needs_review'
+    assert not getattr(flow.service.ollama, 'source_cues', [])
+    assert target.read_text() == 'broken old translation' if existing else not target.exists()
+
+
+def test_automatic_english_ocr_can_be_disabled(repair_flow):
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    flow.cfg.ocr_enabled = False
+    target.unlink()
+    assert run(flow, jobs, 'embedded_translate').state == 'done'
+    assert not calls
+    assert spans(target.read_text()) == spans(reference['text'])
+
+
+def test_automatic_english_ocr_obeys_audit_only(repair_flow):
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    flow.cfg.ocr_enabled = True
+    flow.cfg.sync_audit_only = True
+    assert run(flow, jobs, 'embedded_translate').state == 'needs_review'
+    assert not calls
+    assert target.read_text() == 'broken old translation'
+
+
+def test_automatic_ocr_does_not_replace_target_created_during_generation(repair_flow, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    flow.cfg.ocr_enabled = True
+    target.unlink()
+    recover = syncflow.fill_subtitle_gaps
+
+    def create_target(*args, **kwargs):
+        recovered = recover(*args, **kwargs)
+        target.write_text('Subtitle created while OCR was running')
+        return recovered
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', create_target)
+    assert run(flow, jobs, 'embedded_translate').state == 'needs_review'
+    assert target.read_text() == 'Subtitle created while OCR was running'
+
+
+def test_new_target_install_rejects_creation_after_absence_check(setup, monkeypatch):
+    from subzero.worker import syncflow
+    from subzero.timing import Report
+    flow, jobs, _, media = setup
+    job = jobs.enqueue('id', 'repair', 'pt-BR')
+    jobs.start(job.id)
+    target = Path(media.path).with_suffix('.pt-BR.srt')
+    original = 'Subtitle created during installation'
+    lexists = syncflow.os.path.lexists
+
+    def create_after_check(path):
+        exists = lexists(path)
+        if Path(path) == target:
+            target.write_text(original)
+        return exists
+
+    monkeypatch.setattr(syncflow.os.path, 'lexists', create_after_check)
+    with pytest.raises(RuntimeError, match='Subtitle changed'):
+        flow.install(media, job, syncflow.fingerprint(media.path),
+                     dialogue().replace('Test dialogue', 'Fala traduzida.'), Report('pass', 'test'),
+                     expected_source=(target, None))
+    assert target.read_text() == original
+    assert not list(target.parent.glob('.subtitle-*.tmp'))
+
+
+def test_new_target_install_fails_safely_when_exclusive_creation_is_unsupported(setup, monkeypatch):
+    import errno
+    from subzero.worker import syncflow
+    from subzero.timing import Report
+    flow, jobs, _, media = setup
+    job = jobs.enqueue('id', 'repair', 'pt-BR')
+    jobs.start(job.id)
+    target = Path(media.path).with_suffix('.pt-BR.srt')
+
+    def unsupported(*args, **kwargs):
+        raise OSError(errno.EOPNOTSUPP, 'Operation not supported')
+
+    monkeypatch.setattr(syncflow.os, 'link', unsupported)
+    with pytest.raises(RuntimeError, match='Cannot create subtitle atomically'):
+        flow.install(media, job, syncflow.fingerprint(media.path),
+                     dialogue().replace('Test dialogue', 'Fala traduzida.'), Report('pass', 'test'),
+                     expected_source=(target, None))
+    assert not target.exists()
+    assert not list(target.parent.glob('.subtitle-*.tmp'))
 
 
 def test_repair_reuses_completed_ocr_source_after_translation_failure(repair_flow, monkeypatch):
@@ -987,7 +1099,7 @@ def test_repair_translation_cache_rejects_stale_or_corrupt_blocks(repair_flow, m
 
 
 @pytest.mark.parametrize('series_name', ['Survivor', ''])
-def test_repair_shares_source_context_across_block_boundaries(repair_flow, monkeypatch, series_name):
+def test_repair_keeps_only_prior_source_context_across_block_boundaries(repair_flow, monkeypatch, series_name):
     from subzero.worker import syncflow
     flow, jobs, media, target, reference, complete, calls = repair_flow
     flow.service.ollama.model = 'kaelri/hy-mt2:7b'
@@ -1003,10 +1115,10 @@ def test_repair_shares_source_context_across_block_boundaries(repair_flow, monke
     cues = parse(complete)
     context = requested[2][1]
     assert context == {'title': series_name or media.name,
-                       'passage': '\n'.join(c.text for c in cues[8:68])}
+                       'previous_cues': [c.text for c in cues[8:40]]}
 
 
-def test_repair_bounds_long_background_without_losing_current_block(repair_flow, monkeypatch):
+def test_repair_bounds_long_background_and_excludes_current_block(repair_flow, monkeypatch):
     from subzero.worker import syncflow
     flow, jobs, media, target, reference, complete, calls = repair_flow
     flow.service.ollama.model = 'hy-mt2:7b'
@@ -1021,10 +1133,46 @@ def test_repair_bounds_long_background_without_losing_current_block(repair_flow,
     job = jobs.enqueue('id', 'repair', 'pt-BR')
     jobs.start(job.id)
     flow.repair_translation(job, 'video', cues, lambda *args: None, title='S' * 1000)
-    assert all(len(c['passage']) <= 6000 and len(c['title']) <= 256 for c in requested)
-    assert all(c.text in requested[2]['passage'] for c in cues[40:60])
-    assert cues[39].text in requested[2]['passage']
-    assert cues[60].text in requested[2]['passage']
+    assert all(len('\n'.join(c['previous_cues'])) <= 6000 and len(c['title']) <= 256 for c in requested)
+    background = '\n'.join(requested[2]['previous_cues'])
+    assert all(c.text not in background for c in cues[40:])
+    assert cues[39].text in background
+    assert requested[0]['previous_cues'] == []
+
+
+def test_repair_cache_resumes_at_complete_sentence_boundary(repair_flow, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    flow.service.ollama.model = 'hy-mt2:7b'
+    cues = [Cue(i, i, i + .9, f'Complete sentence {i}.') for i in range(19)]
+    cues += [Cue(19, 19, 19.9, 'I spent'), Cue(20, 20, 20.9, 'five years in foster care.')]
+    cues += [Cue(i, i, i + .9, f'Complete sentence {i}.') for i in range(21, 45)]
+    requested = []
+
+    def capture(block, *args, **kwargs):
+        requested.append(block)
+        if len(requested) > 1:
+            raise RuntimeError('Later block unavailable')
+        return [Cue(c.index, c.start, c.end, 'Fala traduzida.') for c in block]
+
+    monkeypatch.setattr(syncflow, 'translate', capture)
+    job = jobs.enqueue('id', 'repair', 'pt-BR')
+    jobs.start(job.id)
+    with pytest.raises(RuntimeError, match='Later block'):
+        flow.repair_translation(job, 'video', cues, lambda *args: None)
+    first_end = len(requested[0])
+    assert first_end != 20
+    requested.clear()
+
+    def resumed(block, *args, **kwargs):
+        requested.append(block)
+        return [Cue(c.index, c.start, c.end, 'Fala traduzida.') for c in block]
+
+    monkeypatch.setattr(syncflow, 'translate', resumed)
+    translated = flow.repair_translation(job, 'video', cues, lambda *args: None)
+    assert requested[0][0].index == first_end
+    assert [(c.index, c.start, c.end) for c in translated] == [(c.index, c.start, c.end) for c in cues]
+    assert any(cues[19] in block and cues[20] in block for block in requested) if first_end == 19 else first_end == 21
 
 
 def test_repair_does_not_cache_untranslated_english(repair_flow, monkeypatch):
@@ -1051,6 +1199,9 @@ def test_repair_keeps_verified_anchors_when_ocr_fills_audio_gaps(repair_flow, mo
         Path(kwargs['output']).write_text(augmented)
         return SimpleNamespace(cues_recovered=len(extra))
     monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
+    monkeypatch.setattr(syncflow, 'translate', lambda cues, *args, **kwargs: [
+        Cue(c.index, c.start, c.end, 'Palavras discretas na tela.' if c.text == 'Quiet words on screen.'
+            else 'Precisamos construir um abrigo.') for c in cues])
     job = run(flow, jobs, 'repair')
     assert job.state == 'done'
     assert spans(target.read_text()) == spans(augmented)
@@ -1066,7 +1217,8 @@ def test_repair_rejects_and_retains_invalid_ocr_source(repair_flow, monkeypatch,
     elif fault == 'anchor_timing':
         cues[0].start += .2
     elif fault == 'overlap':
-        cues.insert(1, Cue(0, cues[0].start + .2, cues[0].end, 'Overlapping text'))
+        cues.insert(1, Cue(0, cues[0].start + .2, cues[0].end, 'First recovered caption'))
+        cues.insert(2, Cue(0, cues[0].start + .3, cues[0].end, 'Second recovered caption'))
     elif fault == 'range':
         cues.append(Cue(0, 950, 952, 'Beyond the video'))
     else:
@@ -1090,3 +1242,66 @@ def test_ocr_source_validation_rejects_overlap_with_retained_music(repair_flow):
     augmented = dump(sorted(parse(source) + [Cue(0, 3, 4, 'Overlapping caption')], key=lambda c: c.start))
     with pytest.raises(RuntimeError, match='overlaps'):
         validate_ocr_source(source, augmented, reference)
+
+
+def test_repair_translates_simultaneous_captions_once_then_composes_display(repair_flow, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    original = parse(reference['text'])
+    first = original[0]
+    extra = Cue(0, round(first.start + .2, 3), round(first.end - .2, 3), 'I also like Rome.')
+    augmented = dump(sorted(original + [extra], key=lambda cue: cue.start))
+
+    def recover(video, subtitle_path, **kwargs):
+        assert kwargs['all_captions'] is True
+        Path(kwargs['output']).write_text(augmented)
+        return SimpleNamespace(cues_recovered=1)
+
+    seen = []
+
+    def translate(cues, *args, **kwargs):
+        seen.extend(cues)
+        return [Cue(c.index, c.start, c.end,
+                    'Eu também gosto do Rome.' if c.text == extra.text else 'Precisamos construir um abrigo.')
+                for c in cues]
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
+    monkeypatch.setattr(syncflow, 'translate', translate)
+    job = run(flow, jobs, 'repair')
+    assert job.state == 'done', job.message
+    assert sum(c.text == extra.text for c in seen) == 1
+    assert len(seen) == len(original) + 1
+    displayed = parse(target.read_text())
+    assert all(left.end <= right.start for left, right in zip(displayed, displayed[1:]))
+    together = [c for c in displayed if c.start <= extra.start and c.end >= extra.end]
+    assert len(together) == 1
+    assert 'Precisamos construir um abrigo.' in together[0].text
+    assert 'Eu também gosto do Rome.' in together[0].text
+    assert displayed[0].start == first.start
+    assert displayed[2].end == first.end
+
+
+def test_repair_keeps_identical_responses_from_simultaneous_speakers(repair_flow, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    original = parse(reference['text'])
+    first = original[0]
+    extra = Cue(0, round(first.start + .2, 3), round(first.end - .2, 3), 'ROME: Yes.')
+    augmented = dump(sorted(original + [extra], key=lambda cue: cue.start))
+
+    def recover(video, subtitle_path, **kwargs):
+        Path(kwargs['output']).write_text(augmented)
+        return SimpleNamespace(cues_recovered=1)
+
+    def translate(cues, *args, **kwargs):
+        return [Cue(c.index, c.start, c.end, 'ROME: Sim.' if c.text == extra.text
+                    else 'ANA: Sim.' if c.start == first.start else 'Precisamos construir um abrigo.')
+                for c in cues]
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
+    monkeypatch.setattr(syncflow, 'translate', translate)
+    job = run(flow, jobs, 'repair')
+    assert job.state == 'done', job.message
+    together = next(c for c in parse(target.read_text()) if c.start == extra.start)
+    assert together.text.count('Sim.') == 2
+    assert len(together.text.splitlines()) == 2

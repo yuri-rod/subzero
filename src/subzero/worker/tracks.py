@@ -8,10 +8,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
-from subzero.translate import MAX_RESPONSE_BYTES, _is_native_translation, _ollama_payload, _parse_lines, _parse_ollama_response, _translate_lines
+from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_translategemma,
+                               _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
+                               _translate_lines, _translate_sentence_units, translation_blocks)
 
 from .jellyfin import Media
-from .srt import Cue, chunks, dump
+from .srt import Cue, dump
 
 BLOCK = 20
 Progress = Callable[[str, int], None]
@@ -294,6 +296,8 @@ class Ollama:
 
     def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
         import httpx
+        if _is_native_translation(self.model) and not _is_translategemma(self.model) and len(cues) > 1:
+            return _translate_sentence_units(cues, target_lang, self, source_lang=source_lang, context=context)
         if _is_native_translation(self.model) and len(cues) > 1:
             return [line for index, cue in enumerate(cues)
                     for line in _translate_lines([cue], target_lang, self, source_lang=source_lang, context=context or {
@@ -334,10 +338,13 @@ class Ollama:
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
               strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
     done: list[Cue] = []
-    blocks = list(chunks(cues, BLOCK))
+    model = getattr(ollama, 'model', '')
+    blocks = list(translation_blocks(cues, BLOCK, model))
     for n, block in enumerate(blocks, start=1):
         try:
             options = {'context': context} if context is not None else {}
+            if _is_native_translation(model) and not _is_translategemma(model):
+                options['context'] = _previous_context(cues[:len(done)], context)
             lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang, **options)
         except RuntimeError as err:
             raise RuntimeError(f'Falha no bloco {n}: {err}') from None

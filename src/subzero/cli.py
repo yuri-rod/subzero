@@ -529,7 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     shift.add_argument("-v", "--verbose", action="store_true")
     shift.set_defaults(func=cmd_shift)
 
-    conv = sub.add_parser("convert", help="convert between subtitle formats (srt, vtt, ass, ssa, sub)")
+    conv = sub.add_parser("convert", help="convert between subtitle formats (srt, vtt, ass, ssa)")
     shared(conv)
     conv.add_argument("--to", required=True, metavar="FMT", help=f"target format: {', '.join(FORMATS)}")
     conv.add_argument("--from", dest="from_fmt", default=None, metavar="FMT", help="source format (default: auto)")

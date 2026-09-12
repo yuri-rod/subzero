@@ -9,11 +9,15 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
+from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
+from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
 from subzero.shift import shift_timestamps
 from subzero.timing import Report, correction
-from subzero.translate import TRANSLATION_PROMPT_VERSION, _is_native_translation, _is_translategemma
+from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_CUES,
+                               TRANSLATION_CONTEXT_CHARS, _is_native_translation,
+                               _is_translategemma, _previous_context, translation_blocks)
 
 from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
 from .moviehash import moviehash
@@ -24,7 +28,7 @@ from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, tran
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
-OCR_SOURCE_VERSION = 4
+OCR_SOURCE_VERSION = 6
 
 
 def digest(text):
@@ -46,7 +50,7 @@ def read_gap_source(path):
     return raw.decode('utf-8-sig')
 
 
-def validate_ocr_source(source, complete, reference):
+def validate_ocr_source(source, complete, reference, *, all_captions=False):
     anchor_report = verify_text(source, reference)
     if anchor_report.status != 'pass':
         raise RuntimeError(f'Original subtitles failed audio timing validation: {anchor_report.reason}')
@@ -67,7 +71,9 @@ def validate_ocr_source(source, complete, reference):
         if anchors[anchor]:
             anchors[anchor] -= 1
             continue
-        if cue.start < previous_ocr_end or not any(start <= cue.start and cue.end <= end for start, end in gaps):
+        if cue.start < previous_ocr_end:
+            raise RuntimeError('Recovered OCR captions overlap each other')
+        if not all_captions and not any(start <= cue.start and cue.end <= end for start, end in gaps):
             raise RuntimeError('Recovered caption overlaps dialogue or leaves the scanned gaps')
         previous_ocr_end = cue.end
         additions += 1
@@ -159,12 +165,22 @@ class SyncFlow:
                         raise RuntimeError('Subtitle job cancelled before installation')
                     if expected_source is not None:
                         source, source_digest = expected_source
-                        if target != source or digest(read_gap_source(target)) != source_digest:
+                        changed = (os.path.lexists(target) if source_digest is None
+                                   else digest(read_gap_source(target)) != source_digest)
+                        if target != source or changed:
                             raise RuntimeError('Subtitle changed during gap recovery')
-                    if target.exists():
-                        old = target.read_text(encoding='utf-8-sig')
-                        shutil.copy2(target,backup/f'{job.target_lang}-{digest(old)}.srt')
-                    os.replace(tmp,target)
+                    if expected_source is not None and expected_source[1] is None:
+                        try:
+                            os.link(tmp, target)
+                        except FileExistsError as err:
+                            raise RuntimeError('Subtitle changed during gap recovery') from err
+                        except OSError as err:
+                            raise RuntimeError(f'Cannot create subtitle atomically without overwriting the target: {err}') from err
+                    else:
+                        if target.exists():
+                            old = target.read_text(encoding='utf-8-sig')
+                            shutil.copy2(target,backup/f'{job.target_lang}-{digest(old)}.srt')
+                        os.replace(tmp,target)
                     self.prune_sidecars(media, target, job.target_lang)
             finally:
                 tmp.unlink(missing_ok=True)
@@ -419,7 +435,7 @@ class SyncFlow:
                 cached = json.loads(read_gap_source(cache))
                 text = cached.get('text') if isinstance(cached, dict) else None
                 if isinstance(text, str) and cached.get('digest') == digest(text):
-                    validate_ocr_source(source, text, reference)
+                    validate_ocr_source(source, text, reference, all_captions=True)
                     progress('reutilizando fonte em ingles com Apple Vision', 30)
                     return text
             except (ValueError, UnicodeError, RuntimeError):
@@ -436,7 +452,8 @@ class SyncFlow:
             self.active(job)
             recovered = fill_subtitle_gaps(media.path, input_path, output=output_path,
                                           target_lang='en', backup=False,
-                                          cache_dir=self.cache / 'references', progress=ocr_progress)
+                                          cache_dir=self.cache / 'references', progress=ocr_progress,
+                                          all_captions=True)
             self.active(job)
             text = read_gap_source(output_path) if recovered.cues_recovered else source
             candidate = self.stage(key, 'en', text)
@@ -445,7 +462,7 @@ class SyncFlow:
         legacy_report = verify_text(text, reference)
         failure = None
         try:
-            source_report = validate_ocr_source(source, text, reference)
+            source_report = validate_ocr_source(source, text, reference, all_captions=True)
         except RuntimeError as err:
             failure = str(err)
             source_report = Report('reject', failure)
@@ -481,7 +498,8 @@ class SyncFlow:
             'num_ctx': getattr(ollama, 'num_ctx', getattr(self.cfg, 'ollama_num_ctx', 4096)),
             'num_predict': getattr(ollama, 'num_predict', getattr(self.cfg, 'ollama_num_predict', 2048)),
             'prompt_version': TRANSLATION_PROMPT_VERSION, 'block_size': 20,
-            'title': title, 'previous_cues': 32, 'following_cues': 8, 'passage_chars': 6000,
+            'title': title, 'previous_cues': TRANSLATION_CONTEXT_CUES,
+            'following_cues': 0, 'passage_chars': TRANSLATION_CONTEXT_CHARS,
         }
         use_context = _is_native_translation(settings['model']) and not _is_translategemma(settings['model'])
         folder = self.cache / 'translations' / key / digest(json.dumps(settings, sort_keys=True))
@@ -501,9 +519,9 @@ class SyncFlow:
             return check_language_completeness(text, job.target_lang)[0]
 
         try:
-            for start in range(0, len(cues), 20):
+            for block in translation_blocks(cues, settings['block_size'], settings['model']):
                 self.active(job)
-                block = cues[start:start + 20]
+                start = len(completed)
                 source = dump(block)
                 cache = folder / f'{start:06d}.json'
                 translated = None
@@ -522,16 +540,7 @@ class SyncFlow:
                 if translated is None:
                     options = {}
                     if use_context:
-                        previous = '\n'.join(c.text for c in cues[max(0, start - 32):start])
-                        current = '\n'.join(c.text for c in block)[:settings['passage_chars']]
-                        following = '\n'.join(c.text for c in cues[start + 20:start + 28])
-                        remaining = max(0, settings['passage_chars'] - len(current) - 2)
-                        after = min(len(following), remaining // 5)
-                        before = min(len(previous), remaining - after)
-                        after = min(len(following), remaining - before)
-                        passage = '\n'.join(part for part in (
-                            previous[-before:] if before else '', current, following[:after]) if part)
-                        options['context'] = {'title': title, 'passage': passage}
+                        options['context'] = _previous_context(cues[:start], {'title': title})
                     translated = translate(block, job.target_lang, ollama,
                                            lambda *_: self.active(job), strict=True, source_lang='en', **options)
                     self.active(job)
@@ -557,6 +566,38 @@ class SyncFlow:
         finally:
             ollama.release()
 
+    def generate_from_english(self, media, job, key, reference, source, progress):
+        source = dump([cue for cue in parse(source) if strip_hearing_impaired([cue])])
+        if not same_language(job.target_lang, 'en'):
+            self.translation_ready()
+        english = self.ocr_source(media, job, key, reference, source, progress)
+        self.active(job)
+        self.stage(key, 'en', english)
+        cues = [cue for cue in parse(english) if strip_hearing_impaired([cue])]
+        translated = cues
+        if not same_language(job.target_lang, 'en'):
+            translated = self.repair_translation(job, key, cues, progress,
+                                                 title=media.series_name or media.name)
+        self.active(job)
+        if [(c.start, c.end) for c in translated] != [(c.start, c.end) for c in cues]:
+            raise RuntimeError('Translation changed source cue timing or count')
+        cleaned = sanitize_to_excellence(dump(strip_hearing_impaired(translated)),
+                                         job.target_lang, self.accepted_langs)
+        if [(c.start, c.end) for c in parse(cleaned)] != [(c.start, c.end) for c in cues]:
+            raise RuntimeError('Subtitle cleanup changed dialogue timing or count')
+        atoms = parse_srt(cleaned)
+        timeline = compose_caption_timeline(atoms)
+        validate_caption_timeline(atoms, timeline)
+        text = sanitize_to_excellence(dump_srt(timeline), job.target_lang, self.accepted_langs)
+        validate_caption_timeline(atoms, parse_srt(text))
+        self.stage(key, job.target_lang, text)
+        report = validate_ocr_source(source, english, reference, all_captions=True)
+        guard = check_excellence_guards(text, job.target_lang, self.accepted_langs)
+        if report.status != 'pass' or not guard.ok:
+            reason = guard.reason if not guard.ok else report.reason
+            raise RuntimeError(f'Regenerated subtitle failed validation: {reason}')
+        return text, report
+
     def repair(self, media, job, key, reference, progress):
         target = self.installed(media, job.target_lang)
         original = read_gap_source(target)
@@ -568,30 +609,7 @@ class SyncFlow:
                 if sidecar is None:
                     raise RuntimeError('Full repair requires a verified English subtitle source')
                 source = sidecar[0]
-            source = dump([cue for cue in parse(source) if strip_hearing_impaired([cue])])
-            if not same_language(job.target_lang, 'en'):
-                self.translation_ready()
-            english = self.ocr_source(media, job, key, reference, source, progress)
-            self.active(job)
-            self.stage(key, 'en', english)
-            cues = [cue for cue in parse(english) if strip_hearing_impaired([cue])]
-            translated = cues
-            if not same_language(job.target_lang, 'en'):
-                translated = self.repair_translation(job, key, cues, progress,
-                                                     title=media.series_name or media.name)
-            self.active(job)
-            if [(c.start, c.end) for c in translated] != [(c.start, c.end) for c in cues]:
-                raise RuntimeError('Translation changed source cue timing or count')
-            text = dump(strip_hearing_impaired(translated))
-            text = sanitize_to_excellence(text, job.target_lang, self.accepted_langs)
-            self.stage(key, job.target_lang, text)
-            if [(c.start, c.end) for c in parse(text)] != [(c.start, c.end) for c in cues]:
-                raise RuntimeError('Subtitle cleanup changed dialogue timing or count')
-            report = validate_ocr_source(source, english, reference)
-            guard = check_excellence_guards(text, job.target_lang, self.accepted_langs)
-            if report.status != 'pass' or not guard.ok:
-                reason = guard.reason if not guard.ok else report.reason
-                raise RuntimeError(f'Regenerated subtitle failed validation: {reason}')
+            text, report = self.generate_from_english(media, job, key, reference, source, progress)
             return self.install(media, job, key, text, report,
                                 expected_source=(target, digest(original)))
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
@@ -634,6 +652,21 @@ class SyncFlow:
         return None
 
     def translate_source(self, media, job, key, reference, progress, text, lang):
+        if getattr(self.cfg, 'ocr_enabled', False) and same_language(lang, 'en'):
+            target = self.installed(media, job.target_lang)
+            original = ''
+            try:
+                existed = target.exists() or target.is_symlink()
+                original = read_gap_source(target) if existed else ''
+                text, report = self.generate_from_english(media, job, key, reference, text, progress)
+                return self.install(media, job, key, text, report,
+                                    expected_source=(target, digest(original) if existed else None))
+            except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
+                self.active(job)
+                reason = f'English subtitle generation failed: {err}'
+                self.state.audit(key, job.target_lang, digest(original), 'inconclusive', {'reason': reason})
+                self.jobs.needs_review(job.id, reason)
+                return None
         cues = strip_hearing_impaired(parse(text))
         if not same_language(lang,job.target_lang):
             try:

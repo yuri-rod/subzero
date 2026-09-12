@@ -3,6 +3,11 @@ import Vision
 import CoreGraphics
 import ImageIO
 
+struct OCRCandidate: Codable {
+    let text: String
+    let confidence: Float
+}
+
 struct OCRItem: Codable {
     let text: String
     let confidence: Float
@@ -10,6 +15,8 @@ struct OCRItem: Codable {
     let y: Double
     let width: Double
     let height: Double
+    let angle: Double
+    let candidates: [OCRCandidate]
 }
 
 struct OCRResult: Codable {
@@ -19,7 +26,7 @@ struct OCRResult: Codable {
     var error: String? = nil
 }
 
-func processImage(path: String) -> OCRResult {
+func processImage(path: String, captionRegion: Bool = false) -> OCRResult {
     let url = URL(fileURLWithPath: path)
     guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
           let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
@@ -27,6 +34,9 @@ func processImage(path: String) -> OCRResult {
     }
 
     let request = VNRecognizeTextRequest()
+    let roi = captionRegion ? CGRect(x: 0, y: 0.07, width: 1, height: 0.19)
+        : CGRect(x: 0, y: 0, width: 1, height: 1)
+    request.regionOfInterest = roi
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
     request.recognitionLanguages = ["en-US"]
@@ -42,7 +52,8 @@ func processImage(path: String) -> OCRResult {
         var subtitleLines: [(y: Double, text: String)] = []
 
         for obs in observations {
-            guard let candidate = obs.topCandidates(1).first else { continue }
+            let candidates = obs.topCandidates(3)
+            guard let candidate = candidates.first else { continue }
             let str = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
             if str.isEmpty { continue }
 
@@ -50,15 +61,18 @@ func processImage(path: String) -> OCRResult {
             let item = OCRItem(
                 text: str,
                 confidence: candidate.confidence,
-                x: Double(box.origin.x),
-                y: Double(box.origin.y),
-                width: Double(box.size.width),
-                height: Double(box.size.height)
+                x: roi.origin.x + Double(box.origin.x) * roi.width,
+                y: roi.origin.y + Double(box.origin.y) * roi.height,
+                width: Double(box.size.width) * roi.width,
+                height: Double(box.size.height) * roi.height,
+                angle: atan2(Double(obs.topRight.y - obs.topLeft.y) * roi.height,
+                             Double(obs.topRight.x - obs.topLeft.x) * roi.width) * 180 / .pi,
+                candidates: candidates.map { OCRCandidate(text: $0.string, confidence: $0.confidence) }
             )
             items.append(item)
 
-            if box.origin.y <= 0.40 {
-                subtitleLines.append((y: Double(box.origin.y), text: str))
+            if item.y <= 0.40 {
+                subtitleLines.append((y: item.y, text: str))
             }
         }
 
@@ -73,16 +87,19 @@ func processImage(path: String) -> OCRResult {
 
 let args = Array(CommandLine.arguments.dropFirst())
 if args.isEmpty {
-    fputs("Usage: vision_ocr [--json] <image_paths...>\n", stderr)
+    fputs("Usage: vision_ocr [--json] [--caption-region] <image_paths...>\n", stderr)
     exit(1)
 }
 
 var asJson = false
+var captionRegion = false
 var files: [String] = []
 
 for arg in args {
     if arg == "--json" {
         asJson = true
+    } else if arg == "--caption-region" {
+        captionRegion = true
     } else {
         files.append(arg)
     }
@@ -90,7 +107,7 @@ for arg in args {
 
 var results: [OCRResult] = []
 for file in files {
-    let res = processImage(path: file)
+    let res = processImage(path: file, captionRegion: captionRegion)
     results.append(res)
     if let failure = res.error {
         fputs("Vision OCR failed for \(file): \(failure)\n", stderr)

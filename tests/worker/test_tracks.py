@@ -702,7 +702,7 @@ def test_worker_native_translation_rejects_token_limit_output(model):
         translate([Cue(1, 1, 2, "Hello.")], "pt-BR", client, lambda *args: None, source_lang="en")
 
 
-def test_worker_native_translation_uses_neighboring_source_without_translating_it():
+def test_worker_native_translation_uses_only_previous_source_without_translating_it():
     prompts = []
     replies = iter(["Um.", "Dois.", "Três.", "Quatro.", "Cinco."])
 
@@ -723,13 +723,16 @@ def test_worker_native_translation_uses_neighboring_source_without_translating_i
     assert [(cue.index, cue.text) for cue in translated] == [(0, "Um."), (1, "Dois."), (2, "Três."), (3, "Quatro."), (4, "Cinco.")]
     middle_header, middle_source = prompts[2].split("\n[Source Text]\n", 1)
     assert middle_source == "Three.<|extra_0|>"
-    assert all(text in middle_header for text in ["One.", "Two.", "Four.", "Five."])
+    assert all(text in middle_header for text in ["One.", "Two."])
+    assert all(text not in middle_header for text in ["Three.", "Four.", "Five."])
     last_header = prompts[4].split("\n[Source Text]\n", 1)[0]
     assert "Three." in last_header and "Four." in last_header
-    assert "One." not in last_header and "Two." not in last_header
+    assert "One." in last_header and "Two." in last_header
+    assert "Five." not in last_header
 
 
-def test_worker_translation_keeps_shared_passage_across_native_cues():
+def test_worker_translation_keeps_previous_source_across_native_blocks(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 1)
     prompts = []
 
     class HTTP:
@@ -739,13 +742,51 @@ def test_worker_translation_keeps_shared_passage_across_native_cues():
                 'response': 'O baú.', 'done': True, 'done_reason': 'stop'}})()
 
     cues = [Cue(20, 30, 31, 'The chest.'), Cue(21, 32, 33, 'Open it.')]
-    context = {'title': 'Survivor', 'passage': 'The tribe found a wooden chest.\nThe chest.\nOpen it.'}
+    context = {'title': 'Survivor', 'previous_cues': ['The tribe found a wooden chest.']}
     translated = translate(cues, 'pt-BR', Ollama('http://localhost', 'kaelri/hy-mt2:7b', http=HTTP()),
                            lambda *args: None, source_lang='en', context=context)
     assert [(c.index, c.start, c.end) for c in translated] == [(20, 30, 31), (21, 32, 33)]
     headers = [prompt.split('\n[Source Text]\n', 1)[0] for prompt in prompts]
-    assert headers[0] == headers[1]
+    assert headers[0] != headers[1]
     assert 'Programme title: Survivor' in headers[0]
-    assert context['passage'] in headers[0]
+    assert context['previous_cues'][0] in headers[0]
+    assert 'The chest.' not in headers[0] and 'The chest.' in headers[1]
+    assert all('Open it.' not in h for h in headers)
     assert [prompt.split('\n[Source Text]\n', 1)[1] for prompt in prompts] == [
         'The chest.<|extra_0|>', 'Open it.<|extra_0|>']
+
+
+def test_worker_hymt2_translates_continuation_once_and_keeps_original_anchors():
+    prompts = []
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            prompts.append(kwargs['json']['prompt'])
+            return type('R', (), {'status_code': 200, 'json': lambda self: {
+                'response': 'Passei cinco anos em lares adotivos.', 'done': True, 'done_reason': 'stop'}})()
+
+    cues = [Cue(20, 30, 31, 'I spent'), Cue(21, 31.1, 33, 'five years in foster care.')]
+    translated = translate(cues, 'pt-BR', Ollama('http://localhost', 'hy-mt2:7b', http=HTTP()),
+                           lambda *args: None, source_lang='en')
+    assert len(prompts) == 1
+    assert 'I spent five years in foster care.' in ' '.join(prompts[0].split())
+    assert ' '.join(c.text for c in translated) == 'Passei cinco anos em lares adotivos.'
+    assert [(c.index, c.start, c.end) for c in translated] == [(20, 30, 31), (21, 31.1, 33)]
+
+
+def test_worker_translation_does_not_cut_sentence_at_twentieth_anchor():
+    class Recorder:
+        model = 'hy-mt2:7b'
+
+        def __init__(self):
+            self.blocks = []
+
+        def translate_block(self, cues, *args, **kwargs):
+            self.blocks.append(cues)
+            return ['Fala traduzida.'] * len(cues)
+
+    cues = [Cue(i, i, i + .9, f'Complete sentence {i}.') for i in range(19)]
+    cues += [Cue(19, 19, 19.9, 'I spent'), Cue(20, 20, 20.9, 'five years in foster care.')]
+    client = Recorder()
+    translate(cues, 'pt-BR', client, lambda *args: None, source_lang='en')
+    assert any(cues[19] in block and cues[20] in block for block in client.blocks)

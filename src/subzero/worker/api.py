@@ -49,7 +49,7 @@ def free_vram_mb() -> int | None:
 
 
 async def read_capped(upload: UploadFile, cfg: Config) -> bytes:
-    """Le o upload com teto: sem isso um POST grande enche o disco do windows-pc."""
+    """Recusa uploads grandes antes que esgotem a memoria do worker."""
     cap = cfg.asr_max_mb * 1024 * 1024
     data = b""
     while chunk := await upload.read(1024 * 1024):
@@ -86,7 +86,7 @@ def job_json(job: Job) -> dict:
 
 def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, watcher=None,
               notifier=None) -> FastAPI:
-    app = FastAPI(title="srt-worker", version=__version__)
+    app = FastAPI(title="Subzero worker", version=__version__)
     jellyfin = jellyfin or JellyfinClient(cfg.jellyfin_url, cfg.jellyfin_key,
                                           bare_lang=cfg.bare_lang)
     opensubs = opensubs or OpenSubtitles(cfg.opensubtitles_key,

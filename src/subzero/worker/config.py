@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -23,6 +24,7 @@ class Config:
     ollama_keep_alive: str = "2m"
     ollama_num_ctx: int = 4096
     ollama_num_predict: int = 2048
+    ocr_enabled: bool = field(default_factory=lambda: sys.platform == 'darwin')
     daily_download_budget: int = 15
     auto_langs: list[str] = field(default_factory=lambda: ["pt-BR"])
     accepted_langs: list[str] = field(default_factory=list)
@@ -72,6 +74,7 @@ class Config:
             ollama_keep_alive=env.get("OLLAMA_KEEP_ALIVE", "2m"),
             ollama_num_ctx=int(env.get("OLLAMA_NUM_CTX", "4096")),
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
+            ocr_enabled=env.get('OCR_ENABLED', '1' if sys.platform == 'darwin' else '0').lower() not in ('0', 'false', 'no'),
             daily_download_budget=int(env.get("DAILY_DOWNLOAD_BUDGET", "15")),
             auto_langs=langs,
             accepted_langs=[l.strip() for l in env.get("ACCEPTED_LANGS", "").split(",") if l.strip()],

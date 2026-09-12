@@ -9,33 +9,30 @@
   ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ 
 ```
 
-**The universal subtitle and audio AI toolkit.**  
-*Clean SDH, speech gap analysis with Apple Vision OCR caption recovery, auto-sync, local AI translation, container extraction, format conversion, and automated media server daemon.*
+Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.10.1-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.2-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
+[![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
 [![Platform: Linux | macOS | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
 [![CI](https://github.com/yuri-rod/subzero/actions/workflows/ci.yml/badge.svg)](https://github.com/yuri-rod/subzero/actions/workflows/ci.yml)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/yurirod)
 
 ---
 
-## Why Subzero?
+## What it does
 
-Most subtitle workflows are fragmented between slow Python 2 legacy scripts, heavy GUIs, and cloud subscription APIs. **Subzero** delivers a single, high-performance CLI and Python library that handles the entire subtitle lifecycle:
+Subzero provides a CLI, Python library, directory watcher, and subtitle worker for Jellyfin and YUCAST.
 
-* **Zero Dependencies:** Pure Python standard library core. Starts in under 20ms with negligible RAM usage.
-* **Smart SDH Removal:** Strips sound cues (`[LAUGHTER]`, `(SIGHS)`, `♪`), speaker labels, and HTML/ASS tags without corrupting real dialogue.
-* **Dual-Speaker Repair:** Automatically fixes collapsed dialogue lines and normalizes speaker dashes.
-* **Burned-In Caption Recovery (Apple Vision OCR):** Audits speech intervals against subtitle timing to detect uncaptioned dialogue, extracts keyframes across gaps, and recovers burned-in text using native macOS Vision.
-* **Local AI Translation:** Translates subtitles into target languages via Ollama (TranslateGemma) and OpenAI-compatible APIs, with recursive half-split fallback for line count drift and cast gender maps.
-* **Timing Verification & Auto-Delay:** Checks subtitle activity against local speech detection and computes container audio stream delay for exact synchronization.
-* **Direct Video Extraction:** Pulls soft subtitle tracks from Matroska (`.mkv`), MP4, MOV, WebM, and AVI files.
-* **Universal Format Engine:** Losslessly converts between SRT, WebVTT, ASS, SSA, and MicroDVD formats.
-* **Automated Media Daemon:** Background watcher and FastAPI worker service integrated with Jellyfin, Plex, Sonarr, and Radarr libraries.
-* **OpenSubtitles Community Contributions:** Generates 64-bit MovieHashes and publishes verified subtitles screened against strict excellence quality guards.
+* Removes SDH sound cues, speaker labels, and formatting tags, then repairs collapsed dialogue turns and long lines.
+* Extracts embedded text subtitles and converts between SRT, WebVTT, ASS, and SSA.
+* Verifies subtitle timing against local speech detection and applies supported constant-offset or framerate corrections.
+* Recovers burned-in English captions with Apple Vision on macOS, including quiet passages missed by speech detection.
+* Translates through local Ollama, using Hy-MT2 by default. The CLI also supports explicitly selected OpenAI-compatible endpoints.
+* Matches OpenSubtitles downloads, validates candidates, and stages replacements before installing worker output with backups.
+
+The core uses the Python standard library. Timing analysis and the worker have optional Python dependencies; video operations need FFmpeg.
 
 ---
 
@@ -62,72 +59,42 @@ Most subtitle workflows are fragmented between slow Python 2 legacy scripts, hea
 
 ---
 
-## Comparison Matrix
-
-| Feature | Subzero | SubCleaner | Bazarr | Raw ffmpeg |
-| :--- | :---: | :---: | :---: | :---: |
-| **Zero Runtime Dependencies** | **Yes** (pure Python) | No | No (heavy stack) | Yes (binary only) |
-| **SDH Removal + Line Repair** | **Yes** | Yes (regex only) | Basic | No |
-| **Burned-In Caption Recovery (Vision OCR)** | **Yes** (Apple Vision) | No | No | No |
-| **Speech Gap Audio Analysis** | **Yes** | No | No | No |
-| **Container Audio Delay Sync** | **Yes** | No | No | Manual scripting |
-| **Local LLM Translation (Ollama/Gemma)** | **Yes** (with fallback) | No | API keys only | No |
-| **Direct Container Extraction** | **Yes** | No | Yes | Complex syntax |
-| **Format Conversion (SRT/VTT/ASS)** | **Yes** | No | No | Basic |
-| **Interactive Terminal Menu** | **Yes** | No | Web UI only | No |
-| **OpenSubtitles MovieHash & Upload** | **Yes** | No | Internal only | No |
-| **Media Server Integration (Jellyfin/Plex/Sonarr)** | **Yes** | No | Web UI only | No |
-| **Startup Latency** | **<20ms** | ~200ms | Multi-second | <50ms |
-
----
-
 ## Quick Install
 
 ### Using `pip`
+
 ```console
 pip install subzero-cli
 ```
 
 ### Using `uv` (Recommended)
+
 ```console
 uv tool install subzero-cli
 ```
 
 ### Run Directly with `uvx` (No installation needed)
+
 ```console
 uvx subzero-cli menu
 ```
 
-*Requirements:* Python 3.9+ on Linux, macOS, or Windows. `ffmpeg` is optional and only required when extracting tracks from video files or probing audio stream delay.
+Python 3.10+ is required. Install `ffmpeg` and `ffprobe` for extraction, timing analysis, transcription, or OCR. Native OCR also requires macOS and `swiftc`; the packaged Swift source is compiled locally on first use.
+
+Install the extra dependencies for the features you use:
+
+```console
+pip install 'subzero-cli[sync]'
+pip install 'subzero-cli[worker]'
+```
+
+With `uv tool`, use `uv tool install 'subzero-cli[worker,sync]'` for both extras. Ollama and its translation model are separate installations; see the worker configuration below.
 
 ---
 
 ## Interactive Terminal Menu
 
-Run `subzero menu` to launch an interactive terminal interface:
-
-```
-============================================================
-  subzero 1.0.0: interactive menu
-============================================================
-  langs: en,pt   max-line: 42   extract-> srt
-  flags: defaults
-------------------------------------------------------------
-  1) Fix SDH in subtitle files
-  2) Check subtitle files (report only)
-  3) Extract subtitles from video (mp4/mkv/mlv/...)
-  4) Extract from video + fix SDH
-  5) Convert subtitle format (srt/vtt/ass)
-  6) Convert + fix SDH
-  7) Shift subtitle timestamps (+/- seconds)
-  8) Calculate OpenSubtitles MovieHash
-  9) List subtitle streams in a video
- 10) Watch a directory for new subtitles
- 11) Configure options
-  0) Exit
-------------------------------------------------------------
-Choice [0]:
-```
+Run `subzero menu` to choose cleanup, extraction, conversion, timestamp shifting, and directory watching interactively. Use `subzero COMMAND --help` for the current options of each command.
 
 ---
 
@@ -156,7 +123,7 @@ subzero fix concert.srt --keep-music
 Install the optional speech dependencies for timing verification:
 
 ```console
-pip install 'subzero-cli[sync] @ git+https://github.com/yuri-rod/subzero.git@v1.2.0'
+pip install 'subzero-cli[sync]'
 subzero verify-sync movie.mkv movie.pt-BR.srt
 ```
 
@@ -181,11 +148,13 @@ or linear framerate correction. Fit and held-out windows must agree, and consume
 must verify the corrected file again before accepting it. Different cuts and
 irregular drift do not receive automatic piecewise repairs.
 
-The older `sync` command only measures container audio/video start-time skew.
-It does not detect release mismatches or certify dialogue synchronization:
+`sync` attempts speech-based correction and rechecks the result. When that is
+unavailable, it falls back to container audio/video start-time skew. Its output
+identifies the method used; a container-skew result alone does not verify dialogue
+synchronization:
 
 ```console
-# Apply the container audio delay
+# Try speech alignment, with container delay as a fallback
 subzero sync movie.mkv movie.srt
 
 # Output the aligned subtitle to a new file
@@ -209,7 +178,7 @@ subzero shift ./subs --seconds -0.800 --backup ./backup
 
 ### 4. Format Conversion (`subzero convert`)
 
-Losslessly converts between SRT, WebVTT, ASS, SSA, and MicroDVD formats:
+Converts subtitle text and timing between SRT, WebVTT, ASS, and SSA. Format-specific styling may be lost when converting to a simpler format:
 
 ```console
 # Convert WebVTT to SubRip
@@ -237,23 +206,25 @@ subzero extract movie.mkv
 subzero extract /media/series --all --language eng por --format srt --fix
 ```
 
-### 6. AI Translation (`subzero translate`)
+### 6. Translation (`subzero translate`)
 
-Translates subtitles into target languages using local Ollama LLMs or cloud OpenAI-compatible APIs with cue-preserving batching:
+Translates subtitles through Ollama or an explicitly selected OpenAI-compatible API while retaining the source cue timestamps:
 
 ```console
-# Translate English subtitle to Brazilian Portuguese using local Ollama (Gemma 3 12B)
+# Translate English subtitles to Brazilian Portuguese using local Ollama
 subzero translate episode.srt --to pt-BR
 
 # Translate using OpenAI or Groq / DeepSeek / OpenRouter
 subzero translate movie.srt --to es --provider groq --api-key "$GROQ_API_KEY"
 
-# Translate using a custom Ollama host or model
-subzero translate movie.srt --to es --model qwen2.5-coder:7b --url http://192.168.1.50:11434
+# Select the local Hy-MT2 model and endpoint explicitly
+subzero translate movie.srt --to es --model subzero/hy-mt2:7b --url http://127.0.0.1:11434
 
-# Translate with character genders for pronoun and adjective agreement
-subzero translate episode.srt --to pt-BR --cast "Ana:f,Rick:m"
+# Supply character genders to a provider that uses the generic translation prompt
+subzero translate episode.srt --to pt-BR --provider openai --cast "Ana:f,Rick:m"
 ```
+
+`--cast` applies to the generic translation prompts. Hy-MT2 and TranslateGemma use their native prompt formats and do not consume this option. Selecting a remote provider or Ollama URL sends subtitle text to that endpoint.
 
 ### 7. Bilingual Subtitle Merge (`subzero merge`)
 
@@ -285,13 +256,14 @@ subzero watch /media/library --interval 300 --backup ~/sub-backup
 
 ### 10. Subtitle Worker Daemon (`subzero worker`)
 
-Runs the background subtitle service for Jellyfin and YUCAST. It matches downloads, verifies dialogue timing against speech VAD, and translates verified embedded or external subtitles before falling back to local transcription.
+Runs the subtitle service for Jellyfin and YUCAST. It matches downloads, verifies dialogue timing against speech VAD, and translates verified embedded or external subtitles before falling back to local transcription. On macOS, verified English translation sources also pass through native caption recovery when `OCR_ENABLED=1`.
 
-Every subtitle installed or audited by the worker must satisfy strict excellence guards:
+The worker validates candidate subtitles before installation:
+
 * **Configurable target validation:** Validates against `ACCEPTED_LANGS` when set (e.g. `ACCEPTED_LANGS=pt-BR`). If unset or empty, all languages are accepted.
 * **Zero SDH cues:** Any bracketed cues, parentheticals, speaker prefixes, or music symbols are sanitized.
 * **Verified dialogue sync:** Existing subtitles with SDH cues are audited, sanitized, and updated in place once speech alignment is confirmed.
-* **Professional layout standards:** Mandatory acceptance rules enforce balanced line breaks (under 42 characters) and automatically separate collapsed dialogue turns (`- Person 1! - Person 2?`) into distinct lines with standard `- ` prefixes.
+* **Layout:** Lines must fit within 42 characters. Collapsed dialogue turns (`- Person 1! - Person 2?`) are separated into distinct lines with standard `- ` prefixes.
 
 ```console
 # Start the worker daemon
@@ -304,11 +276,17 @@ subzero worker status
 subzero worker stop
 ```
 
-The worker supports continuous 24/7 processing or idle auto-shutdown (`IDLE_SHUTDOWN_MINUTES=15`) so background servers free up RAM during the day while scheduling library sweeps overnight. Configure via `.env` or pass `--env /path/to/.env`.
+The worker binds to `127.0.0.1:8787`. Configure `JELLYFIN_URL`, `JELLYFIN_API_KEY`, and `BEARER_TOKEN` before starting it. API requests require `Authorization: Bearer TOKEN`.
+
+`worker status` reports the transcription model, translation model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. Use `ollama ps` to inspect where the translation model is running.
+
+Configuration is read from an explicit `--env` file, the current directory's `.env`, the package/project `.env`, or `~/.config/subzero/.env`, in that order. Process environment variables override file values. The retired `~/.config/srtworker/.env` location is no longer discovered automatically; select it with `--env` during migration. The `srtworker` command and the existing macOS launchd label remain compatible.
+
+Library sweeps use `AUTO_ENABLED`, `AUTO_WINDOW_START`, `AUTO_WINDOW_END`, and `WATCH_INTERVAL`. `IDLE_SHUTDOWN_MINUTES=15` enables idle shutdown; set it to `0` for a continuously running service.
 
 #### Configuring Target and Accepted Languages
 
-Subzero CLI and core tools operate across all subtitle languages worldwide. For background server automation, users can optionally restrict the worker daemon to accept only their preferred language(s).
+`ACCEPTED_LANGS` restricts which target language tags the worker accepts. An empty value accepts all tags; language-specific content checks still apply where implemented.
 
 Configure `ACCEPTED_LANGS` in your `.env` file:
 
@@ -323,17 +301,20 @@ ACCEPTED_LANGS=pt-BR,en,es
 ACCEPTED_LANGS=
 ```
 
-Before transcribing audio that needs translation, the worker checks that Ollama and the configured model are available. A translation failure leaves the job for review instead of transcribing the same episode again. Translation keeps the model loaded between batches and releases it when the operation ends. Missing, duplicate or reordered output lines are retried in smaller batches; an incomplete translation is never installed.
+Before transcribing audio that needs translation, the worker checks that Ollama and the configured model are available. A translation failure leaves the job for review. Translation keeps the model loaded between batches and releases it when the operation ends. Malformed or incomplete output fails validation before installation.
 
 The worker accepts these Ollama controls:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | Translation server endpoint. |
+| `OLLAMA_MODEL` | `subzero/hy-mt2:7b` | Corrected local Hy-MT2 7B Q6_K package. |
 | `OLLAMA_KEEP_ALIVE` | `2m` | Retain the model between subtitle batches. |
 | `OLLAMA_NUM_CTX` | `4096` | Bound the context allocated for a batch. |
 | `OLLAMA_NUM_PREDICT` | `2048` | Bound the generated response. |
+| `OCR_ENABLED` | `1` on macOS, `0` elsewhere | Recover burned-in captions before translating verified English sources. |
 
-For a 16 GB Apple Silicon machine, this is a starting configuration to compare against the full `large-v3` model:
+For a 16 GB Apple Silicon machine, this configuration runs Whisper on the CPU and leaves GPU memory for Ollama:
 
 ```dotenv
 WHISPER_MODEL=large-v3-turbo
@@ -345,9 +326,13 @@ OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m
 ```
 
-The current transcription backend uses the CPU on Apple Silicon. Keep `large-v3` available for difficult recordings; a short local comparison does not establish which model is best for every language or release. Whisper transcribes the source language, and Ollama handles translation into Brazilian Portuguese.
+Whisper transcribes the source language; Ollama translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job.
 
-TranslateGemma receives its exact documented single-user prompt, including two blank lines before the source text. It requires known source and target languages. Hy-MT2 uses its documented background/source format and translates one cue per request. Repair supplies surrounding English dialogue and the programme title as context. Both paths preserve the source cue map; validation rejects empty, truncated, malformed, or untranslated output before installation.
+Hy-MT2 joins bounded consecutive fragments from the same speaker, translates each sentence unit once, and distributes the generated words across the original cue timestamps. Batches keep these units together. Complete units can use up to 32 preceding source cues, capped at 6,000 characters, plus the programme title. The context excludes the current unit and later dialogue; unfinished fragments receive no background context.
+
+TranslateGemma remains supported when explicitly selected. It receives its exact documented single-user prompt, including two blank lines before the source text, and requires known source and target languages. Validation rejects empty, truncated, malformed, or untranslated output before installation.
+
+For TranslateGemma in the CLI, name an English input `episode.en.srt` or `episode.eng.srt` so the source language can be identified. Worker translation sources carry their language explicitly.
 
 The default model is a local Hy-MT2 7B Q6_K package. The community 7B package needs a different prompt template from the smaller variants, and its EOS metadata incorrectly identifies `$` as an end token. Prepare a separate corrected copy before selecting it:
 
@@ -360,7 +345,7 @@ python3 -m subzero.hymt2 "$subzero_model_file" "$subzero_model_stage"
 ollama create subzero/hy-mt2:7b -f "$subzero_model_stage/Modelfile"
 ```
 
-The preparation command requires a new staging directory. It changes only the EOS metadata in the copy and verifies the copied bytes, retaining the original model and tensor weights. `verification.json` records the hashes. The template and end tokens follow [Tencent's 7B tokenizer](https://huggingface.co/tencent/Hy-MT2-7B/blob/main/chat_template.jinja). No subtitle content leaves the configured local Ollama endpoint.
+Run the preparation command with the Python environment where Subzero is installed. It requires a new staging directory, changes only the EOS metadata in the copy, and verifies the copied bytes. It retains the original model and tensor weights, and records hashes in `verification.json`. The template and end tokens follow [Tencent's 7B tokenizer](https://huggingface.co/tencent/Hy-MT2-7B/blob/main/chat_template.jinja).
 
 For a dedicated Ollama server on a small machine, set `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_MAX_LOADED_MODELS=1` in the server environment. Keep it bound to loopback when the worker runs on the same host.
 
@@ -376,25 +361,29 @@ subzero contribute --dry-run --lang pt-BR --limit 20
 subzero contribute --env .env --lang pt-BR --limit 50
 ```
 
-Every uploaded subtitle is screened against excellence guards:
-* **Target validation:** Strictly requires Brazilian Portuguese (`pt-BR` / `por`).
-* **Zero SDH:** Sound effects, speaker prefixes, and musical cues must be absent.
-* **Layout and encoding:** Dialogue lines must fit within 42 characters per line, with no collapsed speaker rows and valid UTF-8.
-* **Content ledger:** An SQLite database (`contributions.db`) tracks uploaded content hashes to prevent repeated submissions.
+The contributor supports English and Brazilian Portuguese. Portuguese candidates pass the worker's SDH, layout, encoding, and language checks before upload. An SQLite database (`contributions.db`) tracks content hashes to prevent repeated submissions. `--dry-run` reads the catalogue and local files without uploading subtitles.
  
+
 ---
  
-### 12. Native Vision OCR Speech Gap Recovery (`subzero fill-gaps` / `subzero ocr-sync`)
+### 12. Native caption recovery (`subzero fill-gaps` / `subzero ocr-sync`)
+
  
 Recovers burned-in open captions (e.g. whispered dialogue and challenge instructions) that were omitted from broadcast SDH tracks:
  
 ```console
-# Audit gaps between dialogue cues and recover on-screen captions via Apple Vision OCR
-subzero fill-gaps movie.mkv movie.pt-BR.srt --target-lang pt-BR
+# Recover and translate on-screen captions with Apple Vision and local Ollama
+subzero fill-gaps movie.mkv movie.pt-BR.srt --to pt-BR
  
-# Dry run: audit dialogue gaps without modifying subtitle file
+# Run recovery without modifying the subtitle file
 subzero fill-gaps episode.mkv episode.pt-BR.srt --dry-run
 ```
+
+`--dry-run` still performs frame extraction, OCR, and translation. Use `--to none` to inspect the recovered English captions without translation.
+
+The CLI scans intervals without dialogue subtitles, including quiet passages without detected speech. Recovered cues are clipped to those intervals so they do not overlap existing dialogue.
+
+Native Vision uses accurate English recognition and language correction. Caption position, size, and horizontal angle filter out unrelated text. Nearby frames help resolve text candidates and fluctuating boxes in single-line and two-line captions.
 
 The macOS worker exposes the same recovery as an explicit `recover_gaps` job through
 `POST /jobs`, with `itemId` and `targetLang` (for example, `pt-BR`). It reads the
@@ -405,16 +394,36 @@ checks before installation. The worker backs up the original under
 fails. This job does not download subtitles or regenerate the episode from audio.
 Regular audits do not run OCR; `SYNC_AUDIT_ONLY=1` prevents replacement.
 
+When `OCR_ENABLED=1`, the worker also applies recovery automatically before translating a verified English source. It defaults to enabled on macOS and disabled elsewhere. This setting controls ordinary translation jobs; explicit `recover_gaps` and `repair` jobs request OCR themselves. An existing translation that passes its audit is kept. Submit a repair job to regenerate an existing poor translation.
+
 Use `kind: "repair"` with the same endpoint when the existing translation needs
 to be regenerated. Repair requires a verified English embedded track or English
-sidecar. It adds missing burned-in English captions with Apple Vision, then sends
-all dialogue through the configured local translator. Speaker labels remain
-available as translation context and are removed from the delivered subtitle.
-With Hy-MT2, each 20-cue block shares the programme title and nearby English
-dialogue (up to 32 preceding and 8 following cues). This background is capped at
-6,000 characters; each request still translates only its current cue.
-Cue timing and count must survive translation and cleanup, and the regenerated
-file must pass the worker's timing and language checks before replacement.
+sidecar. It scans the full supported video duration for burned-in English captions,
+including captions shown while another person is speaking in the subtitle track.
+The worker uses this same source scan for ordinary verified English translation
+jobs when `OCR_ENABLED=1`.
+
+Each dialogue cue and recovered caption retains its timing through translation
+and cleanup. Hy-MT2 translates sentence units once. When captions overlap, the
+worker combines their translated text into successive display intervals with no
+overlapping output cues. The final display cue count can therefore differ from
+the source cue count. Speaker labels remain available during translation and are
+removed from the delivered subtitle. The regenerated file must pass timing,
+language, and dialogue-preservation checks before replacement.
+
+For example, send this body to `POST /jobs` with the worker bearer token:
+
+```json
+{
+  "itemId": "JELLYFIN_ITEM_ID",
+  "kind": "repair",
+  "targetLang": "pt-BR"
+}
+```
+
+Inspect `GET /jobs/{id}` for progress and the final `outcome`, or use
+`DELETE /jobs/{id}` to cancel. A job that needs review reports
+`outcome: "needs_review"`; the compatibility `state` field reports `failed`.
 
 Complete English and regenerated target subtitles are retained under
 `SYNC_CACHE/candidates`. English OCR results are cached under
@@ -424,32 +433,33 @@ Repair preserves the installed target on failure or cancellation and rejects
 replacement if that target changed while the job was running. It does not fall
 back to downloads or audio transcription.
 
+New sidecars require filesystem support for atomic creation without replacing an existing file. If the media filesystem cannot provide it, the job ends in `needs_review` and retains the staged candidate.
+
 Successful translation blocks are saved atomically under `SYNC_CACHE/translations`.
 An interrupted repair resumes from these blocks after checking the exact source,
 output integrity, timing, cue count, and target language. Changing the English
 source, configured model, context or output limits, or translation prompt version
 starts a new translation cache. Partial progress is never installed as a sidecar.
- 
-* **Speech Gap Detection:** Compares audio speech activity against existing subtitle timing intervals, identifying speech gaps larger than a configurable minimum duration.
-* **Apple Vision OCR:** Uses native macOS Vision framework (`VNRecognizeTextRequest`) with fast ffmpeg keyframe seeking to read burned-in titles at negligible overhead.
-* **Seamless Cue Injection:** Translates recovered text to the target language and injects the new cues in chronological order with deduplication against surrounding dialogue.
- 
+
 ---
 
 ## Integration with Media Servers
 
-### Sonarr / Radarr Custom Script
-Add a Custom Script hook in Sonarr/Radarr under **Settings > Connect > Custom Script**:
+### Sonarr custom script
+
+Configure a Sonarr Custom Script hook for downloads:
 ```bash
 #!/usr/bin/env bash
-# Triggered on Download / Upgrade
 if [ "$sonarr_eventtype" = "Download" ]; then
     subzero extract "$sonarr_episodefile_path" --fix
     subzero fix "$(dirname "$sonarr_episodefile_path")" --pattern "*.srt"
 fi
 ```
 
+For Radarr, use `radarr_eventtype` and `radarr_moviefile_path` in the equivalent hook.
+
 ### Systemd Service (Linux Home Server)
+
 Create `/etc/systemd/system/subzero-watch.service`:
 ```ini
 [Unit]
@@ -473,12 +483,13 @@ WantedBy=multi-user.target
 | Kind | Extension | Supported Operations |
 | :--- | :--- | :--- |
 | **SubRip** | `.srt` | Read, Clean, Convert, Shift, Extract, Translate, Sync |
-| **WebVTT** | `.vtt`, `.webvtt` | Read, Clean, Convert, Shift, Extract, Translate |
-| **Advanced SubStation Alpha** | `.ass` | Read, Clean, Convert to SRT, Extract |
-| **SubStation Alpha** | `.ssa` | Read, Clean, Convert to SRT, Extract |
-| **MicroDVD** | `.sub` | Read, Convert to SRT |
+| **WebVTT** | `.vtt`, `.webvtt` | Read, Convert, Extract |
+| **Advanced SubStation Alpha** | `.ass` | Read, Convert, Extract |
+| **SubStation Alpha** | `.ssa` | Read, Convert, Extract |
 | **Video Containers** | `.mkv`, `.mp4`, `.mov`, `.webm`, `.avi`, `.mlv`, `.ts`, `.m2ts` | Stream Inspection, Soft Subtitle Extraction, Audio Probe |
 | **Character Encodings** | UTF-8, UTF-8-BOM, CP1252, Latin-1, ISO-8859-1 | Automatic detection and decoding to UTF-8 |
+
+Convert other formats to SRT before using the subtitle cleanup, timing, or translation workflows.
 
 ---
 
@@ -540,7 +551,7 @@ shifted_text, count = shift_timestamps(raw_srt_text, delta_seconds=+2.5)
 vtt_result = convert_text(raw_srt_text, target="vtt", source="srt")
 
 # Extract soft subtitles from video container
-extract_from_video("movie.mkv", fmt="srt", languages=("eng",), fix=fix_file)
+extract_from_video("movie.mkv", fmt="srt", languages=("eng",))
 ```
 
 ---

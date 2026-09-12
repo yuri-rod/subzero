@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.10.1"
+version = "1.10.2"
 description = "Universal subtitle & audio AI toolkit: clean SDH, speech gap analysis with Apple Vision OCR caption recovery, auto-sync, local LLM translation, container extraction, format conversion, and automated media server daemon"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Yuri Barreira" }]
 keywords = [
     "subtitles",
@@ -41,7 +41,6 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
