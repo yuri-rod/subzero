@@ -5,6 +5,19 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-12
+
+### Added
+- Language completeness guard: checks that translations (e.g. pt-BR) remain consistent through the end of the file, rejecting incomplete community subtitles where text reverts to English.
+- Redundant sidecar pruning: removes bare `.srt` files and intermediate `.en.srt` sidecars matching container embedded tracks when installing subtitles.
+- Tag and timing guards: catches unclosed formatting tags, machine translation casing artifacts, and severe timing drift during excellence checks.
+
+### Fixed
+- Collapsed dialogue false positives: refined `is_collapsed()`, `PUNCT_DASH`, and `SPLIT_DIALOGUE` in `core.py` so single-speaker parentheticals, pauses, and ranges are not wrongly split or flagged.
+- Multi-line dialogue formatting in translation: kept line breaks in `_parse_lines` during structured LLM responses instead of collapsing them with spaces.
+- Target language propagation: forwarded `job.target_lang` and `accepted_langs` to all `sanitize_to_excellence` calls in `syncflow.py`.
+- Rebuild stage failure reporting: corrected inverted failure reason in `_rebuild` validation.
+
 ## [1.8.0] - 2026-09-10
 
 ### Added

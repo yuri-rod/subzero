@@ -12,7 +12,7 @@
 **The universal subtitle and audio AI toolkit.**  
 *Clean SDH, auto-sync, shift, convert, extract, and translate with zero setup.*
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Dependencies: Zero](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
