@@ -88,6 +88,15 @@ def test_job_with_an_unknown_kind_is_400(client):
     assert r.status_code == 400
 
 
+@pytest.mark.parametrize('kind', ['recover_gaps', 'repair'])
+def test_ocr_jobs_can_be_requested_without_changing_the_job_kind(client, kind):
+    response = client.post('/jobs', headers=AUTH,
+                           json={'itemId': 'abc', 'kind': kind, 'targetLang': 'pt-BR'})
+    assert response.status_code == 200
+    assert response.json()['kind'] == kind
+    assert response.json()['state'] == 'queued'
+
+
 def test_job_for_an_unknown_item_is_404(client):
     r = client.post("/jobs", headers=AUTH, json={"itemId": "nope", "kind": "whisper", "targetLang": "pt-BR"})
     assert r.status_code == 404

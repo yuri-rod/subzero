@@ -1,11 +1,12 @@
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from subzero.worker.jellyfin import Media
 from subzero.worker.srt import Cue, parse
-from subzero.worker.tracks import (ModelHolder, Ollama, audio_start_offset, deliver, extract_embedded,
+from subzero.worker.tracks import (ModelHolder, Ollama, audio_start_offset, deliver, extract_audio, extract_embedded,
                               last_lines, run_ffmpeg, shift, sidecar_path, transcribe,
                               translate)
 
@@ -106,9 +107,10 @@ class FakeSegment:
 
 
 class FakeHolder:
-    def __init__(self, segments, language="ja"):
+    def __init__(self, segments, language="ja", duration=None):
         self.segments = segments
         self.language = language
+        self.duration = duration if duration is not None else max(10, max((seg.end for seg in segments), default=0))
         self.unloaded = False
         self.lock = threading.Lock()
 
@@ -117,7 +119,7 @@ class FakeHolder:
 
         class Model:
             def transcribe(self, path, **kwargs):
-                info = type("Info", (), {"language": holder.language, "duration": 10})()
+                info = type("Info", (), {"language": holder.language, "duration": holder.duration})()
                 return iter(holder.segments), info
 
         return Model()
@@ -146,6 +148,20 @@ def test_transcribe_without_speech_fails(tmp_path):
     audio.write_bytes(b"x")
     with pytest.raises(RuntimeError):
         transcribe(str(audio), FakeHolder([]), progress=lambda phase, pct: None)
+
+
+def test_transcribe_clamps_audio_end_and_skips_late_segments():
+    holder = FakeHolder([FakeSegment(8.88, 9.72, "One."), FakeSegment(9.72, 10.72, "Two."),
+                         FakeSegment(10.1, 11.0, "Outside audio.")], duration=10)
+    cues, _ = transcribe("audio.wav", holder, progress=lambda *args: None)
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [(8.88, 9.72, "One."), (9.72, 10.0, "Two.")]
+
+
+@pytest.mark.parametrize("duration", [0, float("inf"), float("nan")])
+def test_transcribe_without_finite_duration_keeps_valid_timestamps(duration):
+    holder = FakeHolder([FakeSegment(8, 11, "A valid caption.")], duration=duration)
+    cues, _ = transcribe("audio.wav", holder, progress=lambda *args: None)
+    assert [(cue.start, cue.end) for cue in cues] == [(8, 11)]
 
 
 def test_transcribe_rejects_a_repetition_loop(tmp_path):
@@ -217,7 +233,7 @@ def test_ollama_prompt_numbers_the_lines():
             sent["url"] = url
             sent["json"] = kwargs["json"]
             return type("R", (), {"status_code": 200,
-                                  "json": lambda self: {"response": "1. ola\n2. mundo"}})()
+                                  "json": lambda self: {"response": "1. ola\n2. mundo", "done": True, "done_reason": "stop"}})()
 
     out = Ollama("http://ollama", "gemma3:12b", http=HTTP()).translate_block(
         [Cue(1, 0, 1, "hello"), Cue(2, 1, 2, "world")], "pt-BR")
@@ -446,7 +462,7 @@ def test_ollama_asks_the_model_to_be_released_after_the_job():
         def request(self, method, url, **kwargs):
             self.sent = kwargs.get("json")
             return type("R", (), {"status_code": 200,
-                                  "json": lambda self: {"response": "1. ola"}})()
+                                  "json": lambda self: {"response": "1. ola", "done": True, "done_reason": "stop"}})()
 
     http = Recorder()
     Ollama("http://o", "gemma3:12b", http=http).translate_block([Cue(1, 0, 1, "hi")], "pt-BR")
@@ -458,6 +474,83 @@ def test_model_holder_compute_type_defaults():
     assert ModelHolder("tiny", device="cuda").compute_type == "float16"
     assert ModelHolder("tiny", device="cpu").compute_type == "int8"
     assert ModelHolder("tiny", device="cpu", compute_type="float32").compute_type == "float32"
+
+
+def test_model_holder_requires_cached_model(tmp_path, monkeypatch):
+    import faster_whisper
+    import faster_whisper.utils
+
+    for filename in ("model.bin", "config.json", "tokenizer.json"):
+        (tmp_path / filename).write_text("cached")
+
+    def cached_snapshot(name, **kwargs):
+        if not kwargs.get("local_files_only"):
+            raise AssertionError("runtime attempted to permit remote model lookup")
+        return str(tmp_path)
+
+    class CachedModel:
+        def __init__(self, name, **kwargs):
+            if not kwargs.get("local_files_only"):
+                raise AssertionError("runtime attempted to permit remote model lookup")
+            self.name = name
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", CachedModel)
+    monkeypatch.setattr(faster_whisper.utils, "download_model", cached_snapshot)
+    holder = ModelHolder("large-v3-turbo", device="cpu")
+    assert holder.load().name == str(tmp_path)
+
+
+def test_model_holder_reports_missing_local_cache(monkeypatch):
+    import faster_whisper
+    import faster_whisper.utils
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    def missing_model(*args, **kwargs):
+        raise LocalEntryNotFoundError("snapshot not found")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", missing_model)
+    monkeypatch.setattr(faster_whisper.utils, "download_model", missing_model)
+    with pytest.raises(RuntimeError, match="not cached locally"):
+        ModelHolder("large-v3-turbo", device="cpu").load()
+
+
+def test_model_holder_rejects_cache_missing_tokenizer(tmp_path, monkeypatch):
+    import faster_whisper
+
+    (tmp_path / "model.bin").write_bytes(b"cached model")
+    (tmp_path / "config.json").write_text("{}")
+
+    def remote_tokenizer(*args, **kwargs):
+        raise AssertionError("Whisper would fetch a tokenizer for an incomplete cache")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", remote_tokenizer)
+    with pytest.raises(RuntimeError, match="tokenizer.json"):
+        ModelHolder(str(tmp_path), device="cpu").load()
+
+
+def test_audio_extractions_for_same_video_use_separate_files(tmp_path, monkeypatch):
+    from subzero.worker import tracks
+
+    monkeypatch.setattr(tracks.tempfile, "tempdir", str(tmp_path))
+    first = Path(extract_audio("episode.mkv", popen=FakePopen([])))
+    second = Path(extract_audio("episode.mkv", popen=FakePopen([])))
+    assert first != second
+    assert first.is_file() and second.is_file()
+
+
+def test_failed_audio_extraction_removes_partial_wav(tmp_path, monkeypatch):
+    from subzero.worker import tracks
+
+    monkeypatch.setattr(tracks.tempfile, "tempdir", str(tmp_path))
+
+    def fail(cmd, *args, **kwargs):
+        Path(cmd[-1]).write_bytes(b"partial")
+        raise RuntimeError("invalid audio stream")
+
+    monkeypatch.setattr(tracks, "run_ffmpeg", fail)
+    with pytest.raises(RuntimeError, match="invalid audio stream"):
+        extract_audio("episode.mkv")
+    assert not list(tmp_path.glob("*.wav"))
 def test_strict_translation_never_keeps_untranslated_fallback_lines():
     cues=[Cue(1,0,1,'hello'),Cue(2,1,2,'world')]
     with pytest.raises(RuntimeError,match='bloco'):
@@ -525,7 +618,7 @@ def test_ollama_generates_structured_cues_with_bounded_options():
         def request(self, method, url, **kwargs):
             sent.update(kwargs["json"])
             return type("R", (), {"status_code": 200,
-                                  "json": lambda self: {"response": '[{"id":1,"text":"Ola"}]'}})()
+                                  "json": lambda self: {"response": '[{"id":1,"text":"Ola"}]', "done": True, "done_reason": "stop"}})()
 
     client = Ollama("http://localhost", "model", http=HTTP(), num_ctx=2048, num_predict=1024)
     assert client.translate_block([Cue(1, 1, 2, "Hello")], "pt-BR") == ["Ola"]
@@ -553,7 +646,7 @@ def test_equal_count_reordered_output_never_becomes_a_translation():
     class HTTP:
         def request(self, *args, **kwargs):
             return type("R", (), {"status_code": 200,
-                                  "json": lambda self: {"response": "2. mundo\n1. ola"}})()
+                                  "json": lambda self: {"response": "2. mundo\n1. ola", "done": True, "done_reason": "stop"}})()
 
     cues = [Cue(1, 1, 2, "Hello"), Cue(2, 3, 4, "World")]
     with pytest.raises(RuntimeError, match="preserv"):
@@ -567,10 +660,92 @@ def test_worker_translategemma_receives_source_language_through_translation():
         def request(self, method, url, **kwargs):
             sent.update(kwargs["json"])
             return type("R", (), {"status_code": 200,
-                                  "json": lambda self: {"response": '[{"id":1,"text":"Ola"}]'}})()
+                                  "json": lambda self: {"response": "Ola", "done": True, "done_reason": "stop"}})()
 
     cues = [Cue(7, 1, 2, "Hello")]
     client = Ollama("http://localhost", "translategemma:4b", http=HTTP())
     translated = translate(cues, "pt-BR", client, lambda *args:None, strict=True, source_lang="eng")
     assert [(c.index, c.start, c.end, c.text) for c in translated] == [(7, 1, 2, "Ola")]
     assert "English (en) to Brazilian Portuguese (pt-BR)" in sent["prompt"]
+
+
+def test_worker_native_translation_keeps_each_cue_with_its_own_response():
+    prompts = []
+    replies = iter(["Olá, Jeff.", "Até mais."])
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            payload = kwargs["json"]
+            prompts.append(payload["prompt"].split("\n\n\n", 1)[1])
+            reply = next(replies)
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": reply, "done": True, "done_reason": "stop"}})()
+
+    cues = [Cue(7, 1.2, 3.4, "Hello, Jeff."), Cue(8, 5.6, 7.8, "Goodbye.")]
+    client = Ollama("http://localhost", "translategemma:12b", http=HTTP())
+    translated = translate(cues, "pt-BR", client, lambda *args: None, source_lang="en")
+    assert [(c.index, c.start, c.end, c.text) for c in translated] == [
+        (7, 1.2, 3.4, "Olá, Jeff."), (8, 5.6, 7.8, "Até mais."),
+    ]
+    assert prompts == ["Hello, Jeff.", "Goodbye."]
+
+
+@pytest.mark.parametrize("model", ["translategemma:4b", "kaelri/hy-mt2:7b"])
+def test_worker_native_translation_rejects_token_limit_output(model):
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "1. Olá.", "done": True, "done_reason": "length"}})()
+
+    client = Ollama("http://localhost", model, http=HTTP())
+    with pytest.raises(RuntimeError, match="preserv"):
+        translate([Cue(1, 1, 2, "Hello.")], "pt-BR", client, lambda *args: None, source_lang="en")
+
+
+def test_worker_native_translation_uses_neighboring_source_without_translating_it():
+    prompts = []
+    replies = iter(["Um.", "Dois.", "Três.", "Quatro.", "Cinco."])
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            payload = kwargs["json"]
+            assert url == "http://localhost/api/generate"
+            assert payload["raw"] is True
+            assert payload["options"]["stop"] == ["<|eos|>", "<|extra_5|>"]
+            prompts.append(payload["prompt"])
+            reply = next(replies)
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": reply, "done": True, "done_reason": "stop"}})()
+
+    cues = [Cue(i, i, i + 0.5, text) for i, text in enumerate(["One.", "Two.", "Three.", "Four.", "Five."])]
+    client = Ollama("http://localhost", "kaelri/hy-mt2:7b", http=HTTP())
+    translated = translate(cues, "pt-BR", client, lambda *args: None, source_lang="en")
+    assert [(cue.index, cue.text) for cue in translated] == [(0, "Um."), (1, "Dois."), (2, "Três."), (3, "Quatro."), (4, "Cinco.")]
+    middle_header, middle_source = prompts[2].split("\n[Source Text]\n", 1)
+    assert middle_source == "Three.<|extra_0|>"
+    assert all(text in middle_header for text in ["One.", "Two.", "Four.", "Five."])
+    last_header = prompts[4].split("\n[Source Text]\n", 1)[0]
+    assert "Three." in last_header and "Four." in last_header
+    assert "One." not in last_header and "Two." not in last_header
+
+
+def test_worker_translation_keeps_shared_passage_across_native_cues():
+    prompts = []
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            prompts.append(kwargs['json']['prompt'])
+            return type('R', (), {'status_code': 200, 'json': lambda self: {
+                'response': 'O baú.', 'done': True, 'done_reason': 'stop'}})()
+
+    cues = [Cue(20, 30, 31, 'The chest.'), Cue(21, 32, 33, 'Open it.')]
+    context = {'title': 'Survivor', 'passage': 'The tribe found a wooden chest.\nThe chest.\nOpen it.'}
+    translated = translate(cues, 'pt-BR', Ollama('http://localhost', 'kaelri/hy-mt2:7b', http=HTTP()),
+                           lambda *args: None, source_lang='en', context=context)
+    assert [(c.index, c.start, c.end) for c in translated] == [(20, 30, 31), (21, 32, 33)]
+    headers = [prompt.split('\n[Source Text]\n', 1)[0] for prompt in prompts]
+    assert headers[0] == headers[1]
+    assert 'Programme title: Survivor' in headers[0]
+    assert context['passage'] in headers[0]
+    assert [prompt.split('\n[Source Text]\n', 1)[1] for prompt in prompts] == [
+        'The chest.<|extra_0|>', 'Open it.<|extra_0|>']

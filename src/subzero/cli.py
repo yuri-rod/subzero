@@ -576,7 +576,7 @@ def build_parser() -> argparse.ArgumentParser:
     gaps.add_argument("-o", "--output", metavar="PATH", help="output subtitle path")
     gaps.add_argument("--to", default="pt-BR", help="target translation language (default pt-BR, use none to keep original)")
     gaps.add_argument("--provider", default="ollama", choices=["ollama", "openai", "openrouter", "groq", "deepseek"], help="LLM provider (default: ollama)")
-    gaps.add_argument("--model", default=None, help="LLM model name (defaults to translategemma:4b)")
+    gaps.add_argument("--model", default=None, help="LLM model name (defaults to subzero/hy-mt2:7b)")
     gaps.add_argument("--url", default=None, help="custom API base URL / Ollama host")
     gaps.add_argument("--api-key", default=None, help="API key for cloud LLM providers")
     gaps.add_argument("--cache", default=str(Path.home()/'.cache/subzero/references'), help="cache directory for speech reference")

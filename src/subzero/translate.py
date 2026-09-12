@@ -41,6 +41,8 @@ LANG_ALIASES = {
 }
 
 MAX_RESPONSE_BYTES = 131072
+TRANSLATION_PROMPT_VERSION = "native-hymt2-passage-5"
+NATIVE_CONTROL = re.compile(r"<(?:[|｜ｆｈｺｂ]|/?(?:think|suggested_response)\b)")
 
 FEMININE = {"f", "fem", "feminine", "feminino", "feminina", "female", "mulher"}
 MASCULINE = {"m", "masc", "masculine", "masculino", "male", "homem"}
@@ -141,13 +143,99 @@ def _parse_lines(response_text: str) -> list[str]:
     return out
 
 
-def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, source_lang=None, cast=None):
+def _is_translategemma(model: str) -> bool:
+    return model.rsplit("/", 1)[-1].split(":", 1)[0].lower() == "translategemma"
+
+
+def _is_native_translation(model: str) -> bool:
+    return model.rsplit("/", 1)[-1].split(":", 1)[0].lower() in {"translategemma", "hy-mt2"}
+
+
+def _parse_ollama_response(body, native: bool = False) -> list[str]:
+    if not isinstance(body, dict):
+        return []
+    if body.get("done") is not True or body.get("done_reason") != "stop":
+        return []
+    if not native:
+        return _parse_lines(body.get("response", ""))
+    text = body.get("response")
+    if not isinstance(text, str) or not text.strip():
+        return []
+    try:
+        if len(text.encode("utf-8")) > MAX_RESPONSE_BYTES:
+            return []
+    except UnicodeEncodeError:
+        return []
+    text = text.strip()
+    if NATIVE_CONTROL.search(text):
+        return []
+    if text.startswith("```") or re.search(r"(?m)^\s*\d+[.)]\s+\S", text):
+        return []
+    if text.startswith(("[", "{")):
+        try:
+            if isinstance(json.loads(text), (dict, list)):
+                return []
+        except ValueError:
+            pass
+    return ["\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines() if line.strip())]
+
+
+def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, source_lang=None, cast=None, *, context=None):
     source_code = (source_lang or "").strip().lower().replace("_", "-")
     source_code = LANG_ALIASES.get(source_code, source_code)
     target_code = target_lang.strip().lower().replace("_", "-")
     target_code = LANG_ALIASES.get(target_code, target_code)
     source = LANG_NAMES.get(source_code)
     target = LANG_NAMES.get(target_code, target_lang)
+    if _is_translategemma(model):
+        if not source or target_code not in LANG_NAMES:
+            raise RuntimeError("TranslateGemma requires explicit known source and target languages")
+        if len(cues) != 1:
+            raise RuntimeError("TranslateGemma requires exactly one subtitle per request")
+        prompt = (
+            f"You are a professional {source} ({source_code}) to {target} ({target_code}) translator. "
+            f"Your goal is to accurately convey the meaning and nuances of the original {source} text "
+            f"while adhering to {target} grammar, vocabulary, and cultural sensitivities.\n"
+            f"Produce only the {target} translation, without any additional explanations or commentary. "
+            f"Please translate the following {source} text into {target}:\n\n\n{cues[0].text}"
+        )
+        return {
+            "model": model, "prompt": prompt, "stream": False, "think": False, "keep_alive": keep_alive,
+            "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": num_predict},
+        }
+    if _is_native_translation(model):
+        if target_code not in LANG_NAMES:
+            raise RuntimeError("Hy-MT2 requires an explicit known target language")
+        if len(cues) != 1:
+            raise RuntimeError("Hy-MT2 requires exactly one subtitle per request")
+        if context and any(context.get(key) for key in ("passage", "previous", "following")):
+            background = (
+                f"Programme title: {context.get('title', '')}\nEnglish dialogue:\n{context['passage']}\n"
+                if context.get("passage") else
+                f"Previous dialogue: {context.get('previous', '')}\nFollowing dialogue: {context.get('following', '')}\n"
+            )
+            prompt = (
+                "[Background Information]\n" + background +
+                f"Please translate the following text into {target}, "
+                "taking the provided background information into consideration.\n"
+                f"[Source Text]\n{cues[0].text}"
+            )
+        else:
+            prompt = (
+                f"Translate the following text into {target}. Note that you should only output "
+                f"the translated result without any additional explanation:\n{cues[0].text}"
+            )
+        payload = {
+            "model": model, "prompt": prompt, "stream": False, "think": False, "keep_alive": keep_alive,
+            "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": num_predict},
+        }
+        if re.fullmatch(r"hy-mt2:7b(?:-.*)?", model.rsplit("/", 1)[-1].lower()):
+            if NATIVE_CONTROL.search(prompt):
+                raise RuntimeError("Subtitle context or source contains model control tokens")
+            payload["prompt"] = f"<|startoftext|>{prompt}<|extra_0|>"
+            payload["raw"] = True
+            payload["options"]["stop"] = ["<|eos|>", "<|extra_5|>"]
+        return payload
     guidance = cast_note(parse_cast(cast)) + NEUTRAL_NOTE
     numbered = "\n".join(f"{i}. {' '.join(c.text.split())}" for i, c in enumerate(cues, start=1))
     prompt = (
@@ -157,16 +245,6 @@ def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, 
         f"Return a JSON array of exactly {len(cues)} objects with sequential integer id "
         "starting at 1 and translated text. Do not merge, omit, or add dialogue.\n\n" + numbered
     )
-    if model.rsplit("/", 1)[-1].split(":", 1)[0].lower() == "translategemma" and source and target_code in LANG_NAMES:
-        prompt = (
-            f"You are a professional {source} ({source_code}) to {target} ({target_code}) translator. "
-            f"Your goal is to accurately convey the meaning and nuances of the original {source} text "
-            f"while adhering to {target} grammar, vocabulary, and cultural sensitivities.\n" + guidance +
-            f"Produce only the {target} translation, without any additional explanations or commentary. "
-            f"Keep character names, proper nouns, and show titles in their original form. "
-            f"Please translate the following {source} text into {target}:\n\n\n"
-            + json.dumps([{"id": i, "text": c.text} for i, c in enumerate(cues, start=1)], ensure_ascii=False)
-        )
     return {
         "model": model,
         "prompt": prompt,
@@ -183,14 +261,17 @@ def _ollama_payload(cues, target_lang, model, keep_alive, num_ctx, num_predict, 
     }
 
 
-def _translate_lines(cues, target_lang, client, depth=0, source_lang=None):
+def _translate_lines(cues, target_lang, client, depth=0, source_lang=None, context=None):
     lines = []
     for _ in range(2):
-        try:
-            lines = (client.translate_block(cues, target_lang, source_lang=source_lang)
-                     if source_lang else client.translate_block(cues, target_lang))
-        except TypeError:
-            lines = client.translate_block(cues, target_lang)
+        if context is not None:
+            lines = client.translate_block(cues, target_lang, source_lang=source_lang, context=context)
+        else:
+            try:
+                lines = (client.translate_block(cues, target_lang, source_lang=source_lang)
+                         if source_lang else client.translate_block(cues, target_lang))
+            except TypeError:
+                lines = client.translate_block(cues, target_lang)
         if (isinstance(lines, list) and len(lines) == len(cues)
                 and all(isinstance(line, str) and line.strip() for line in lines)):
             return [line.strip() for line in lines]
@@ -205,7 +286,7 @@ def _translate_lines(cues, target_lang, client, depth=0, source_lang=None):
 class OllamaClient:
     """Client for local Ollama HTTP API."""
 
-    def __init__(self, url: str = "http://127.0.0.1:11434", model: str = "gemma3:12b", timeout: int = 120,
+    def __init__(self, url: str = "http://127.0.0.1:11434", model: str = "subzero/hy-mt2:7b", timeout: int = 120,
                  keep_alive: str = "2m", num_ctx: int = 4096, num_predict: int = 2048,
                  cast: str | dict | None = None):
         self.url = url.rstrip("/")
@@ -218,10 +299,16 @@ class OllamaClient:
         self.num_ctx = num_ctx
         self.num_predict = num_predict
 
-    def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None) -> list[str]:
+    def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
+        if _is_native_translation(self.model) and len(cues) > 1:
+            return [line for index, cue in enumerate(cues)
+                    for line in _translate_lines([cue], target_lang, self, source_lang=source_lang, context=context or {
+                        "previous": "\n".join(c.text for c in cues[max(0, index - 2):index]),
+                        "following": "\n".join(c.text for c in cues[index + 1:index + 3]),
+                    })]
         req_data = json.dumps(_ollama_payload(cues, target_lang, self.model, self.keep_alive,
                                               self.num_ctx, self.num_predict, source_lang,
-                                              cast=self.cast)).encode("utf-8")
+                                              cast=self.cast, context=context)).encode("utf-8")
 
         req = urllib.request.Request(
             f"{self.url}/api/generate",
@@ -242,7 +329,7 @@ class OllamaClient:
                             body = json.loads(raw.decode("utf-8"))
                         except (ValueError, UnicodeError):
                             return []
-                        return _parse_lines(body.get("response", "")) if isinstance(body, dict) else []
+                        return _parse_ollama_response(body, native=_is_native_translation(self.model))
                     last_err = f"Ollama returned status {resp.status}"
             except urllib.error.HTTPError as err:
                 if err.code == 404:
@@ -374,7 +461,7 @@ def translate_file(
         client = OpenAIClient(api_key=api_key, base_url=base_url, model=chosen_model, cast=cast)
     else:
         chosen_url = url or "http://127.0.0.1:11434"
-        chosen_model = model or "gemma3:12b"
+        chosen_model = model or "subzero/hy-mt2:7b"
         client = OllamaClient(url=chosen_url, model=chosen_model, cast=cast)
 
     translated = translate_cues(cues, target_lang, client, batch_size=batch_size,

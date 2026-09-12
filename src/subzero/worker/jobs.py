@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 KINDS = ("embedded", "opensubtitles", "whisper", "translate",
-         "audit", "refetch", "resync", "embedded_translate", "rebuild")
+         "audit", "refetch", "resync", "embedded_translate", "rebuild", "recover_gaps", "repair")
 
 # Automatic jobs retry; manual jobs fail for the operator to inspect.
 MAX_RETRIES = 5
