@@ -28,7 +28,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 1
+CAPTION_SCAN_VERSION = 2
 
 
 @dataclass
@@ -173,20 +173,39 @@ def clean_ocr_text(
     return cleaned
 
 
+def _caption_ink(region: dict) -> float:
+    ink = region.get("captionInk", 1)
+    if isinstance(ink, bool) or not isinstance(ink, (int, float)):
+        raise RuntimeError("Vision OCR returned invalid caption ink")
+    if not math.isfinite(ink) or not 0 <= ink <= 1:
+        raise RuntimeError("Vision OCR returned invalid caption ink")
+    return ink
+
+
+def _caption_geometry(region: dict) -> dict:
+    if not isinstance(region, dict) or not isinstance(region.get("text"), str):
+        raise RuntimeError("Vision OCR returned an invalid text region")
+    try:
+        coordinates = {name: float(region[name]) for name in ("confidence", "x", "y", "width", "height")}
+        coordinates["angle"] = float(region.get("angle", 0))
+    except (KeyError, TypeError, ValueError) as err:
+        raise RuntimeError("Vision OCR returned invalid text coordinates") from err
+    if not all(math.isfinite(value) for value in coordinates.values()):
+        raise RuntimeError("Vision OCR returned invalid text coordinates")
+    if "angle" not in region:
+        coordinates.pop("angle")
+    return {**region, **coordinates}
+
+
 def _caption_regions(frame: dict, center_tolerance: float | None, max_height: float = 0.10) -> list[dict]:
+    if _caption_credit_layout(frame):
+        return []
     regions = []
     for region in frame.get("items", []):
-        if not isinstance(region, dict) or not isinstance(region.get("text"), str):
-            raise RuntimeError("Vision OCR returned an invalid text region")
-        try:
-            confidence, x, y, width, height = [float(region[name]) for name in
-                                              ("confidence", "x", "y", "width", "height")]
-            angle = float(region.get("angle", 0))
-        except (KeyError, TypeError, ValueError) as err:
-            raise RuntimeError("Vision OCR returned invalid text coordinates") from err
-        if not all(math.isfinite(value) for value in (confidence, x, y, width, height, angle)):
-            raise RuntimeError("Vision OCR returned invalid text coordinates")
-        if abs(angle) > 10:
+        region = _caption_geometry(region)
+        confidence, x, y, width, height, angle = [region.get(name, 0) for name in
+                                                ("confidence", "x", "y", "width", "height", "angle")]
+        if abs(angle) > 10 or _caption_ink(region) < 0.04:
             continue
         if (confidence >= 0.8 and height >= 0.12 and abs(x + width / 2 - 0.5) <= 0.12
                 and ((width >= 0.45 and y >= 0.25) or (width >= 0.35 and y >= 0.45))):
@@ -204,8 +223,22 @@ def _same_caption_position(first: dict, second: dict) -> bool:
             and 0.75 <= first["width"] / second["width"] <= 1.25)
 
 
+def _caption_credit_layout(frame: dict) -> bool:
+    rows = []
+    for region in frame.get("items", []):
+        region = _caption_geometry(region)
+        if "captionInk" not in region or _caption_ink(region) < 0.04:
+            continue
+        if (float(region["confidence"]) >= 0.8 and abs(float(region.get("angle", 0))) <= 10
+                and 0.03 <= float(region["y"]) <= 0.35 and 0.025 <= float(region["height"]) <= 0.12):
+            center = float(region["y"]) + float(region["height"]) / 2
+            if not any(abs(center - prior) <= 0.025 for prior in rows):
+                rows.append(center)
+    return len(rows) >= 4
+
+
 def _caption_title_card(frame: dict) -> bool:
-    return any(float(region["confidence"]) >= 0.8 and abs(float(region.get("angle", 0))) <= 10
+    return _caption_credit_layout(frame) or any(float(region["confidence"]) >= 0.8 and abs(float(region.get("angle", 0))) <= 10
                and float(region["height"]) >= 0.12
                and abs(float(region["x"]) + float(region["width"]) / 2 - 0.5) <= 0.12
                and ((float(region["width"]) >= 0.45 and float(region["y"]) >= 0.25)
@@ -232,7 +265,7 @@ def caption_retry_indices(frames: list[dict], timestamps: list[float], fps: floa
     return sorted(index for index in selected if not _caption_title_card(frames[index]))
 
 
-def _protected_caption_change(first: str, second: str) -> bool:
+def _protected_caption_change(first: str, second: str, *, contained_fragment: bool = False) -> bool:
     quoted = first.lstrip().startswith(('"', "'", "“", "‘")) or any(char in first for char in "ạẠỊ")
     first, second = clean_ocr_text(first), clean_ocr_text(second)
     left, right = _caption_words(first), _caption_words(second)
@@ -241,6 +274,8 @@ def _protected_caption_change(first: str, second: str) -> bool:
     numbers = set("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split())
     if [word for word in left if word.isdigit() or word in numbers] != [word for word in right if word.isdigit() or word in numbers]:
         return True
+    if contained_fragment:
+        return False
     if "".join(left).replace("'", "") == "".join(right).replace("'", ""):
         return False
     if _changed_caption_names(first, second):
@@ -262,6 +297,10 @@ def _retry_compatible(first: str, second: str) -> bool:
     if min(len(left), len(right)) < 3 or protected:
         return False
     if len(left) != len(right):
+        for noisy, clean, text in ((left, right, first), (right, left, second)):
+            if (len(noisy) == len(clean) + 1 and noisy[:-1] == clean and len(noisy[-1]) == 1
+                    and re.search(r"[.!?…][\"'”’]*[a-z][\"'”’]*$", text)):
+                return True
         return "".join(left).replace("'", "") == "".join(right).replace("'", "")
     changes = 0
     for original, candidate in zip(left, right):
@@ -288,9 +327,33 @@ def _contained_caption_fragment(fragment: dict, line: dict) -> bool:
 
 def recover_caption_runs(frames: list[dict], retries: dict[int, dict], timestamps: list[float],
                          center_tolerance: float | None = 0.12) -> list[str]:
-    regions = [_caption_regions(frame, center_tolerance) for frame in frames]
-    retried = {index: _caption_regions(frame, center_tolerance) for index, frame in retries.items()
+    regions = [_caption_regions(frame, center_tolerance, max_height=0.12) for frame in frames]
+    retried = {index: _caption_regions(frame, center_tolerance, max_height=0.12) for index, frame in retries.items()
                if not _caption_title_card(frames[index])}
+    frames = list(frames)
+    for index, current in enumerate(regions):
+        for region in current:
+            text = clean_ocr_text(region["text"])
+            prefix = re.match(r"^[^\x00-\x7f]+(?=[A-Z][a-z]+)", text)
+            if not prefix:
+                continue
+            stripped = text[prefix.end():]
+            for retry in retried.get(index, []):
+                if (not _same_caption_position(region, retry)
+                        or _caption_words(stripped) != _caption_words(clean_ocr_text(retry["text"]))
+                        or _protected_caption_change(stripped, retry["text"])):
+                    continue
+                support = sum(any(_same_caption_position(region, candidate)
+                                  and _caption_words(stripped) == _caption_words(clean_ocr_text(candidate["text"]))
+                                  for candidate in retried.get(neighbor, []))
+                              for neighbor in range(max(0, index - 6), min(len(frames), index + 7))
+                              if abs(timestamps[neighbor] - timestamps[index]) <= 3)
+                if support >= 2:
+                    frames[index] = {**frames[index], "items": [
+                        {**prior, "text": retry["text"], "candidates": []} if prior == region else prior
+                        for prior in frames[index]["items"]]}
+                    break
+        regions[index] = _caption_regions(frames[index], center_tolerance, max_height=0.12)
     updated = []
     for index, frame in enumerate(frames):
         if _caption_title_card(frame):
@@ -336,7 +399,9 @@ def recover_caption_runs(frames: list[dict], retries: dict[int, dict], timestamp
             overlapping = [prior for prior in _caption_regions({"items": replacements}, center_tolerance, max_height=0.18)
                            if abs(float(prior["y"]) + float(prior["height"]) / 2 - region["y"] - region["height"] / 2) <= 0.04
                            and region["x"] <= float(prior["x"]) + float(prior["width"]) / 2 <= region["x"] + region["width"]]
-            if any(_protected_caption_change(prior["text"], chosen) for prior in overlapping):
+            if any(_protected_caption_change(prior["text"], chosen,
+                   contained_fragment=_contained_caption_fragment(prior, {**region, "text": chosen}))
+                   for prior in overlapping):
                 continue
             replacements = [prior for prior in replacements if prior not in overlapping]
             replacements.append({**region, "text": chosen, "candidates": []})
@@ -351,8 +416,8 @@ def caption_text(frame: dict, center_tolerance: float | None = 0.12, *,
                  previous: dict | None = None, following: dict | None = None) -> str:
     if not frame.get("items"):
         return frame["subtitleText"]
-    before = _caption_regions(previous or {}, center_tolerance)
-    after = _caption_regions(following or {}, center_tolerance)
+    before = _caption_regions(previous or {}, center_tolerance, max_height=0.12)
+    after = _caption_regions(following or {}, center_tolerance, max_height=0.12)
     lines = []
     for region in _caption_regions(frame, center_tolerance, max_height=0.18):
         first_words = {tuple(_caption_words(prior["text"])) for prior in before if _same_caption_position(region, prior)}
@@ -378,15 +443,20 @@ def caption_text(frame: dict, center_tolerance: float | None = 0.12, *,
                           if op != "equal")
             if (confidence >= 0.8 and min(len(words), len(candidate_words)) >= 5
                     and candidate_words in first_words & last_words
-                    and changes <= 2 and _negation_words(words) == _negation_words(candidate_words)
-                    and not _changed_caption_names(text, candidate["text"])):
+                    and changes <= 2 and not _protected_caption_change(text, candidate["text"])):
                 text, words = candidate["text"], candidate_words
                 break
         if region["height"] > 0.10 and words not in first_words | last_words:
             continue
-        lines.append((region["y"], region["x"], text))
+        lines.append((region["y"] + region["height"] / 2, region["x"], text))
     lines.sort(key=lambda region: (-region[0], region[1]))
-    return "\n".join(text for _, _, text in lines)
+    rows = []
+    for line in lines:
+        if rows and abs(line[0] - rows[-1][0][0]) <= 0.025:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+    return "\n".join(" ".join(text for _, _, text in sorted(row, key=lambda line: line[1])) for row in rows)
 
 
 def fmt_srt_time(sec: float) -> str:
@@ -435,21 +505,23 @@ def cluster_ocr_detections(
     min_duration: float = 1.4,
     max_gap: float = 2.0,
     sample_duration: float = 1.0,
+    *,
+    stabilize_text: bool = True,
 ) -> list[Cue]:
     ordered = sorted(detections)
     stable = list(ordered)
     frame_gap = min(max_gap, sample_duration * 1.5)
-    for index in range(1, len(ordered) - 1):
-        before, middle, after = ordered[index - 1:index + 2]
-        if not (0 < middle[0] - before[0] <= frame_gap and 0 < after[0] - middle[0] <= frame_gap):
-            continue
-        first_words, middle_words, last_words = [_caption_words(text) for _, text in (before, middle, after)]
-        if min(len(first_words), len(middle_words)) < 5 or first_words != last_words:
-            continue
-        first_negative, middle_negative = _negation_words(first_words), _negation_words(middle_words)
-        if (first_negative == middle_negative and not _changed_caption_names(before[1], middle[1])
-                and _single_character_change("".join(first_words), "".join(middle_words))):
-            stable[index] = (middle[0], before[1])
+    if stabilize_text:
+        for index in range(1, len(ordered) - 1):
+            before, middle, after = ordered[index - 1:index + 2]
+            if not (0 < middle[0] - before[0] <= frame_gap and 0 < after[0] - middle[0] <= frame_gap):
+                continue
+            first_words, middle_words, last_words = [_caption_words(text) for _, text in (before, middle, after)]
+            if min(len(first_words), len(middle_words)) < 5 or first_words != last_words:
+                continue
+            if (not _protected_caption_change(before[1], middle[1])
+                    and _single_character_change("".join(first_words), "".join(middle_words))):
+                stable[index] = (middle[0], before[1])
     merged: list[tuple[float, float, str]] = []
     current = None
     for timestamp, text in stable:
@@ -459,7 +531,7 @@ def cluster_ocr_detections(
             left, right = " ".join(previous.lower().split()), " ".join(text.lower().split())
             left_words, right_words = _caption_words(left), _caption_words(right)
             short, long = sorted((left, right), key=len)
-            fragment = (len(short.split()) >= 3 and not short.endswith((".", "?", "!"))
+            fragment = (stabilize_text and len(short.split()) >= 3 and not short.endswith((".", "?", "!"))
                         and short in long and len(short) >= len(long) * 0.55)
             if text and timestamp - last_seen <= max_gap and (left_words == right_words or fragment):
                 current = (start, timestamp + sample_duration,
@@ -647,6 +719,33 @@ def caption_transition_windows(detections: list[tuple[float, str]], duration: fl
     return [(round(start, 3), round(end, 3)) for start, end in windows]
 
 
+def _stabilize_dense_readings(detections: list[tuple[float, str]]) -> list[tuple[float, str]]:
+    stable = list(detections)
+    words = [_caption_words(text) for _, text in detections]
+    for left, (start, caption) in enumerate(detections):
+        expected = words[left]
+        if len(expected) < 5:
+            continue
+        lines = [_caption_words(line) for line in caption.splitlines()]
+        for right in range(left + 1, len(detections)):
+            timestamp = detections[right][0]
+            if (timestamp - start > 0.501 or not words[right]
+                    or not 0 < timestamp - detections[right - 1][0] <= 0.151):
+                break
+            if words[right] != expected:
+                continue
+            between = range(left + 1, right)
+            if all(words[index] == expected or (len(words[index]) >= 3 and (
+                    words[index] in lines or (
+                        right == left + 2 and len(expected) == len(words[index]) + 1
+                        and not _protected_caption_change(detections[index][1], caption)
+                        and _single_character_change("".join(words[index]), "".join(expected)))))
+                    for index in between):
+                for index in between:
+                    stable[index] = (detections[index][0], caption)
+    return stable
+
+
 def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]], duration: float, *,
                           progress: Callable[[int, int], None] | None = None,
                           scan_cache: CaptionScanCache | None = None) -> list[Cue]:
@@ -671,6 +770,7 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
                 scan_cache.write([window], frames, fps=10, retry_all=True)
             dense.extend(frames)
             dense_progress(index, len(windows))
+    dense = _stabilize_dense_readings(dense)
     anchors = []
     for cue in cluster_ocr_detections(detections, min_duration=0, max_gap=0.75, sample_duration=0.5):
         stamp = TIME.search(f"{cue.start} --> {cue.end}")
@@ -678,19 +778,33 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
         words = _caption_words(cue.text)
         support = [timestamp for timestamp, text in detections
                    if start - 0.001 <= timestamp < end and _caption_words(text) == words]
-        anchors.append((start, end, cue.text, support))
+        variants, readings = Counter(), {}
+        for timestamp, text in dense:
+            if not start <= timestamp < end:
+                continue
+            observed = tuple(_caption_words(text))
+            if observed == tuple(words) or (len(observed) >= 5
+                    and not _protected_caption_change(cue.text, text)
+                    and _single_character_change("".join(words), "".join(observed))):
+                variants[observed] += 1
+                readings.setdefault(observed, text)
+        ranked = variants.most_common(2)
+        confirmed = bool(ranked and ranked[0][1] >= 2
+                         and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]))
+        caption = readings[ranked[0][0]] if confirmed else cue.text
+        anchors.append((start, end, caption, support, confirmed))
     stabilized = []
     for timestamp, text in dense:
         words = _caption_words(text)
         matches = []
-        for start, end, caption, support in anchors:
+        for start, end, caption, support, confirmed in anchors:
             if not words or not start - 0.75 <= timestamp <= end + 0.75:
                 continue
             expected = _caption_words(caption)
             exact = words == expected
             partial_line = (len(words) >= 3 and support and min(support) <= timestamp <= max(support)
                             and any(words == _caption_words(line) for line in caption.splitlines()))
-            flicker = (len(expected) >= 5 and not _protected_caption_change(text, caption)
+            flicker = (confirmed and len(expected) >= 5 and not _protected_caption_change(text, caption)
                        and _single_character_change("".join(words), "".join(expected)))
             if exact or (len(support) >= 2 and (partial_line or flicker)):
                 matches.append((int(exact), start <= timestamp <= end,
@@ -699,7 +813,7 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
     combined = {round(timestamp, 3): text for timestamp, text in detections
                 if not any(start <= timestamp < end for start, end in windows)}
     combined.update((round(timestamp, 3), text) for timestamp, text in stabilized if 0 <= timestamp < duration)
-    for start, end, caption, support in anchors:
+    for start, end, caption, support, _ in anchors:
         if len(support) >= 2 and not any(start - 0.75 <= timestamp <= end + 0.75
                                         and _caption_words(text) == _caption_words(caption)
                                         for timestamp, text in combined.items()):
@@ -714,7 +828,8 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
             boundary = (timestamp + previous[0]) / 2
         edges.append((boundary, text))
         previous = timestamp, text
-    return cluster_ocr_detections(edges, min_duration=0, max_gap=0.75, sample_duration=0.5)
+    return cluster_ocr_detections(edges, min_duration=0, max_gap=0.75, sample_duration=0.5,
+                                  stabilize_text=False)
 
 
 def cue_start_seconds(c: Cue) -> float:

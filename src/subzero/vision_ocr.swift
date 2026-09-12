@@ -16,6 +16,7 @@ struct OCRItem: Codable {
     let width: Double
     let height: Double
     let angle: Double
+    let captionInk: Double?
     let candidates: [OCRCandidate]
 }
 
@@ -24,6 +25,70 @@ struct OCRResult: Codable {
     let items: [OCRItem]
     let subtitleText: String
     var error: String? = nil
+}
+
+struct CaptionPixels {
+    let width: Int
+    let height: Int
+    let pixels: [UInt8]
+
+    init?(image: CGImage) {
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let prepared = pixels.withUnsafeMutableBytes { storage -> Bool in
+            guard let ctx = CGContext(data: storage.baseAddress, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard prepared else { return nil }
+        self.width = width
+        self.height = height
+        self.pixels = pixels
+    }
+
+    func ink(in box: CGRect) -> Double {
+        let left = max(0, Int(box.minX * Double(width)))
+        let right = min(width, Int(box.maxX * Double(width)))
+        let top = max(0, Int((1 - box.maxY) * Double(height)))
+        let bottom = min(height, Int((1 - box.minY) * Double(height)))
+        let columns = right - left, rows = bottom - top
+        guard columns > 0, rows > 0 else { return 0 }
+        var mask = [UInt8](repeating: 0, count: columns * rows)
+        var queue: [Int] = []
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let offset = ((row + top) * width + column + left) * 4
+                let red = pixels[offset], green = pixels[offset + 1], blue = pixels[offset + 2]
+                let low = min(red, green, blue), high = max(red, green, blue)
+                guard low >= 180, Int(high) - Int(low) <= 35 else { continue }
+                let index = row * columns + column
+                mask[index] = 1
+                if row == 0 || row == rows - 1 || column == 0 || column == columns - 1 {
+                    mask[index] = 2
+                    queue.append(index)
+                }
+            }
+        }
+        var next = 0
+        while next < queue.count {
+            let index = queue[next]
+            next += 1
+            let row = index / columns, column = index % columns
+            for (r, c) in [(row - 1, column), (row + 1, column), (row, column - 1), (row, column + 1)]
+                where r >= 0 && r < rows && c >= 0 && c < columns {
+                let offset = r * columns + c
+                if mask[offset] == 1 {
+                    mask[offset] = 2
+                    queue.append(offset)
+                }
+            }
+        }
+        // Exclude bright scenery connected to the box edge, keeping enclosed caption fill.
+        return Double(mask.reduce(0) { $0 + ($1 == 1 ? 1 : 0) }) / Double(mask.count)
+    }
 }
 
 func processImage(path: String, captionRegion: Bool = false) -> OCRResult {
@@ -47,6 +112,9 @@ func processImage(path: String, captionRegion: Bool = false) -> OCRResult {
         guard let observations = request.results else {
             return OCRResult(file: path, items: [], subtitleText: "")
         }
+        guard let pixels = CaptionPixels(image: cgImage) else {
+            return OCRResult(file: path, items: [], subtitleText: "", error: "Cannot prepare caption pixels")
+        }
 
         var items: [OCRItem] = []
         var subtitleLines: [(y: Double, text: String)] = []
@@ -58,6 +126,9 @@ func processImage(path: String, captionRegion: Bool = false) -> OCRResult {
             if str.isEmpty { continue }
 
             let box = obs.boundingBox
+            let mapped = CGRect(x: roi.origin.x + box.origin.x * roi.width,
+                                y: roi.origin.y + box.origin.y * roi.height,
+                                width: box.width * roi.width, height: box.height * roi.height)
             let item = OCRItem(
                 text: str,
                 confidence: candidate.confidence,
@@ -67,6 +138,7 @@ func processImage(path: String, captionRegion: Bool = false) -> OCRResult {
                 height: Double(box.size.height) * roi.height,
                 angle: atan2(Double(obs.topRight.y - obs.topLeft.y) * roi.height,
                              Double(obs.topRight.x - obs.topLeft.x) * roi.width) * 180 / .pi,
+                captionInk: mapped.minY <= 0.40 ? pixels.ink(in: mapped) : nil,
                 candidates: candidates.map { OCRCandidate(text: $0.string, confidence: $0.confidence) }
             )
             items.append(item)
