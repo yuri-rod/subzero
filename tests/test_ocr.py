@@ -580,6 +580,65 @@ def test_region_retry_preserves_names_negation_and_number_changes(first, second)
     assert ocr.recover_caption_runs(frames, retried, [0, 0.5, 1]) == [first, second, first]
 
 
+@pytest.mark.parametrize("original, alternative", [
+    ("Please _ keep this secret.", "Please keep this secret."),
+    ("Please keep this secret.", "Please _ keep this secret."),
+    ("Please _ keep this secret.", "Please keep _ this secret."),
+])
+def test_region_retry_preserves_censorship_marker_position(original, alternative):
+    frames = [caption_frame(alternative), caption_frame(original), caption_frame(alternative)]
+    retried = {index: caption_frame(alternative) for index in range(3)}
+    assert ocr.recover_caption_runs(frames, retried, [0, 0.1, 0.2]) == [
+        alternative, original, alternative]
+
+
+@pytest.mark.parametrize("original, alternative", [
+    ("Please _ keep this secret today.", "Please keep this secret today."),
+    ("Please keep this secret today.", "Please _ keep this secret today."),
+    ("Please _ keep this secret today.", "Please keep _ this secret today."),
+])
+def test_native_candidate_preserves_censorship_marker_position(original, alternative):
+    frame = caption_frame(original, candidates=[alternative])
+    neighbor = caption_frame(alternative)
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == original
+
+
+def test_native_candidate_censorship_bar_does_not_count_as_a_spoken_word():
+    original, alternative = "We _ must have him.", "We _ must save him."
+    frame = caption_frame(original, candidates=[alternative])
+    neighbor = caption_frame(alternative)
+    assert ocr.caption_text(frame, previous=neighbor, following=neighbor) == original
+
+
+def test_cluster_censorship_bar_does_not_count_as_a_spoken_word():
+    first, changed = "We _ must save him.", "We _ must have him."
+    cues = cluster_ocr_detections([(0, first), (0.1, changed), (0.2, first)],
+                                  min_duration=0, sample_duration=0.1)
+    assert [cue.text for cue in cues] == [first, changed, first]
+
+
+def test_region_retry_censorship_bar_does_not_reach_three_spoken_words():
+    first, changed = "We _ win.", "We _ win.r"
+    frames = [caption_frame(first), caption_frame(changed), caption_frame(first)]
+    retried = {index: caption_frame(first) for index in range(3)}
+    assert ocr.recover_caption_runs(frames, retried, [0, 0.1, 0.2]) == [first, changed, first]
+
+
+def test_censorship_marker_width_and_surrounding_spacing_are_equivalent():
+    readings = [(0, "Please _ keep this secret."), (0.1, "Please   ____  keep this secret.")]
+    cues = cluster_ocr_detections(readings, min_duration=0, sample_duration=0.1)
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [
+        ("00:00:00,000", "00:00:00,200", readings[1][1])]
+
+
+@pytest.mark.parametrize("marked", ["_ Please keep this secret", "Please keep this secret _"])
+def test_caption_fragment_merge_preserves_censorship_marker_changes(marked):
+    plain = "Please keep this secret"
+    cues = cluster_ocr_detections([(0, plain), (0.1, marked), (0.2, plain)],
+                                  min_duration=0, sample_duration=0.1)
+    assert [cue.text for cue in cues] == [plain, marked, plain]
+
+
 def test_region_retry_keeps_full_frame_title_card_veto():
     credit = caption_frame("TELEVISION")
     credit["items"].append({"text": "STUDIO BRAND", "confidence": 1, "x": 0.32,
@@ -743,6 +802,50 @@ def test_dense_timing_retains_explicit_new_names_and_negation(changed):
     with patch("subzero.ocr._scan_caption_frames", return_value=dense):
         cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
     assert [cue.text for cue in cues] == [first, changed, first]
+
+
+@pytest.mark.parametrize("first, changed", [
+    ("Please _ keep this secret today.", "Please keep this secret today."),
+    ("Please keep this secret today.", "Please _ keep this secret today."),
+    ("Please _ keep this secret today.", "Please keep _ this secret today."),
+])
+def test_dense_timing_retains_censorship_marker_changes(first, changed):
+    coarse = [(0, first), (0.5, first), (1, first), (1.5, "")]
+    dense = [(0, first), (0.1, first), (0.2, changed), (0.3, first), (0.8, first), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [cue.text for cue in cues] == [first, changed, first]
+    assert cues[1].start == "00:00:00,150"
+    assert cues[1].end == "00:00:00,250"
+
+
+def test_dense_timing_rejects_loss_of_confirmed_censorship_marker():
+    first, lost = "Please _ keep this secret.", "Please keep this secret."
+    coarse = [(0, ""), (0.5, first), (1, first), (1.5, "")]
+    dense = [(0.4, lost), (0.5, lost), (0.6, lost), (1, lost), (1.1, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense), \
+         pytest.raises(RuntimeError, match="Dense caption verification lost a confirmed caption"):
+        ocr.refine_caption_timing("video.mkv", coarse, 2)
+
+
+def test_dense_timing_censorship_bar_does_not_count_as_a_spoken_word():
+    first, changed = "We _ must save him.", "We _ must have him."
+    coarse = [(0, first), (0.5, first), (1, first), (1.5, "")]
+    dense = [(0, first), (0.1, first), (0.2, changed), (0.3, first), (0.8, first), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [cue.text for cue in cues] == [first, changed, first]
+
+
+def test_dense_partial_line_censorship_bar_does_not_reach_three_spoken_words():
+    partial = "We _ win."
+    complete = partial + "\nKeep this between us."
+    coarse = [(0, complete), (0.5, complete), (1, complete), (1.5, "")]
+    dense = [(0, complete), (0.1, complete), (0.2, partial), (0.3, complete),
+             (0.8, complete), (1.3, "")]
+    with patch("subzero.ocr._scan_caption_frames", return_value=dense):
+        cues = ocr.refine_caption_timing("video.mkv", coarse, 2)
+    assert [cue.text for cue in cues] == [complete, partial, complete]
 
 
 def test_frame_sampling_keeps_input_pts_instead_of_rewriting_a_fixed_fps_grid(tmp_path):

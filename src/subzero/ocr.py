@@ -30,7 +30,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 5
+CAPTION_SCAN_VERSION = 6
 
 
 @dataclass
@@ -295,6 +295,9 @@ def _protected_caption_change(first: str, second: str, *, contained_fragment: bo
     quoted = first.lstrip().startswith(('"', "'", "“", "‘")) or any(char in first for char in "ạẠỊ")
     first, second = clean_ocr_text(first), clean_ocr_text(second)
     left, right = _caption_words(first), _caption_words(second)
+    if ([index for index, word in enumerate(left) if word == "_"]
+            != [index for index, word in enumerate(right) if word == "_"]):
+        return True
     if _negation_words(left) != _negation_words(right):
         return True
     numbers = set("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split())
@@ -317,7 +320,7 @@ def _protected_caption_change(first: str, second: str, *, contained_fragment: bo
 def _trailing_caption_glyph(first: str, second: str) -> bool:
     left, right = _caption_words(first), _caption_words(second)
     for noisy, clean, text in ((left, right, first), (right, left, second)):
-        if (len(clean) >= 3 and len(noisy) == len(clean) + 1 and noisy[:-1] == clean
+        if (_spoken_word_count(clean) >= 3 and len(noisy) == len(clean) + 1 and noisy[:-1] == clean
                 and len(noisy[-1]) == 1
                 and re.search(r"[.!?…][\"'”’]*[a-z][\"'”’]*$", text)):
             return True
@@ -330,7 +333,7 @@ def _retry_compatible(first: str, second: str) -> bool:
     left, right = _caption_words(first), _caption_words(second)
     if left == right:
         return True
-    if min(len(left), len(right)) < 3 or protected:
+    if min(_spoken_word_count(left), _spoken_word_count(right)) < 3 or protected:
         return False
     if len(left) != len(right):
         if _trailing_caption_glyph(first, second):
@@ -475,7 +478,7 @@ def caption_text(frame: dict, center_tolerance: float | None = 0.12, *,
                           for op, start_a, end_a, start_b, end_b in
                           SequenceMatcher(None, " ".join(words), " ".join(candidate_words), autojunk=False).get_opcodes()
                           if op != "equal")
-            if (confidence >= 0.8 and min(len(words), len(candidate_words)) >= 5
+            if (confidence >= 0.8 and min(_spoken_word_count(words), _spoken_word_count(candidate_words)) >= 5
                     and candidate_words in first_words & last_words
                     and changes <= 2 and not _protected_caption_change(text, candidate["text"])):
                 text, words = candidate["text"], candidate_words
@@ -502,7 +505,13 @@ def fmt_srt_time(sec: float) -> str:
 
 
 def _caption_words(text: str) -> list[str]:
-    return re.findall(r"[^\W_]+(?:'[^\W_]+)*", text.lower().replace("’", "'"))
+    # A censorship bar is source content; its rendered width is not a word change.
+    return ["_" if token.startswith("_") else token
+            for token in re.findall(r"[^\W_]+(?:'[^\W_]+)*|_+", text.lower().replace("’", "'"))]
+
+
+def _spoken_word_count(words: Iterable[str]) -> int:
+    return sum(bool(word.strip("_")) for word in words)
 
 
 def _negation_words(words: Iterable[str]) -> list[str]:
@@ -551,7 +560,8 @@ def cluster_ocr_detections(
             if not (0 < middle[0] - before[0] <= frame_gap and 0 < after[0] - middle[0] <= frame_gap):
                 continue
             first_words, middle_words, last_words = [_caption_words(text) for _, text in (before, middle, after)]
-            if min(len(first_words), len(middle_words)) < 5 or first_words != last_words:
+            if (min(_spoken_word_count(first_words), _spoken_word_count(middle_words)) < 5
+                    or first_words != last_words):
                 continue
             if (not _protected_caption_change(before[1], middle[1])
                     and _single_character_change("".join(first_words), "".join(middle_words))):
@@ -565,8 +575,11 @@ def cluster_ocr_detections(
             left, right = " ".join(previous.lower().split()), " ".join(text.lower().split())
             left_words, right_words = _caption_words(left), _caption_words(right)
             short, long = sorted((left, right), key=len)
-            fragment = (stabilize_text and len(short.split()) >= 3 and not short.endswith((".", "?", "!"))
-                        and short in long and len(short) >= len(long) * 0.55)
+            fragment = (stabilize_text and _spoken_word_count(short.split()) >= 3
+                        and not short.endswith((".", "?", "!"))
+                        and short in long and len(short) >= len(long) * 0.55
+                        and [index for index, word in enumerate(left_words) if word == "_"]
+                        == [index for index, word in enumerate(right_words) if word == "_"])
             if text and timestamp - last_seen <= max_gap and (left_words == right_words or fragment):
                 current = (start, timestamp + sample_duration,
                            text if len(text) > len(previous) else previous, timestamp)
@@ -766,7 +779,7 @@ def _stabilize_dense_readings(detections: list[tuple[float, str]]) -> list[tuple
     words = [_caption_words(text) for _, text in detections]
     for left, (start, caption) in enumerate(detections):
         expected = words[left]
-        if len(expected) < 5:
+        if _spoken_word_count(expected) < 5:
             continue
         lines = [_caption_words(line) for line in caption.splitlines()]
         for right in range(left + 1, len(detections)):
@@ -777,7 +790,7 @@ def _stabilize_dense_readings(detections: list[tuple[float, str]]) -> list[tuple
             if words[right] != expected:
                 continue
             between = range(left + 1, right)
-            if all(words[index] == expected or (len(words[index]) >= 3 and (
+            if all(words[index] == expected or (_spoken_word_count(words[index]) >= 3 and (
                     words[index] in lines or (
                         right == left + 2 and len(expected) == len(words[index]) + 1
                         and not _protected_caption_change(detections[index][1], caption)
@@ -834,7 +847,7 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
             if not start <= timestamp < end:
                 continue
             observed = tuple(_caption_words(text))
-            if observed == tuple(words) or ((len(observed) >= 5 or _trailing_caption_glyph(cue.text, text))
+            if observed == tuple(words) or ((_spoken_word_count(observed) >= 5 or _trailing_caption_glyph(cue.text, text))
                     and not _protected_caption_change(cue.text, text)
                     and _single_character_change("".join(words), "".join(observed))):
                 variants[observed] += 1
@@ -853,9 +866,9 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
                 continue
             expected = _caption_words(caption)
             exact = words == expected
-            partial_line = (len(words) >= 3 and support and min(support) <= timestamp <= max(support)
+            partial_line = (_spoken_word_count(words) >= 3 and support and min(support) <= timestamp <= max(support)
                             and any(words == _caption_words(line) for line in caption.splitlines()))
-            flicker = (confirmed and (len(expected) >= 5 or _trailing_caption_glyph(text, caption))
+            flicker = (confirmed and (_spoken_word_count(expected) >= 5 or _trailing_caption_glyph(text, caption))
                        and not _protected_caption_change(text, caption)
                        and _single_character_change("".join(words), "".join(expected)))
             if exact or (len(support) >= 2 and (partial_line or flicker)):

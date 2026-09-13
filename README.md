@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.11.1-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.11.2-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -423,7 +423,7 @@ Use `kind: "rebuild"` when no verified subtitle source is available. With `OCR_E
 
 The source scan samples at two frames per second, then scans caption transitions at ten frames per second to refine their starts and ends. Timestamps come from the selected input frames. A one-nanosecond comparison tolerance prevents floating-point rounding from skipping a frame at the sampling boundary. Native recognition and frame sampling still limit timing precision; this does not establish word-level audio alignment.
 
-If the dense scan loses a caption confirmed by repeated source frames, recovery stops for review and keeps the installed subtitle.
+If the dense scan loses a caption confirmed by repeated source frames, recovery stops for review and keeps the installed subtitle. OCR comparison preserves the position of underscore censorship bars, so marked and unmarked readings are not treated as equivalent.
 
 Repeated dense observations can correct a coarse spelling error, while names, negation, and numbers remain protected. English contraction punctuation and common I/l errors in those contractions are normalized before timing verification. Brief missing lines are restored only between matching full observations; an initial one-line caption keeps its own timing. Rapid returns between near-identical word variants stop translation for review, including when an English source is reused from cache. This catches repeated OCR flicker, but does not certify every word or detect every two-reading ambiguity.
 
@@ -455,9 +455,12 @@ Complete English and regenerated target subtitles are retained under
 `SYNC_CACHE/candidates`. English OCR results are cached under
 `SYNC_CACHE/ocr-sources`, keyed by video fingerprint, source content, and OCR
 version. Translation retries reuse this source without rescanning the video.
-Repair preserves the installed target on failure or cancellation and rejects
-replacement if that target changed while the job was running. It does not fall
-back to downloads or audio transcription.
+Repair preserves the installed target when failure or cancellation occurs before
+installation and rejects replacement if that target changed while the job was
+running. An audit or media-server refresh error after installation can report a
+failed job even though the subtitle was replaced; inspect the installed file and
+job details before retrying. Repair does not fall back to downloads or audio
+transcription.
 
 New sidecars require filesystem support for atomic creation without replacing an existing file. If the media filesystem cannot provide it, the job ends in `needs_review` and retains the staged candidate.
 

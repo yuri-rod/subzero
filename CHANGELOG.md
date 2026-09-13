@@ -5,6 +5,79 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.2] - 2026-09-12
+
+### Fixed
+
+- Preserve the position of observed underscore censor marks when comparing native OCR candidates, region retries, and dense timing observations. Bar width and surrounding spacing remain equivalent; losing a confirmed mark during dense verification stops recovery for review.
+- Keep censor marks out of word-count thresholds so short captions retain their existing correction limits.
+- Report an unsupported platform clearly when a shared compute policy is selected without POSIX support. Ordinary operation without that policy remains portable.
+
+## [1.11.1] - 2026-09-12
+
+### Fixed
+
+- Prevent floating-point rounding from skipping OCR frames at exact sampling boundaries. Invalidate older scan observations so retries use the corrected cadence.
+
+## [1.11.0] - 2026-09-12
+
+### Added
+
+- Route English audio rebuilds through transcription, independent audio timing checks, full caption recovery, and the existing translation pipeline when `OCR_ENABLED=1`.
+
+### Fixed
+
+- Extract the same audio stream used by the timing reference, validate its stream index, and stop for review when known English audio is detected as another language.
+- Preserve the target snapshot taken before transcription or source selection across every rebuild fallback. Keep existing subtitles when validation fails or the target changes during processing.
+- Match sidecars by literal video filename so bracketed release names are handled correctly and neighboring video names are preserved during cleanup.
+
+## [1.10.9] - 2026-09-12
+
+### Fixed
+
+- Wait for launchd startup transitions to settle before validating the managed Ollama process and listener.
+
+## [1.10.8] - 2026-09-12
+
+### Added
+
+- Add an optional shared macOS compute policy that serializes Ollama translation, Apple Vision OCR, and Whisper transcription across the CLI, worker, and HTTP transcription requests.
+
+### Fixed
+
+- Under the compute policy, stop Ollama and its runners before OCR or transcription, retain ownership across translation batches, and require child processes to exit before handing off resources.
+- Keep the shared lock held by native children if their parent exits. Reject unsafe policy files and stop further compute when shutdown cannot be verified.
+- Continue cancellation checks while FFmpeg or Whisper is silent or has closed its output stream. Propagate stream read errors and reject malformed transcription messages.
+
+## [1.10.7] - 2026-09-12
+
+### Fixed
+
+- Exclude tall centered titles with stacked uppercase labels from caption recovery while preserving uppercase dialogue outside that layout.
+
+## [1.10.6] - 2026-09-12
+
+### Fixed
+
+- Stop repeated unstable caption readings before translation, including when reusing an English source from cache.
+- Normalize English contraction punctuation and common I/l recognition errors before timing validation.
+- Tighten caption row placement checks to exclude higher credit text while retaining the full height of admitted letters.
+
+## [1.10.5] - 2026-09-12
+
+### Fixed
+
+- Reject missing or unreadable explicitly selected environment files and `--env` options without a path.
+- Recheck brief missing caption lines after confirmed spelling corrections, retaining the existing protections for names, negation, and numbers.
+
+## [1.10.4] - 2026-09-12
+
+### Fixed
+
+- Use caption geometry, enclosed white lettering, and credit-layout checks to filter unrelated screen text. Validate native region metadata before selecting rows.
+- Read text boxes on the same physical row from left to right and recover fragmented rows from matching region observations.
+- Require repeated dense observations for spelling corrections. Preserve initial one-line captions, real text changes, and ambiguous native readings instead of replacing them with older coarse text.
+
 ## [1.10.3] - 2026-09-12
 
 ### Fixed
