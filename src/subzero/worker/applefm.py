@@ -178,6 +178,36 @@ class AppleFM:
         words = set(source.lower().split())
         return not words.isdisjoint(EN_FUNCTION_WORDS)
 
+    def generate(self, messages, max_tokens=300) -> str:
+        """One raw completion for operator tooling (triage digests, audits).
+
+        Same guardrail contract as translation: refusals raise
+        AppleFMGuardrail so callers can fall back to a template.
+        """
+        try:
+            payload = json.dumps({
+                'model': MODEL, 'messages': messages,
+                'temperature': 0, 'stream': False, 'max_tokens': max_tokens,
+            }, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        except (UnicodeEncodeError, TypeError, ValueError):
+            raise RuntimeError('AppleFM summary input is not valid JSON') from None
+        if len(payload) > MAX_REQUEST_BYTES:
+            raise RuntimeError('AppleFM summary input exceeds the request size limit')
+        body = self._request('POST', '/v1/chat/completions', payload)
+        if isinstance(body, dict):
+            choices = body.get('choices')
+            if (isinstance(choices, list) and len(choices) == 1
+                    and isinstance(choices[0], dict)
+                    and isinstance(choices[0].get('message'), dict)):
+                message = choices[0]['message']
+                if message.get('refusal'):
+                    raise AppleFMGuardrail(
+                        'Apple Foundation Models refused a summary request: '
+                        f'{str(message["refusal"])[:160]}')
+                if isinstance(message.get('content'), str) and message['content'].strip():
+                    return message['content'].strip()
+        raise RuntimeError('AppleFM returned an invalid completion')
+
     def _complete(self, payload):
         body = self._request('POST', '/v1/chat/completions', payload)
         if isinstance(body, dict):

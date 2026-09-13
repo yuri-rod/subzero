@@ -13,6 +13,7 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Changed
 
 - Drop burned-in captions under four spoken words from the rescue path instead of refining them. They cost about one VLM call in six while adding mostly exclamations; censor marks always survive the cut.
+- Add `subzero worker triage`, an Apple FM digest of jobs waiting on review. Clustering is rule-based; FM only writes the human summary and falls back to a template on refusal. Prints always, notifies ntfy when NTFY_TOPIC is set.
 
 ### Fixed
 
