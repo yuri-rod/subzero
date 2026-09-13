@@ -141,6 +141,32 @@ def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, po
             return 0
         print(f"subzero worker: failed to fetch audits (code {code}): {body}", file=sys.stderr)
         return 1
+    if cmd in ("triage", "--triage"):
+        from .applefm import AppleFM
+        from .notify import Notifier
+        from .triage import cluster, summarize
+        code, body = _request("/jobs?limit=200", method="GET", token=token, port=effective_port)
+        if code != 200:
+            print(f"subzero worker: failed to fetch jobs (code {code}): {body}", file=sys.stderr)
+            return 1
+        try:
+            jobs = json.loads(body).get("jobs", [])
+        except Exception:
+            print(body)
+            return 1
+        groups = cluster(jobs if isinstance(jobs, list) else [])
+        fm_url = env.get("APPLEFM_URL", "http://127.0.0.1:1976").rstrip("/")
+        try:
+            digest = summarize(groups, AppleFM(fm_url, timeout=60))
+        except Exception:
+            from .triage import template_digest
+            digest = template_digest(groups)
+        print(digest)
+        topic = env.get("NTFY_TOPIC", "")
+        if topic:
+            Notifier(env.get("NTFY_URL", "https://ntfy.sh"), topic).digest(digest)
+            print(f"subzero worker: triage sent to ntfy topic {topic}")
+        return 0
 
     try:
         cfg = Config.load(env)

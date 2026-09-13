@@ -286,6 +286,9 @@ subzero worker coverage
 # Inspect recent subtitle sync audits
 subzero worker audits
 
+# Summarize jobs waiting on review (sent to ntfy when NTFY_TOPIC is set)
+subzero worker triage
+
 # Request a graceful shutdown
 subzero worker stop
 ```

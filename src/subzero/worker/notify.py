@@ -19,6 +19,16 @@ class Notifier:
     def enabled(self) -> bool:
         return bool(self.topic)
 
+    def digest(self, text: str) -> None:
+        if not self.enabled or not text.strip():
+            return
+        try:
+            self.http.request("POST", f"{self.url}/{self.topic}", content=text.encode("utf-8"),
+                              headers={"Title": "Worker triage", "Priority": "3",
+                                       "Tags": "clipboard"})
+        except Exception:
+            pass
+
     def job_finished(self, job: Job, item_name: str | None = None) -> None:
         if not self.enabled:
             return
