@@ -186,6 +186,74 @@ def test_readiness_checks_pinned_files_without_importing_engine(runtime, monkeyp
     libre._verify_runtime(runtime)
 
 
+def test_hash_accepts_stable_descriptor_timestamps_that_differ_from_path_stat(tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+    path = tmp_path / 'model.bin'
+    path.write_bytes(b'pinned model')
+    original = libre.os.fstat
+    def descriptor_stat(fd):
+        observed = original(fd)
+        return SimpleNamespace(st_dev=observed.st_dev, st_ino=observed.st_ino,
+                               st_mode=observed.st_mode, st_size=observed.st_size,
+                               st_mtime_ns=observed.st_mtime_ns + 100,
+                               st_ctime_ns=observed.st_ctime_ns + 200)
+    monkeypatch.setattr(libre.os, 'fstat', descriptor_stat)
+    assert libre._hash_file(path) == hashlib.sha256(b'pinned model').hexdigest()
+
+
+def test_hash_rejects_same_size_mutation_during_read(tmp_path, monkeypatch):
+    path = tmp_path / 'model.bin'
+    path.write_bytes(b'pinned model')
+    before = path.stat()
+    original = libre._hash_stream
+    def changed(stream):
+        digest = original(stream)
+        path.write_bytes(b'edited model')
+        libre.os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        return digest
+    monkeypatch.setattr(libre, '_hash_stream', changed)
+    with pytest.raises(RuntimeError, match='changed while checking'):
+        libre._hash_file(path)
+
+
+def test_hash_rejects_path_replacement_after_opening(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    path = tmp_path / 'model.bin'
+    path.write_bytes(b'pinned model')
+    replaced = False
+    original_stat = Path.lstat
+    original = libre._hash_stream
+    def observed(self):
+        current = original_stat(self)
+        if self != path or not replaced:
+            return current
+        return SimpleNamespace(st_dev=current.st_dev, st_ino=current.st_ino + 1,
+                               st_mode=current.st_mode, st_size=current.st_size,
+                               st_mtime_ns=current.st_mtime_ns, st_ctime_ns=current.st_ctime_ns)
+    def reading(stream):
+        nonlocal replaced
+        digest = original(stream)
+        replaced = True
+        return digest
+    monkeypatch.setattr(Path, 'lstat', observed)
+    monkeypatch.setattr(libre, '_hash_stream', reading)
+    with pytest.raises(RuntimeError, match='changed while checking'):
+        libre._hash_file(path)
+
+
+def test_hash_rejects_symlink_before_opening(tmp_path):
+    target = tmp_path / 'target.bin'
+    target.write_bytes(b'pinned model')
+    path = tmp_path / 'model.bin'
+    try:
+        path.symlink_to(target)
+    except OSError:
+        pytest.skip('Symbolic links are unavailable on this test host')
+    with pytest.raises(RuntimeError, match='regular file'):
+        libre._hash_file(path)
+
+
 @pytest.mark.parametrize('mutation', ['model', 'extra', 'segmenter', 'fallback', 'package_link'])
 def test_changed_models_or_extra_language_never_pass_readiness(runtime, mutation):
     installed = runtime / 'packages' / 'translate-en_pb-1_9'

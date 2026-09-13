@@ -170,12 +170,17 @@ def _hash_file(path):
         raise RuntimeError('Runtime model must be a regular file')
     with path.open('rb') as stream:
         opened = os.fstat(stream.fileno())
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        if (not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino, opened.st_size)
+                != (before.st_dev, before.st_ino, before.st_size)):
             raise RuntimeError('Runtime model changed while opening')
         digest = _hash_stream(stream)
         after = os.fstat(stream.fileno())
-    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+    if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
             after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise RuntimeError('Runtime model changed while checking')
+    current = path.lstat()
+    if (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            current.st_dev, current.st_ino, current.st_mode, current.st_size, current.st_mtime_ns, current.st_ctime_ns):
         raise RuntimeError('Runtime model changed while checking')
     return digest
 
