@@ -103,8 +103,10 @@ def build_reference(video, cache_dir):
             json.dump(reference,handle)
             handle.flush()
             os.fsync(handle.fileno())
+            handle.close()
             os.replace(tmp,cache)
         finally:
+            handle.close()
             tmp.unlink(missing_ok=True)
     return reference
 

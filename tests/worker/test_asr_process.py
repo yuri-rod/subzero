@@ -181,10 +181,12 @@ def test_ffmpeg_cancellation_is_checked_while_child_is_silent(close_stdout):
     assert children[0].poll() is not None
 
 
-def test_ffmpeg_invalid_output_cannot_be_reported_successful():
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "utf-8"])
+def test_ffmpeg_invalid_output_cannot_be_reported_successful(locale_encoding):
     children = []
 
     def launch(argv, **kwargs):
+        kwargs.setdefault("encoding", locale_encoding)
         proc = subprocess.Popen([sys.executable, "-c", "import os; os.write(1, bytes([255, 10]))"], **kwargs)
         children.append(proc)
         return proc
@@ -192,3 +194,18 @@ def test_ffmpeg_invalid_output_cannot_be_reported_successful():
     with pytest.raises(RuntimeError, match="progress stream failed"):
         tracks.run_ffmpeg(["ffmpeg"], 10, lambda *_: None, "extracting", popen=launch)
     assert children[0].poll() is not None
+
+
+def test_ffmpeg_utf8_diagnostics_are_preserved_with_a_windows_locale():
+    children = []
+
+    def launch(argv, **kwargs):
+        kwargs.setdefault("encoding", "cp1252")
+        script = "import os, sys; os.write(2, 'arquivo não encontrado\\n'.encode('utf-8')); sys.exit(1)"
+        proc = subprocess.Popen([sys.executable, "-c", script], **kwargs)
+        children.append(proc)
+        return proc
+
+    with pytest.raises(RuntimeError, match="arquivo não encontrado"):
+        tracks.run_ffmpeg(["ffmpeg"], 10, lambda *_: None, "extracting", popen=launch)
+    assert children[0].poll() == 1

@@ -182,7 +182,7 @@ def test_oversized_ollama_response_is_not_parsed(monkeypatch):
     '[{"id":1,"text":"um"},{"id":1,"text":"dois"}]',
     '[{"id":1,"text":"Ola","extra":"unrequested"}]',
     "1. " + "x" * 131072,
-])
+], ids=['reordered', 'duplicate-id', 'unexpected-field', 'oversized'])
 def test_translation_parser_rejects_invalid_structured_or_oversized_output(response):
     assert _parse_lines(response) == []
 

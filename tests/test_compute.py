@@ -392,7 +392,7 @@ def test_shutdown_inspection_interruption_is_an_unreleased_compute_failure(polic
     (302, b'{"models": []}', False),
     (200, b'broken json', False),
     (200, b'x' * 65537, False),
-])
+], ids=['valid', 'missing-models', 'redirect', 'invalid-json', 'oversized'])
 def test_readiness_uses_direct_bounded_http_without_redirects(policy, monkeypatch, status, body, expected):
     cfg = compute._load_policy()
     calls = []

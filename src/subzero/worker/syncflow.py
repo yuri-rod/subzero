@@ -156,11 +156,12 @@ class SyncFlow:
             raise RuntimeError('Refusing to replace a subtitle symlink')
         backup = self.cache/'backups'/key
         backup.mkdir(parents=True,exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=target.parent,
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',newline='',dir=target.parent,
                                          prefix='.subtitle-',suffix='.tmp',delete=False) as handle:
             tmp = Path(handle.name)
             try:
                 handle.write(text);handle.flush();os.fsync(handle.fileno())
+                handle.close()
                 with self.jobs._db() as db:
                     db.execute('BEGIN IMMEDIATE')
                     state = db.execute('SELECT state FROM jobs WHERE id=?',(job.id,)).fetchone()
@@ -186,6 +187,7 @@ class SyncFlow:
                         os.replace(tmp,target)
                     self.prune_sidecars(media, target, job.target_lang)
             finally:
+                handle.close()
                 tmp.unlink(missing_ok=True)
         self.state.audit(key,job.target_lang,digest(text),'pass',report.json())
         self.service.jellyfin.refresh(media.item_id)
@@ -214,7 +216,7 @@ class SyncFlow:
         folder = self.cache/'candidates'/key/lang
         folder.mkdir(parents=True,exist_ok=True)
         path = folder/f'{digest(text)}.srt'
-        path.write_text(text,encoding='utf-8')
+        path.write_text(text,encoding='utf-8',newline='')
         return path
 
     def run(self, job, progress):
@@ -393,7 +395,7 @@ class SyncFlow:
             with tempfile.TemporaryDirectory(prefix='ocr-', dir=self.cache) as folder:
                 source = Path(folder) / 'source.srt'
                 output = Path(folder) / 'recovered.srt'
-                source.write_text(original, encoding='utf-8')
+                source.write_text(original, encoding='utf-8', newline='')
                 progress('recuperando legendas com Apple Vision', 0)
                 self.active(job)
                 recovered = fill_subtitle_gaps(
@@ -453,7 +455,7 @@ class SyncFlow:
         with tempfile.TemporaryDirectory(prefix='ocr-source-', dir=self.cache) as tmp_dir:
             input_path = Path(tmp_dir) / 'source.srt'
             output_path = Path(tmp_dir) / 'complete.srt'
-            input_path.write_text(source, encoding='utf-8')
+            input_path.write_text(source, encoding='utf-8', newline='')
             progress('recuperando fonte em ingles com Apple Vision', 0)
             self.active(job)
             recovered = fill_subtitle_gaps(media.path, input_path, output=output_path,
@@ -489,9 +491,11 @@ class SyncFlow:
                 json.dump({'text': text, 'digest': digest(text)}, handle, ensure_ascii=False)
                 handle.flush()
                 os.fsync(handle.fileno())
+                handle.close()
                 self.active(job)
                 os.replace(tmp, cache)
             finally:
+                handle.close()
                 tmp.unlink(missing_ok=True)
         return text
 
@@ -566,9 +570,11 @@ class SyncFlow:
                                       handle, ensure_ascii=False)
                             handle.flush()
                             os.fsync(handle.fileno())
+                            handle.close()
                             self.active(job)
                             os.replace(tmp, cache)
                         finally:
+                            handle.close()
                             tmp.unlink(missing_ok=True)
                 completed.extend(translated)
                 progress(f'traduzindo legendas {len(completed)}/{len(cues)}',

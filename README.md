@@ -352,6 +352,10 @@ For TranslateGemma in the CLI, name an English input `episode.en.srt` or `episod
 
 The default model is a local Hy-MT2 7B Q6_K package. The community 7B package needs a different prompt template from the smaller variants, and its EOS metadata incorrectly identifies `$` as an end token. Prepare a separate corrected copy before selecting it:
 
+The preparation command requires POSIX file-open protections, available on macOS
+and Linux. It stops on unsupported systems before opening the source or creating
+files. The prepared model can then be imported into Ollama on another platform.
+
 ```sh
 ollama pull kaelri/hy-mt2:7b
 subzero_model_file=$(ollama show kaelri/hy-mt2:7b --modelfile | sed -n 's/^FROM //p')

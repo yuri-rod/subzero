@@ -1,17 +1,46 @@
 import hashlib
 import importlib.util
+import os
 import struct
+import sys
 from pathlib import Path
 
 import pytest
 
 
-def load_preparer():
+def load_preparer(*, unsupported=False):
+    if not unsupported and not all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_NONBLOCK")):
+        pytest.skip("Secure GGUF preparation requires POSIX file-open flags")
     path = Path(__file__).parents[1] / "src" / "subzero" / "hymt2.py"
     spec = importlib.util.spec_from_file_location("prepare_hymt2", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("missing", ["O_NOFOLLOW", "O_NONBLOCK"])
+def test_unsupported_secure_open_fails_before_creating_files(tmp_path, monkeypatch, missing):
+    prep = load_preparer(unsupported=True)
+    monkeypatch.delattr(prep.os, missing, raising=False)
+    source, stage = tmp_path / "source.gguf", tmp_path / "prepared"
+
+    def unexpected_open(*args, **kwargs):
+        raise AssertionError("Unsupported preparation must not open the source")
+
+    monkeypatch.setattr(prep.os, "open", unexpected_open)
+    with pytest.raises(ValueError, match="requires POSIX.*O_NOFOLLOW.*O_NONBLOCK"):
+        prep.prepare(source, stage)
+    assert not source.exists() and not stage.exists()
+
+
+def test_unsupported_inspection_cli_reports_platform_requirement(tmp_path, monkeypatch, capsys):
+    prep = load_preparer(unsupported=True)
+    monkeypatch.delattr(prep.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hymt2", str(tmp_path / "source.gguf")])
+    with pytest.raises(SystemExit) as stopped:
+        prep.main()
+    assert stopped.value.code == 1
+    assert "requires POSIX" in capsys.readouterr().err
 
 
 def gguf_string(text):

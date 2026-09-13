@@ -103,4 +103,4 @@ def test_explicit_config_disappearing_before_read_stops_worker_action(config_pat
     monkeypatch.setattr(worker_main, "read_env_file", remove_before_read)
     monkeypatch.setattr(worker_main, "_request", unexpected_request)
     assert worker_main.run_worker_cmd("status", env_file=explicit) == 1
-    assert str(explicit) in capsys.readouterr().err
+    assert repr(str(explicit)) in capsys.readouterr().err

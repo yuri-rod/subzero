@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve the position of observed underscore censor marks when comparing native OCR candidates, region retries, and dense timing observations. Bar width and surrounding spacing remain equivalent; losing a confirmed mark during dense verification stops recovery for review.
 - Keep censor marks out of word-count thresholds so short captions retain their existing correction limits.
 - Report an unsupported platform clearly when a shared compute policy is selected without POSIX support. Ordinary operation without that policy remains portable.
+- Close temporary subtitle and cache files before atomic installation on Windows, preserve existing line endings, and decode FFmpeg progress and diagnostics as UTF-8.
+- Report the POSIX file-open requirement before inspecting or preparing a corrected Hy-MT2 model on an unsupported platform.
 
 ## [1.11.1] - 2026-09-12
 

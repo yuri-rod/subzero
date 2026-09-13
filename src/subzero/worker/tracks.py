@@ -57,7 +57,8 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
     laco abaixo espera para sempre por um processo que nunca mais anda.
     """
     proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], stdout=subprocess.PIPE,
-                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, bufsize=1)
+                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+                 encoding="utf-8", errors="strict", bufsize=1)
     errors: list[str] = []
     lines = queue.Queue(maxsize=64)
     stopped = threading.Event()
