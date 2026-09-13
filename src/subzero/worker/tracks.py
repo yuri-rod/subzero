@@ -51,7 +51,8 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
     Drain stderr concurrently so a large stream listing cannot fill the pipe
     and block progress on stdout."""
     proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], stdout=subprocess.PIPE,
-                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, bufsize=1)
+                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+                 encoding="utf-8", errors="strict", bufsize=1)
     errors: list[str] = []
     lines = queue.Queue(maxsize=64)
     stopped = threading.Event()

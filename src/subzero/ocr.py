@@ -1026,7 +1026,7 @@ def fill_subtitle_gaps(
         if out_path.is_symlink():
             raise RuntimeError("Refusing to replace a subtitle symlink")
         rendered = dump_srt(combined)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=out_path.parent,
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=out_path.parent,
                                          prefix=".subtitle-", suffix=".tmp", delete=False) as handle:
             tmp = Path(handle.name)
             try:
@@ -1034,6 +1034,7 @@ def fill_subtitle_gaps(
                 handle.flush()
                 os.fsync(handle.fileno())
             except (OSError, UnicodeError):
+                handle.close()
                 tmp.unlink(missing_ok=True)
                 raise
         try:

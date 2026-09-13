@@ -766,13 +766,13 @@ def test_recover_gaps_wraps_long_recovered_caption_before_validation(gap_recover
     def recover(video, subtitle_path, **kwargs):
         merged = parse(complete)
         merged[10] = Cue(merged[10].index, merged[10].start, merged[10].end, caption)
-        Path(kwargs['output']).write_text(dump(merged))
+        Path(kwargs['output']).write_text(dump(merged), encoding='utf-8')
         return SimpleNamespace(cues_recovered=1)
 
     monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
     job = run(flow, jobs, 'recover_gaps')
     assert job.state == 'done'
-    recovered = parse(target.read_text())[10]
+    recovered = parse(target.read_text(encoding='utf-8'))[10]
     assert recovered.text.replace('\n', ' ') == caption
     assert all(len(line) <= 42 for line in recovered.text.splitlines())
 
@@ -985,7 +985,7 @@ def repair_flow(setup, monkeypatch):
         kwargs['progress'](1, 1)
         merged = parse(reference['text'])
         merged.insert(10, cues[10])
-        Path(kwargs['output']).write_text(dump(merged))
+        Path(kwargs['output']).write_text(dump(merged), encoding='utf-8')
         return SimpleNamespace(cues_recovered=1)
 
     monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
@@ -1551,7 +1551,7 @@ def test_repair_translates_simultaneous_captions_once_then_composes_display(repa
     assert job.state == 'done', job.message
     assert sum(c.text == extra.text for c in seen) == 1
     assert len(seen) == len(original) + 1
-    displayed = parse(target.read_text())
+    displayed = parse(target.read_text(encoding='utf-8'))
     assert all(left.end <= right.start for left, right in zip(displayed, displayed[1:]))
     together = [c for c in displayed if c.start <= extra.start and c.end >= extra.end]
     assert len(together) == 1
@@ -1585,3 +1585,52 @@ def test_repair_keeps_identical_responses_from_simultaneous_speakers(repair_flow
     together = next(c for c in parse(target.read_text()) if c.start == extra.start)
     assert together.text.count('Sim.') == 2
     assert len(together.text.splitlines()) == 2
+
+
+@pytest.mark.parametrize('existed', [False, True])
+def test_repair_closes_staging_files_before_atomic_install(repair_flow, monkeypatch, existed):
+    from subzero.worker import syncflow
+
+    flow, jobs, media, target, _, _, _ = repair_flow
+    flow.cfg.ocr_enabled = True
+    if not existed:
+        target.unlink()
+    create = syncflow.tempfile.NamedTemporaryFile
+    replace = syncflow.os.replace
+    link = syncflow.os.link
+    handles = []
+    published = []
+
+    def staging_file(*args, **kwargs):
+        handle = create(*args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    def publish(operation, source, destination):
+        assert all(handle.closed for handle in handles if Path(handle.name) == Path(source))
+        published.append(Path(destination))
+        return operation(source, destination)
+
+    monkeypatch.setattr(syncflow.tempfile, 'NamedTemporaryFile', staging_file)
+    monkeypatch.setattr(syncflow.os, 'replace', lambda a, b: publish(replace, a, b))
+    monkeypatch.setattr(syncflow.os, 'link', lambda a, b: publish(link, a, b))
+    job = run(flow, jobs, 'embedded_translate')
+    assert job.state == 'done', job.message
+    assert any('ocr-sources' in str(path) for path in published)
+    assert any('translations' in str(path) for path in published)
+    assert target in published
+    assert not list(flow.cache.rglob('*.tmp'))
+    assert not list(target.parent.glob('.subtitle-*.tmp'))
+
+
+def test_stage_keeps_existing_crlf_bytes(setup, monkeypatch):
+    flow, _, _, _ = setup
+    write = Path.write_text
+
+    def windows_write(path, text, encoding=None, errors=None, newline=None):
+        return write(path, text, encoding=encoding, errors=errors,
+                     newline='\r\n' if newline is None else newline)
+
+    monkeypatch.setattr(Path, 'write_text', windows_write)
+    text = '1\r\n00:00:01,000 --> 00:00:02,000\r\nUma fala.\r\n'
+    assert flow.stage('video', 'pt-BR', text).read_bytes() == text.encode('utf-8')

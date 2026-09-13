@@ -41,3 +41,42 @@ def test_cached_reference_recovers_duration_without_reextracting_audio(tmp_path,
     cached = reference.build_reference(video, tmp_path)
     assert cached['duration'] == 5150.976
     assert cached['speech'] == [[1, 2]]
+
+
+def test_reference_closes_cache_file_before_replacement(tmp_path, monkeypatch):
+    from pathlib import Path
+    import faster_whisper.vad
+
+    video = tmp_path / 'movie.mkv'
+    video.write_bytes(b'video')
+    create = reference.tempfile.NamedTemporaryFile
+    replace = reference.os.replace
+    handles = []
+
+    def stage(*args, **kwargs):
+        handle = create(*args, **kwargs)
+        handles.append(handle)
+        return handle
+
+    def publish(source, target):
+        assert all(handle.closed for handle in handles if Path(handle.name) == Path(source))
+        return replace(source, target)
+
+    def extract(argv, **kwargs):
+        if argv[0] == 'ffprobe':
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                'format': {'duration': 180},
+                'streams': [{'index': 0, 'codec_type': 'audio'}],
+            }).encode())
+        kwargs['stdout'].write(b'\x00' * 64)
+        return subprocess.CompletedProcess(argv, 0, b'')
+
+    monkeypatch.setattr(reference.tempfile, 'NamedTemporaryFile', stage)
+    monkeypatch.setattr(reference.os, 'replace', publish)
+    monkeypatch.setattr(reference, '_run', extract)
+    monkeypatch.setattr(faster_whisper.vad, 'get_speech_timestamps', lambda *a: [])
+    built = reference.build_reference(video, tmp_path / 'cache')
+    cached = next((tmp_path / 'cache').glob('*.json'))
+    assert json.loads(cached.read_text()) == built
+    assert all(handle.closed for handle in handles)
+    assert list(cached.parent.iterdir()) == [cached]

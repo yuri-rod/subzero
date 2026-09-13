@@ -973,7 +973,7 @@ def test_fill_preserves_existing_cues_and_clips_new_overlaps(recovery):
     source, original, _ = recovery
     with patch("subzero.ocr.translate_cues", return_value=[Cue("00:00:03,500", "00:00:05,000", "Não conte a ninguém.")]):
         fill_subtitle_gaps("video.mkv", source, target_lang="pt-BR")
-    cues = parse_srt(source.read_text())
+    cues = parse_srt(source.read_text(encoding="utf-8"))
     assert cues[0] == parse_srt(original)[0]
     assert cues[1].start == "00:00:04,000"
     assert source.with_suffix(".srt.bak").read_text() == original
@@ -984,7 +984,7 @@ def test_fill_wraps_recovered_text_without_changing_existing_cues(recovery):
     translated = "Não conte a ninguém o que conversamos porque precisamos manter esse segredo."
     with patch("subzero.ocr.translate_cues", return_value=[Cue("00:00:03,500", "00:00:05,000", translated)]):
         fill_subtitle_gaps("video.mkv", source, target_lang="pt-BR")
-    cues = parse_srt(source.read_text())
+    cues = parse_srt(source.read_text(encoding="utf-8"))
     assert cues[0] == parse_srt(original)[0]
     assert all(len(line) <= 42 for line in cues[1].text.splitlines())
     assert " ".join(cues[1].text.split()) == translated
@@ -1022,3 +1022,19 @@ def test_fill_atomic_replace_failure_keeps_original(recovery):
         fill_subtitle_gaps("video.mkv", source, target_lang="pt-BR")
     assert source.read_text() == original
     assert not list(source.parent.glob(".subtitle-*.tmp"))
+
+
+def test_fill_preserves_rendered_newlines_on_windows(recovery, monkeypatch):
+    source, _, _ = recovery
+    create = ocr.tempfile.NamedTemporaryFile
+
+    def windows_file(*args, **kwargs):
+        if kwargs.get('newline') is None:
+            kwargs['newline'] = '\r\n'
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(ocr.tempfile, 'NamedTemporaryFile', windows_file)
+    with patch('subzero.ocr.translate_cues', return_value=[Cue('00:00:03,500', '00:00:05,000', 'Uma fala.')]):
+        fill_subtitle_gaps('video.mkv', source, target_lang='pt-BR')
+    assert b'\r\r\n' not in source.read_bytes()
+    assert len(parse_srt(source.read_text(encoding='utf-8'))) == 2

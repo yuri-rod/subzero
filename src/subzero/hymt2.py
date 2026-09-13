@@ -138,8 +138,14 @@ def inspect(stream, *, eos=3):
     return {"eos_offset": eos_offset, "tensor_data_offset": tensor_start, "tensor_count": tensors}
 
 
+def _open_source(source: Path):
+    if not all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_NONBLOCK")):
+        raise ValueError("Secure GGUF preparation requires POSIX O_NOFOLLOW and O_NONBLOCK support")
+    return os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+
 def prepare(source: Path, stage: Path):
-    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = _open_source(source)
     with os.fdopen(fd, "rb") as original:
         before = os.fstat(original.fileno())
         if not stat.S_ISREG(before.st_mode):
@@ -197,7 +203,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.stage is None:
-            fd = os.open(args.source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = _open_source(args.source)
             with os.fdopen(fd, "rb") as original:
                 if not stat.S_ISREG(os.fstat(original.fileno()).st_mode):
                     raise ValueError("GGUF source must be a regular file")
