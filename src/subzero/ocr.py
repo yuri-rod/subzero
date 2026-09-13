@@ -550,6 +550,24 @@ def _spoken_word_count(words: Iterable[str]) -> int:
     return sum(bool(word.strip("_")) for word in words)
 
 
+# Short captions ("Look!", "Congratulations!") cost dense windows and VLM
+# rescue calls far out of proportion to their content; the rescue path drops
+# them instead of refining them. Censor marks always survive the cut.
+MIN_RESCUED_WORDS = 4
+
+
+def _substantial_caption(text: str) -> bool:
+    if "_" in text:
+        return True
+    return _spoken_word_count(_caption_words(text)) >= MIN_RESCUED_WORDS
+
+
+def _substantial_span(detections, dense, span) -> bool:
+    left, right = span
+    return any(left <= timestamp < right and _substantial_caption(text)
+               for timestamp, text in list(detections) + list(dense))
+
+
 def _negation_words(words: Iterable[str]) -> list[str]:
     negations = {"no", "not", "never", "neither", "nor", "nobody", "nothing", "nowhere", "none", "without", "cannot"}
     return [word for word in words if word in negations or word.endswith("n't")]
@@ -882,12 +900,14 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
     losses = [] if caption_rescue is not None else None
     cues = _interpret_caption_frames(detections, dense, windows, duration, losses=losses)
     if caption_rescue is not None:
+        losses = [span for span in losses if _substantial_span(detections, dense, span)]
         intervals = _caption_rescue_windows(detections, cues, losses, duration)
         if intervals:
             options = {"progress": lambda done, total: progress(90 + int(9 * done / max(1, total)), 100)} if progress else {}
             detections, dense = _rescue_caption_frames(video, detections, dense, duration, windows,
                                                        intervals, caption_rescue, **options)
             cues = _interpret_caption_frames(detections, dense, windows, duration)
+        cues = [cue for cue in cues if _substantial_caption(cue.text)]
         validate_caption_readings(cues)
         if progress:
             progress(100, 100)
@@ -896,6 +916,7 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
 
 def _caption_rescue_windows(detections, cues, losses, duration):
     intervals = list(losses)
+    cues = [cue for cue in cues if _substantial_caption(cue.text)]
     for start in range(len(cues)):
         for end in range(start + 3, min(start + 8, len(cues)) + 1):
             try:

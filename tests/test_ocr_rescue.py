@@ -54,12 +54,14 @@ def test_rescue_reconciles_coarse_and_dense_censor_evidence_before_loss_check(mo
 
 
 def test_stable_native_captions_never_start_optional_rescue(monkeypatch):
-    coarse = [(stamp, text.replace(" _", "")) for stamp, text in COARSE]
-    dense = [(stamp, text.replace(" _", "")) for stamp, text in DENSE]
+    coarse = [(stamp, text.replace(" _", "").replace("I got you.", "I got you now."))
+              for stamp, text in COARSE]
+    dense = [(stamp, text.replace(" _", "").replace("I got you.", "I got you now."))
+             for stamp, text in DENSE]
     monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
     monkeypatch.setattr(ocr, "_rescue_caption_frames", lambda *a: pytest.fail("Stable caption was rescued"), raising=False)
     cues = ocr.refine_caption_timing("video", coarse, 3, caption_rescue=object())
-    assert [cue.text for cue in cues] == ["I got you."]
+    assert [cue.text for cue in cues] == ["I got you now."]
 
 
 def test_rescue_failure_is_not_retried_or_reported_as_empty_success(monkeypatch):
@@ -89,26 +91,55 @@ def test_rescue_collects_separate_loss_intervals_without_global_text_mapping(mon
 
     monkeypatch.setattr(ocr, "_rescue_caption_frames", rescue, raising=False)
     cues = ocr.refine_caption_timing("video", repeated, 13, caption_rescue=object())
-    assert [cue.text for cue in cues] == ["I _ got you.", "I got you."]
+    assert [cue.text for cue in cues] == ["I _ got you."]
     assert collected and all(end < 3 for _, end in collected)
 
 
 def test_unresolved_flicker_after_rescue_still_fails_original_gate(monkeypatch):
-    coarse = [(0, ""), (.5, "Go on, please."), (1, "Go on, please."), (1.5, "")]
-    dense = [(.4, ""), (.5, "Go on, please."), (.6, "Goron, please."), (.7, "Go on, please."), (.8, "")]
+    coarse = [(0, ""), (.5, "Go on with it please."), (1, "Go on with it please."), (1.5, "")]
+    dense = [(.4, ""), (.5, "Go on with it please."), (.6, "Goron with it please."),
+             (.7, "Go on with it please."), (.8, "")]
     monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
     monkeypatch.setattr(ocr, "_rescue_caption_frames", lambda *a: (coarse, dense), raising=False)
     with pytest.raises(RuntimeError, match="Unstable OCR"):
         ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object())
 
 
+def test_short_flicker_is_dropped_instead_of_rescued(monkeypatch):
+    coarse = [(0, ""), (.5, "Go on, please."), (1, "Go on, please."), (1.5, "")]
+    dense = [(.4, ""), (.5, "Go on, please."), (.6, "Goron, please."), (.7, "Go on, please."), (.8, "")]
+    monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
+    monkeypatch.setattr(ocr, "_rescue_caption_frames",
+                        lambda *a: pytest.fail("Short caption was rescued"), raising=False)
+    assert ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object()) == []
+
+
 @pytest.mark.parametrize("first, changed", [
     ("I go.", "go."), ("Wait.", "Walt."), ("Sam.", "Pam."), ("7.", "8."),
-    ("I can.", "I can't."), ("I _ go.", "I go."), ("I _ go.", "_ I go."),
+    ("I can.", "I can't."),
 ])
-def test_short_ambiguity_is_selected_and_independent_real_change_still_needs_review(monkeypatch, first, changed):
+def test_short_ambiguity_is_dropped_without_rescue(monkeypatch, first, changed):
     coarse = [(0, ""), (.5, first), (1, first), (1.5, "")]
     dense = [(.4, ""), (.5, first), (.6, first), (.7, changed), (.8, first), (.9, "")]
+    monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
+    monkeypatch.setattr(ocr, "_rescue_caption_frames",
+                        lambda *a: pytest.fail("Short caption was rescued"))
+    assert ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object()) == []
+
+
+def test_censored_flanks_survive_short_middle_variant_without_rescue(monkeypatch):
+    coarse = [(0, ""), (.5, "I _ go."), (1, "I _ go."), (1.5, "")]
+    dense = [(.4, ""), (.5, "I _ go."), (.6, "I _ go."), (.7, "I go."), (.8, "I _ go."), (.9, "")]
+    monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
+    monkeypatch.setattr(ocr, "_rescue_caption_frames",
+                        lambda *a: pytest.fail("Short variant was rescued"))
+    cues = ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object())
+    assert [cue.text for cue in cues] == ["I _ go.", "I _ go."]
+
+
+def test_censored_position_ambiguity_still_needs_review(monkeypatch):
+    coarse = [(0, ""), (.5, "I _ go."), (1, "I _ go."), (1.5, "")]
+    dense = [(.4, ""), (.5, "I _ go."), (.6, "I _ go."), (.7, "_ I go."), (.8, "I _ go."), (.9, "")]
     monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
     selected = []
 
@@ -120,7 +151,7 @@ def test_short_ambiguity_is_selected_and_independent_real_change_still_needs_rev
     with pytest.raises(RuntimeError, match="Unstable OCR"):
         ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object())
     assert any(start <= .7 < end for start, end in selected)
-    assert dense[3] == (.7, changed)
+    assert dense[3] == (.7, "_ I go.")
 
 
 def native_frame(text):
@@ -227,11 +258,18 @@ def test_frame_replay_cannot_erase_confirmed_coarse_caption(tmp_path, monkeypatc
 
 def test_rescue_window_does_not_include_unrelated_preceding_stable_cue():
     cues = [Cue("00:00:00,000", "00:00:30,000", "A separate stable sentence."),
-            Cue("00:00:50,000", "00:00:50,100", "Go on, please."),
-            Cue("00:00:50,100", "00:00:50,200", "Goron, please."),
-            Cue("00:00:50,200", "00:00:50,300", "Go on, please.")]
+            Cue("00:00:50,000", "00:00:50,100", "Go on with it please."),
+            Cue("00:00:50,100", "00:00:50,200", "Goron with it please."),
+            Cue("00:00:50,200", "00:00:50,300", "Go on with it please.")]
     windows = ocr._caption_rescue_windows([], cues, [], 60)
     assert windows == [(49.25, 51.05)]
+
+
+def test_rescue_window_ignores_short_only_instability():
+    cues = [Cue("00:00:50,000", "00:00:50,100", "Go on, please."),
+            Cue("00:00:50,100", "00:00:50,200", "Goron, please."),
+            Cue("00:00:50,200", "00:00:50,300", "Go on, please.")]
+    assert ocr._caption_rescue_windows([], cues, [], 60) == []
 
 
 def test_frame_replay_reports_progress_after_chunks_and_model_frames(tmp_path, monkeypatch):
