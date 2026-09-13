@@ -29,7 +29,7 @@ Subzero provides a CLI, Python library, directory watcher, and subtitle worker f
 * Extracts embedded text subtitles and converts between SRT, WebVTT, ASS, and SSA.
 * Verifies subtitle timing against local speech detection and applies supported constant-offset or framerate corrections.
 * Recovers burned-in English captions with Apple Vision on macOS, including quiet passages missed by speech detection.
-* Translates through local Ollama, using Hy-MT2 by default. The CLI also supports explicitly selected OpenAI-compatible endpoints.
+* Translates locally through Ollama or the worker's isolated LibreTranslate CPU engine. The CLI also supports explicitly selected OpenAI-compatible endpoints.
 * Matches OpenSubtitles downloads, validates candidates, and stages replacements before installing worker output with backups.
 
 The core uses the Python standard library. Timing analysis and the worker have optional Python dependencies; video operations need FFmpeg.
@@ -88,7 +88,7 @@ pip install 'subzero-cli[sync]'
 pip install 'subzero-cli[worker]'
 ```
 
-With `uv tool`, use `uv tool install 'subzero-cli[worker,sync]'` for both extras. Ollama and its translation model are separate installations; see the worker configuration below.
+With `uv tool`, use `uv tool install 'subzero-cli[worker,sync]'` for both extras. Translation engines and their models are separate installations; see the worker configuration below.
 
 ---
 
@@ -278,7 +278,7 @@ subzero worker stop
 
 The worker binds to `127.0.0.1:8787`. Configure `JELLYFIN_URL`, `JELLYFIN_API_KEY`, and `BEARER_TOKEN` before starting it. API requests require `Authorization: Bearer TOKEN`.
 
-`worker status` reports the transcription model, translation model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. Use `ollama ps` to inspect where the translation model is running.
+`worker status` reports the transcription model, translation provider and model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. For Ollama translation, use `ollama ps` to inspect where the model is running.
 
 Configuration is read from an explicit `--env` file, the current directory's `.env`, the package/project `.env`, or `~/.config/subzero/.env`, in that order. Process environment variables override file values. The retired `~/.config/srtworker/.env` location is no longer discovered automatically; select it with `--env` during migration. The `srtworker` command and the existing macOS launchd label remain compatible.
 
@@ -301,7 +301,37 @@ ACCEPTED_LANGS=pt-BR,en,es
 ACCEPTED_LANGS=
 ```
 
-Before transcribing audio that needs translation, the worker checks that Ollama and the configured model are available. A translation failure leaves the job for review. Translation keeps the model loaded between batches and releases it when the operation ends. Malformed or incomplete output fails validation before installation.
+Before transcribing audio that needs translation, the worker checks the selected translation provider. A translation failure leaves the job for review, without switching providers. Malformed or incomplete output fails validation before installation. These checks do not certify the meaning of every translated sentence.
+
+#### Native LibreTranslate CPU runtime
+
+Set `TRANSLATION_PROVIDER=libretranslate` to use LibreTranslate's `argos-translate-lt` engine directly in an isolated Python process. This integration supports English to Brazilian Portuguese through the direct `en` to `pb` package, version 1.9. It does not run the LibreTranslate HTTP server or send dialogue to an external translation service.
+
+The pinned installer currently supports native macOS 14+ ARM64 with CPython 3.13.15. Run it from a repository checkout with `uv` installed:
+
+```sh
+uv python install 3.13.15
+python3 scripts/install_libretranslate.py \
+  --python "$(uv python find 3.13.15)" \
+  --runtime "$HOME/.local/share/subzero/libretranslate"
+```
+
+The installer verifies SHA-256 pins for all 17 wheels, the translation archive and the English MiniSBD model. It creates a separate environment, installs the wheels offline, checks their declared dependencies, and records the pins in `installation.json`. Installation does not load models or run translation. Use `--model /path/to/translate-en_pb-1_9.argosmodel` and `--segmenter /path/to/en.onnx` to reuse verified local model files. Existing runtime directories are refused; install a replacement into a new directory before changing the worker configuration.
+
+Select the runtime in the worker's environment file:
+
+```dotenv
+TRANSLATION_PROVIDER=libretranslate
+LIBRETRANSLATE_RUNTIME=/absolute/path/to/.local/share/subzero/libretranslate
+```
+
+The default path is `~/.local/share/subzero/libretranslate`. Keep its `config` directory empty. Runtime readiness checks verify the pinned package, segmenter and engine versions without loading a model. Translation runs in a short-lived CPU process with network connections disabled, one inter-op thread and two intra-op threads. It translates complete sentence units, then restores the original cue timestamps. It does not accept separate context or start Ollama. Engine and model settings are part of the translation cache identity, so changing providers does not reuse an Ollama translation.
+
+The core worker dependencies remain separate. This runtime does not install Torch, spaCy, a container runtime or additional language packages. Preserve the bundled model notices; the English to Brazilian Portuguese package is licensed under CC BY 4.0.
+
+#### Optional Ollama translation
+
+`TRANSLATION_PROVIDER=ollama` remains the default for existing installations. Ollama retains the configured model between batches and releases it when the operation ends.
 
 The worker accepts these Ollama controls:
 
@@ -326,9 +356,9 @@ OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m
 ```
 
-Whisper transcribes the source language; Ollama translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job.
+Whisper transcribes the source language; the selected provider translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job.
 
-On macOS, a shared compute policy serializes local translation, Vision OCR, and Whisper across the CLI, worker, and HTTP transcription requests. Subzero stops the managed Ollama daemon and its runners before OCR or transcription, then starts it for translation. Translation retains ownership across its batches and fully stops Ollama afterward. Whisper runs in a separate process and exits before handoff, including when configured for CPU execution.
+On macOS, a shared compute policy serializes Ollama translation, Vision OCR, and Whisper across the CLI, worker, and HTTP transcription requests. Subzero stops the managed Ollama daemon and its runners before OCR or transcription, then starts it when Ollama translation is selected. Ollama translation retains ownership across its batches and fully stops the daemon afterward. Whisper runs in a separate process and exits before handoff, including when configured for CPU execution. The native LibreTranslate engine uses CPU execution and does not start the Ollama daemon.
 
 Enable this behavior with `~/.config/subzero/compute.json`, or set `SUBZERO_COMPUTE_CONFIG` to an absolute policy path. All participating processes must use the same policy and lock. Without a policy, portable behavior is retained. An explicitly selected missing or invalid policy stops the operation.
 
@@ -342,7 +372,7 @@ Enable this behavior with `~/.config/subzero/compute.json`, or set `SUBZERO_COMP
 
 Policy and launch-agent files must be regular files owned by the current user and not writable by others. Native children retain the shared lock until they exit, even if their parent process stops. If shutdown cannot be verified, further compute stays blocked. Commands and applications outside this policy do not participate in its lock; keep other GPU workloads paused during processing. A cancelled job can remain in cleanup while its native child exits, so the API's cancelled state alone does not prove resources have been released.
 
-Hy-MT2 joins bounded consecutive fragments from the same speaker, translates each sentence unit once, and distributes the generated words across the original cue timestamps. Batches keep these units together. Complete units can use up to 32 preceding source cues, capped at 6,000 characters, plus the programme title. The context excludes the current unit and later dialogue; unfinished fragments receive no background context.
+Hy-MT2 and `qwen3.5:9b` join bounded consecutive fragments from the same speaker, translate each sentence unit once, and distribute the generated words across the original cue timestamps. Batches keep these units together. Only Hy-MT2 uses prior context: complete units can receive up to 32 preceding source cues, capped at 6,000 characters, plus the programme title. The context excludes the current unit and later dialogue; unfinished fragments receive no background context. Qwen retains the generic JSON translation prompt without this context.
 
 For Portuguese output, source units containing `Immunity Idol` or `Tribal Council` use [Tencent's terminology prompt](https://github.com/Tencent-Hunyuan/Hy-MT2#hy-mt2-translation-task-instruction-examples-chinese-english-comparison) with the Portuguese game terms, including plurals. The language guard rejects these terms if they remain in English.
 
@@ -405,10 +435,14 @@ The CLI scans intervals without dialogue subtitles, including quiet passages wit
 
 Native Vision uses accurate English recognition and language correction. Caption position, size, horizontal angle, and enclosed white lettering filter out unrelated text. Accepted text boxes have their lower edge within the bottom 19% of the frame; recognition extends above that boundary to preserve the full letters. Dense lower-screen credit layouts and tall centered titles with stacked uppercase labels are excluded before individual rows are selected. Text boxes on the same physical row are read from left to right. Nearby frames and region retries help resolve text candidates and fluctuating boxes in single-line and two-line captions.
 
+The worker can optionally retry unresolved whole-video caption intervals with a local image model after native Vision. Set both `OCR_RESCUE_MODEL` and `OCR_RESCUE_MODEL_DIGEST` to an installed vision-capable Ollama model and its exact 64-character SHA-256 digest from `/api/tags`. `OLLAMA_URL` must be a plain HTTP loopback endpoint. These settings are independent of the translation provider; native LibreTranslate translation does not use this model.
+
+Caption rescue captures the exact sampled frames again and makes one image request for each uncached admitted frame. Native blank and title-card decisions remain authoritative. The model identity is checked before and after recognition; results, image crops and recognition evidence are cached under `SYNC_CACHE/caption-rescue`. Timing and caption checks still apply, and loss of a confirmed caption stops for review. This extra reading does not certify every word, short fragment or censorship marker. Inspect retained source candidates and evidence when quality remains uncertain.
+
 The macOS worker exposes the same recovery as an explicit `recover_gaps` job through
 `POST /jobs`, with `itemId` and `targetLang` (for example, `pt-BR`). It reads the
 existing target sidecar, recovers captions with Apple Vision, and translates them
-using `OLLAMA_URL` and `OLLAMA_MODEL`. The merged file must pass timing and subtitle
+using the configured translation provider. The merged file must pass timing and subtitle
 checks before installation. The worker backs up the original under
 `SYNC_CACHE/backups` and preserves it when recovery, translation, or validation
 fails. This job does not download subtitles or regenerate the episode from audio.
@@ -434,7 +468,7 @@ Repeated dense observations can correct a coarse spelling error, while names, ne
 Completed scan windows are cached under `SYNC_CACHE/caption-scans`, including blank frames. Retries reuse their observed text and timestamps, then rerun caption and timing validation. Changes to the video, recognition version, native executable, macOS, FFmpeg, or scan settings invalidate the affected observations. Temporary video frames are discarded.
 
 Each dialogue cue and recovered caption retains its timing through translation
-and cleanup. Hy-MT2 translates sentence units once. When captions overlap, the
+and cleanup. Sentence-unit providers translate each unit once. When captions overlap, the
 worker combines their translated text into successive display intervals with no
 overlapping output cues. The final display cue count can therefore differ from
 the source cue count. Speaker labels remain available during translation and are
