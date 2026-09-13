@@ -105,6 +105,7 @@ def extract_package(archive_path, destination):
             mode = member.external_attr >> 16
             kind = stat.S_IFMT(mode)
             if (not path.parts or path.is_absolute() or '..' in path.parts
+                    or member.orig_filename != member.filename
                     or '\\' in member.filename or '\x00' in member.filename
                     or path.parts[0] != PACKAGE or str(path) != normalized
                     or normalized in paths or member.flag_bits & 1
