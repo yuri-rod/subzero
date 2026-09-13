@@ -650,3 +650,38 @@ def test_process_receipt_rejects_duplicate_pids(policy):
             lifecycle._remembered()
     finally:
         os.close(lock)
+
+
+def test_start_waits_for_launchd_to_settle_daemon_identity_before_http(policy, monkeypatch):
+    cfg = compute._load_policy()
+    lifecycle = compute._Lifecycle(cfg, -1)
+    transient = compute._Process(100, 1, 1, 0, 'start', f'{cfg.executable} serve')
+    settled = compute._Process(100, 1, 100, os.getuid(), 'start', f'{cfg.executable} serve')
+    snapshots = iter([{100: transient}, {100: settled}])
+    events = []
+
+    def processes():
+        snapshot = next(snapshots)
+        events.append(('identity', snapshot[100].uid, snapshot[100].group))
+        return snapshot
+
+    monkeypatch.setattr(compute, '_run', lambda *a, **kw: type('Response', (), {'returncode': 0})())
+    monkeypatch.setattr(lifecycle, '_service', lambda: (True, 100))
+    monkeypatch.setattr(compute, '_processes', processes)
+    monkeypatch.setattr(lifecycle, '_ready', lambda: events.append('http ready') or True)
+    lifecycle.start()
+    assert events == [('identity', 0, 1), ('identity', os.getuid(), 100), 'http ready']
+
+
+def test_start_never_checks_http_when_daemon_identity_remains_wrong(policy, monkeypatch):
+    from dataclasses import replace
+
+    cfg = replace(compute._load_policy(), startup_timeout=.01)
+    lifecycle = compute._Lifecycle(cfg, -1)
+    wrong = compute._Process(100, 1, 1, 0, 'start', f'{cfg.executable} serve')
+    monkeypatch.setattr(compute, '_run', lambda *a, **kw: type('Response', (), {'returncode': 0})())
+    monkeypatch.setattr(lifecycle, '_service', lambda: (True, 100))
+    monkeypatch.setattr(compute, '_processes', lambda: {100: wrong})
+    monkeypatch.setattr(lifecycle, '_ready', lambda: pytest.fail('Unverified daemon must not receive HTTP'))
+    with pytest.raises(RuntimeError, match='startup timeout'):
+        lifecycle.start()
