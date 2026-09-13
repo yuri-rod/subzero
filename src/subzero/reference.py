@@ -40,7 +40,7 @@ def _run(argv, **kwargs):
     return proc
 
 
-def _is_audio_confirmed(report, min_confident=15, max_bad=1, max_bad_offset=5.0):
+def _is_audio_confirmed(report, min_confident=8, max_bad=1, max_bad_offset=5.0):
     if report.status == 'pass':
         return True
     conf = [w for w in report.windows if w.confident]
