@@ -5,6 +5,14 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Keep caption rescue clustering from merging distinct captions. Only consecutive frames where Apple Vision reads the same words with the same censorship marks share one model call, so caption transitions, name and number changes, and dropped censor bars always get their own reading. Invalidate older rescue caches that may hold propagated readings.
+- Keep high-confidence Apple Vision readings as a direct pass-through without a model call. Verified identical to the model on every sampled cluster.
+- Drop the parallel model dispatch and the compact-model prompt path. Measured against the local model they added no speedup and lowered reading accuracy, so rescue stays sequential on the configured model.
+
 ## [1.13.0] - 2026-09-13
 
 ### Added
