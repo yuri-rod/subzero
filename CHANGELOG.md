@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add an `applefm` translation provider using Apple Foundation Models through a local OpenAI-style server (`fm serve`). Refused or echoed subtitle units fall back to LibreTranslate per unit when `TRANSLATION_FALLBACK=libretranslate` is set.
+- Add an mlx-whisper transcription backend on Apple Silicon, selected with `WHISPER_DEVICE=mlx`. Same turbo weights as the CPU path, roughly 3x faster with equal-or-better text; stdout is kept JSON-clean for the isolated child and the sampler is seeded so runs are reproducible.
 
 ### Fixed
 

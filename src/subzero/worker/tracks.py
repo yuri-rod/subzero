@@ -240,6 +240,10 @@ class ModelHolder:
 
     def load(self):
         if self.model is None:
+            if self.device == "mlx":
+                from .mlx_asr import MlxModel, mlx_repo, resolve_snapshot
+                self.model = MlxModel(resolve_snapshot(mlx_repo(self.name)))
+                return self.model
             from faster_whisper import WhisperModel
             from faster_whisper.utils import download_model
             from huggingface_hub.errors import LocalEntryNotFoundError

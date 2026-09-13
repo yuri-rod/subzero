@@ -71,6 +71,7 @@ worker = [
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "faster-whisper>=1.1,<2",
+    "mlx-whisper>=0.4; sys_platform == 'darwin'",
     "huggingface_hub>=0.23",
     "python-multipart>=0.0.9",
 ]

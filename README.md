@@ -388,7 +388,7 @@ OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m
 ```
 
-Whisper transcribes the source language; the selected provider translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job.
+Whisper transcribes the source language; the selected provider translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job. On Apple Silicon, `WHISPER_DEVICE=mlx` runs the same weights through mlx-whisper (the `mlx-community/whisper-` model must be the cached one), roughly 3x faster than CPU faster-whisper with equal-or-better text.
 
 On macOS, a shared compute policy serializes Ollama translation, Vision OCR, and Whisper across the CLI, worker, and HTTP transcription requests. Subzero stops the managed Ollama daemon and its runners before OCR or transcription, then starts it when Ollama translation is selected. Ollama translation retains ownership across its batches and fully stops the daemon afterward. Whisper runs in a separate process and exits before handoff, including when configured for CPU execution. The native LibreTranslate engine uses CPU execution and does not start the Ollama daemon.
 

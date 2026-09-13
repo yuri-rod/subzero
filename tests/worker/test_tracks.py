@@ -547,6 +547,85 @@ def test_model_holder_rejects_cache_missing_tokenizer(tmp_path, monkeypatch):
         ModelHolder(str(tmp_path), device="cpu").load()
 
 
+def test_mlx_repo_maps_short_names_and_passes_snapshots_through(tmp_path):
+    from subzero.worker.mlx_asr import mlx_repo
+
+    assert mlx_repo("large-v3-turbo") == "mlx-community/whisper-large-v3-turbo"
+    assert mlx_repo("mlx-community/whisper-tiny") == "mlx-community/whisper-tiny"
+    assert mlx_repo(str(tmp_path)) == str(tmp_path)
+
+
+def test_mlx_holder_loads_from_local_cache_only(tmp_path, monkeypatch):
+    import huggingface_hub
+    from subzero.worker.mlx_asr import MlxModel
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "weights.safetensors").write_bytes(b"cached weights")
+
+    def cached_snapshot(repo, **kwargs):
+        assert repo == "mlx-community/whisper-large-v3-turbo"
+        if not kwargs.get("local_files_only"):
+            raise AssertionError("runtime attempted to permit remote model lookup")
+        return str(tmp_path)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", cached_snapshot)
+    model = ModelHolder("large-v3-turbo", device="mlx").load()
+
+    assert isinstance(model, MlxModel)
+    assert model.snapshot == str(tmp_path)
+
+
+def test_mlx_holder_reports_missing_local_cache(monkeypatch):
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    def missing_snapshot(*args, **kwargs):
+        raise LocalEntryNotFoundError("snapshot not found")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", missing_snapshot)
+    with pytest.raises(RuntimeError, match="not cached locally"):
+        ModelHolder("large-v3-turbo", device="mlx").load()
+
+
+def test_mlx_transcribe_builds_cues_and_drops_faster_options(tmp_path, monkeypatch, capsys):
+    import huggingface_hub
+    import sys
+    import types
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "weights.safetensors").write_bytes(b"cached weights")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, **kw: str(tmp_path))
+
+    calls = {}
+
+    def fake_transcribe(audio, **kwargs):
+        calls["audio"] = audio
+        calls["kwargs"] = kwargs
+        print("Detected language: English")
+        return {"language": "en", "segments": [
+            {"start": 0.0, "end": 1.5, "text": " Ola "},
+            {"start": 2.0, "end": 3.0, "text": "mundo"},
+        ]}
+
+    stub = types.ModuleType("mlx_whisper")
+    stub.transcribe = fake_transcribe
+    monkeypatch.setitem(sys.modules, "mlx_whisper", stub)
+
+    seen = []
+    holder = ModelHolder("large-v3-turbo", device="mlx")
+    cues, lang = transcribe("audio.wav", holder, progress=lambda phase, pct: seen.append(pct))
+
+    assert [c.text for c in cues] == ["Ola", "mundo"]
+    assert lang == "en"
+    assert seen
+    assert calls["kwargs"]["path_or_hf_repo"] == str(tmp_path)
+    assert calls["kwargs"]["verbose"] is False
+    assert "vad_filter" not in calls["kwargs"] and "beam_size" not in calls["kwargs"]
+    # o filho isolado fala JSON por linha no stdout; qualquer outra coisa la
+    # quebra o protocolo com "invalid JSON"
+    assert capsys.readouterr().out == ""
+
+
 def test_audio_extractions_for_same_video_use_separate_files(tmp_path, monkeypatch):
     from subzero.worker import tracks
 
