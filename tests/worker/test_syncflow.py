@@ -135,6 +135,210 @@ def test_wrong_movie_candidate_is_not_downloaded(setup):
     assert job.kind=='resync'
 
 
+@pytest.fixture
+def audio_rebuild(setup, monkeypatch, tmp_path):
+    from subzero.worker import syncflow
+
+    flow, jobs, _, media = setup
+    flow.cfg.ocr_enabled = True
+    flow.service.ollama = Translator()
+    complete = dialogue().replace('Test dialogue', 'We should build a shelter.')
+    cues = parse(complete)
+    source = dump(cues[:10] + cues[11:])
+    reference = flow.reference_builder()
+    reference.update(text='', spans=[], speech=spans(complete), audio_index=3)
+    target = Path(media.path).with_suffix('.pt-BR.srt')
+    target.write_text('broken old translation')
+    audio = tmp_path / 'audio.wav'
+    audio.write_bytes(b'audio')
+    calls = []
+
+    def extract(*args, **kwargs):
+        calls.append(('audio', kwargs))
+        return str(audio)
+
+    def transcribe(*args):
+        calls.append(('transcribe', None))
+        return syncflow.shift(parse(source), -1.4), 'en'
+
+    def recover(video, subtitle_path, **kwargs):
+        calls.append(('ocr', None))
+        assert Path(subtitle_path).read_text() == source
+        assert kwargs['target_lang'] == 'en'
+        assert kwargs['all_captions'] is True
+        assert kwargs['backup'] is False
+        Path(kwargs['output']).write_text(complete)
+        return SimpleNamespace(cues_recovered=1)
+
+    monkeypatch.setattr(syncflow, 'audio_start_offset', lambda *args: 1.4)
+    monkeypatch.setattr(syncflow, 'extract_audio', extract)
+    monkeypatch.setattr(syncflow, 'transcribe', transcribe)
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
+    return flow, jobs, media, target, reference, source, complete, audio, calls
+
+
+def test_english_audio_rebuild_uses_ocr_and_preserves_independent_reference(audio_rebuild):
+    import copy
+
+    flow, jobs, _, target, reference, source, complete, audio, calls = audio_rebuild
+    original_reference = copy.deepcopy(reference)
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'done', job.phase
+    assert calls == [('audio', {'audio_index': 3}), ('transcribe', None), ('ocr', None)]
+    assert reference == original_reference
+    assert spans(target.read_text()) == spans(complete)
+    assert len(parse(target.read_text())) == len(parse(source)) + 1
+    assert set(flow.service.ollama.source_languages) == {'en'}
+    assert 'We should' not in target.read_text()
+    assert not audio.exists()
+    assert list((flow.cache / 'candidates').glob('*/en/*.srt'))
+    assert list((flow.cache / 'backups').rglob('*.srt'))[0].read_text() == 'broken old translation'
+
+
+@pytest.mark.parametrize('phase', [0, 45])
+@pytest.mark.parametrize('status', ['reject', 'inconclusive'])
+def test_english_audio_rebuild_requires_both_timing_checks(audio_rebuild, monkeypatch, phase, status):
+    from subzero.worker import syncflow
+    from subzero.timing import Report
+
+    flow, jobs, _, target, _, _, _, audio, calls = audio_rebuild
+    verify = syncflow.verify_text
+
+    def reject_phase(text, reference, **kwargs):
+        if kwargs.get('phase', 0) == phase:
+            return Report(status, 'Independent audio timing failed', [])
+        return verify(text, reference, **kwargs)
+
+    monkeypatch.setattr(syncflow, 'verify_text', reject_phase)
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'needs_review'
+    assert target.read_text() == 'broken old translation'
+    assert ('ocr', None) not in calls
+    assert flow.service.ollama.source_languages == []
+    assert not audio.exists()
+    assert not list((flow.cache / 'backups').rglob('*.srt'))
+
+
+@pytest.mark.parametrize('existed', [False, True])
+def test_audio_rebuild_preserves_target_changed_during_transcription(audio_rebuild, monkeypatch, existed):
+    from subzero.worker import syncflow
+
+    flow, jobs, _, target, _, _, _, audio, _ = audio_rebuild
+    if not existed:
+        target.unlink()
+    transcribe = syncflow.transcribe
+
+    def change_target(*args):
+        target.write_text('new subtitle installed during transcription')
+        return transcribe(*args)
+
+    monkeypatch.setattr(syncflow, 'transcribe', change_target)
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'needs_review'
+    assert target.read_text() == 'new subtitle installed during transcription'
+    assert not audio.exists()
+    assert not list((flow.cache / 'backups').rglob('*.srt'))
+
+
+@pytest.mark.parametrize('audio_index', [None, True, 1.0, '1', -1])
+def test_ocr_audio_rebuild_rejects_invalid_reference_stream_before_audio(audio_rebuild, audio_index):
+    flow, jobs, _, target, reference, _, _, _, calls = audio_rebuild
+    reference['audio_index'] = audio_index
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'needs_review'
+    assert 'audio stream index' in job.phase.lower()
+    assert calls == []
+    assert target.read_text() == 'broken old translation'
+
+
+@pytest.mark.parametrize('failure', ['ocr', 'translation', 'cancel'])
+def test_english_audio_rebuild_failure_preserves_target(audio_rebuild, monkeypatch, failure):
+    from subzero.worker import syncflow
+
+    flow, jobs, _, target, _, _, _, audio, calls = audio_rebuild
+    if failure == 'ocr':
+        def fail(*args, **kwargs):
+            raise OSError('Unreadable caption observations')
+        monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', fail)
+    elif failure == 'translation':
+        flow.service.ollama.failure = 'translation unavailable'
+    else:
+        transcribe = syncflow.transcribe
+        def cancel(*args):
+            jobs.cancel(jobs.active()[0].id)
+            return transcribe(*args)
+        monkeypatch.setattr(syncflow, 'transcribe', cancel)
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == ('cancelled' if failure == 'cancel' else 'needs_review')
+    assert target.read_text() == 'broken old translation'
+    assert not audio.exists()
+    assert not list((flow.cache / 'backups').rglob('*.srt'))
+    if failure == 'cancel':
+        assert ('ocr', None) not in calls
+        assert flow.service.ollama.source_languages == []
+
+
+@pytest.mark.parametrize('detected', ['pt', 'und'])
+def test_english_audio_rebuild_rejects_non_english_detection(audio_rebuild, monkeypatch, detected):
+    from subzero.worker import syncflow
+
+    flow, jobs, _, target, _, source, _, audio, calls = audio_rebuild
+    monkeypatch.setattr(syncflow, 'transcribe', lambda *args: (parse(source), detected))
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'needs_review'
+    assert 'not transcribed as English' in job.phase
+    assert target.read_text() == 'broken old translation'
+    assert ('ocr', None) not in calls
+    assert flow.service.ollama.source_languages == []
+    assert not audio.exists()
+
+
+def test_audio_rebuild_respects_explicit_ocr_off(audio_rebuild):
+    flow, jobs, _, target, reference, source, _, _, calls = audio_rebuild
+    flow.cfg.ocr_enabled = False
+    reference.pop('audio_index')
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'done'
+    assert calls == [('audio', {}), ('transcribe', None)]
+    assert spans(target.read_text()) == spans(source)
+
+
+def test_non_english_audio_rebuild_does_not_use_english_ocr(audio_rebuild, monkeypatch):
+    from subzero.worker import syncflow
+
+    flow, jobs, media, target, reference, _, _, audio, calls = audio_rebuild
+    media.audio_lang = 'por'
+    reference['language'] = 'por'
+    flow.service.ollama = None
+    portuguese = dialogue().replace('Test dialogue', 'Precisamos construir um abrigo.')
+    monkeypatch.setattr(syncflow, 'transcribe',
+                        lambda *args: (syncflow.shift(parse(portuguese), -1.4), 'pt'))
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'done'
+    assert target.read_text() == portuguese
+    assert calls == [('audio', {'audio_index': 3})]
+    assert not audio.exists()
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'fifo'])
+def test_audio_rebuild_rejects_unsafe_target_before_audio(audio_rebuild, kind):
+    import os
+
+    flow, jobs, _, target, _, _, _, _, calls = audio_rebuild
+    target.unlink()
+    unrelated = target.parent / 'unrelated.txt'
+    unrelated.write_text('keep this text')
+    if kind == 'symlink':
+        target.symlink_to(unrelated)
+    else:
+        os.mkfifo(target)
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'needs_review'
+    assert 'regular subtitle file' in job.phase
+    assert unrelated.read_text() == 'keep this text'
+    assert calls == []
+
+
 def test_broken_file_is_never_downloaded_again(setup):
     from subzero.reference import fingerprint
     flow,jobs,provider,media=setup
@@ -462,6 +666,50 @@ def test_install_prunes_intermediate_sidecars_matching_embedded_tracks(setup):
     target = Path(job.result_path)
     assert target.exists()
     assert not intermediate.exists()
+
+
+@pytest.mark.parametrize('suffix', ['', '[EZTVx.to]', '[TGx]'])
+def test_install_prunes_literal_stem_sidecars_and_preserves_neighbors(setup, suffix):
+    flow, jobs, provider, media = setup
+    video = Path(media.path).with_name(f'movie{suffix}.mkv')
+    Path(media.path).rename(video)
+    media.path = str(video)
+    media.embedded = [SimpleNamespace(lang='eng')]
+    stale = [video.with_suffix('.srt'), video.with_suffix('.en.srt')]
+    preserved = [video.with_suffix('.fr.srt'), video.parent / f'{video.stem}.en.srt.bak',
+                 video.parent / f'{video.stem}Xen.srt', video.parent / f'{video.stem}.extended.en.srt']
+    for path in stale + preserved:
+        path.write_text('existing subtitle')
+    provider.download = lambda _: dialogue()
+    job = run(flow, jobs, 'refetch')
+    assert job.state == 'done'
+    assert Path(job.result_path).exists()
+    assert all(not path.exists() for path in stale)
+    assert all(path.read_text() == 'existing subtitle' for path in preserved)
+
+
+@pytest.mark.parametrize('ocr_enabled', [False, True])
+@pytest.mark.parametrize('existed', [False, True])
+def test_rebuild_sidecar_fallback_keeps_early_target_snapshot(audio_rebuild, monkeypatch, ocr_enabled, existed):
+    flow, jobs, media, target, _, source, _, _, calls = audio_rebuild
+    flow.cfg.ocr_enabled = ocr_enabled
+    if not existed:
+        target.unlink()
+    Path(media.path).with_suffix('.en.srt').write_text(source)
+    source_sidecar = flow.source_sidecar
+
+    def replace_target(*args, **kwargs):
+        selected = source_sidecar(*args, **kwargs)
+        assert selected is not None
+        target.write_text('changed during source selection')
+        return selected
+
+    monkeypatch.setattr(flow, 'source_sidecar', replace_target)
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'needs_review'
+    assert target.read_text() == 'changed during source selection'
+    assert not any(kind in ('audio', 'transcribe') for kind, _ in calls)
+    assert not list((flow.cache / 'backups').rglob('*.srt'))
 
 
 @pytest.fixture
