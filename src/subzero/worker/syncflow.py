@@ -101,8 +101,7 @@ class SyncFlow:
             from ..caption_rescue import CaptionRescue
             self.caption_rescue = CaptionRescue(
                 model=cfg.ocr_rescue_model, url=cfg.ollama_url,
-                cache_dir=self.cache / 'caption-rescue', model_digest=cfg.ocr_rescue_model_digest,
-                concurrency=getattr(cfg, 'ocr_rescue_concurrency', 2))
+                cache_dir=self.cache / 'caption-rescue', model_digest=cfg.ocr_rescue_model_digest)
 
     def installed(self, media, lang):
         video = Path(media.path)
