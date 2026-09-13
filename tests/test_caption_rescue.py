@@ -47,7 +47,7 @@ def test_rescue_cannot_send_frame_to_nonlocal_or_credentialed_endpoint(tmp_path,
 
 def test_rescue_reads_each_admitted_frame_once_and_preserves_real_changes(tmp_path, monkeypatch):
     client = rescue(tmp_path)
-    frames = [frame(tmp_path, n / 10) for n in range(3)]
+    frames = [frame(tmp_path, n / 10, content=f"caption pixels {n}".encode()) for n in range(3)]
     supplied = iter(["We need Sam.", "We need Pam.", "We need Sam."])
     calls = []
 
@@ -71,6 +71,99 @@ def test_rescue_reads_each_admitted_frame_once_and_preserves_real_changes(tmp_pa
     calls.clear()
     assert client.read_frames("video", frames)[.1] == "We need Pam."
     assert calls == []
+
+
+def test_rescue_clusters_consecutive_similar_frames_into_single_generation(tmp_path, monkeypatch):
+    client = rescue(tmp_path)
+    frames = [frame(tmp_path, n / 10) for n in range(5)]
+    calls = []
+
+    def request(path, payload=None):
+        calls.append((path, payload))
+        if path == "/api/tags":
+            return {"models": [{"name": "local-vision:9b", "digest": "a" * 64}]}
+        return {"response": "A single fourth key.", "done": True, "done_reason": "stop"}
+
+    monkeypatch.setattr(client, "_request", request)
+    readings = client.read_frames("video", frames)
+    assert len([path for path, _ in calls if path == "/api/generate"]) == 1
+    assert readings == {round(n / 10, 1): "A single fourth key." for n in range(5)}
+
+
+def test_rescue_high_confidence_apple_vision_passes_through_without_model(tmp_path, monkeypatch):
+    from subzero.caption_rescue import CaptionFrame
+
+    client = rescue(tmp_path)
+    frames = []
+    for n in range(4):
+        p = tmp_path / f"p_{n}.png"
+        p.write_bytes(b"high conf pixels")
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        evidence = {
+            "source_sha256": digest, "admitted": True,
+            "native_full": {
+                "acceptedText": "I will find the key",
+                "items": [{"text": "I will find the key", "confidence": 0.96}]
+            }
+        }
+        frames.append(CaptionFrame(round(n / 10, 1), p, digest, evidence))
+
+    monkeypatch.setattr(client, "_request", lambda *a, **kw: pytest.fail("LLM called on high confidence"))
+    readings = client.read_frames("video", frames)
+    assert readings == {round(n / 10, 1): "I will find the key" for n in range(4)}
+
+
+def test_rescue_moondream_extracts_quoted_subtitle(tmp_path, monkeypatch):
+    from subzero.caption_rescue import CaptionRescue
+
+    client = CaptionRescue(
+        model="moondream:latest", url="http://127.0.0.1:11434",
+        cache_dir=tmp_path / "moondream", model_digest="c" * 64
+    )
+    assert client.prompt == "Transcribe only the text shown in this image."
+    assert client.options["num_predict"] == 128
+
+    def request(path, payload=None):
+        if path == "/api/tags":
+            return {"models": [{"name": "moondream:latest", "digest": "c" * 64}]}
+        return {
+            "response": 'The image features a quote displayed in a horizontal line, with the text "A single fourth key will decide who earns the supplies" written in a larger font size.',
+            "done": True, "done_reason": "stop"
+        }
+
+    monkeypatch.setattr(client, "_request", request)
+    readings = client.read_frames("video", [frame(tmp_path, 1)])
+    assert readings == {1: "A single fourth key will decide who earns the supplies"}
+
+
+def test_rescue_concurrent_execution_dispatches_parallel_clusters(tmp_path, monkeypatch):
+    import time
+    from subzero.caption_rescue import CaptionRescue
+
+    client = CaptionRescue(
+        model="local-vision:9b", url="http://127.0.0.1:11434",
+        cache_dir=tmp_path / "concurrent", model_digest="a" * 64, concurrency=2
+    )
+    f1 = frame(tmp_path, 1.0, content=b"first cluster")
+    f2 = frame(tmp_path, 5.0, content=b"second cluster")
+    in_flight = 0
+    max_in_flight = 0
+
+    def request(path, payload=None):
+        nonlocal in_flight, max_in_flight
+        if path == "/api/tags":
+            return {"models": [{"name": "local-vision:9b", "digest": "a" * 64}]}
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.05)
+        in_flight -= 1
+        return {"response": "Cluster text.", "done": True, "done_reason": "stop"}
+
+    monkeypatch.setattr(client, "_request", request)
+    readings = client.read_frames("video", [f1, f2])
+    assert readings == {1.0: "Cluster text.", 5.0: "Cluster text."}
+    assert max_in_flight >= 2
+
 
 
 def test_rescue_does_not_recognize_native_rejected_credit_or_blank(tmp_path, monkeypatch):

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import ctypes
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import hashlib
 import http.client
 import ipaddress
@@ -57,6 +59,109 @@ def _image_bytes(path: Path) -> bytes:
             or opened.st_mtime_ns != after.st_mtime_ns or len(raw) > MAX_FRAME_BYTES):
         raise RuntimeError("Caption frame changed while reading")
     return raw
+
+
+def _image_similarity(raw1: bytes, raw2: bytes) -> float:
+    if raw1 == raw2:
+        return 1.0
+    if len(raw1) < 24 or len(raw2) < 24 or raw1[:8] != b"\x89PNG\r\n\x1a\n" or raw2[:8] != b"\x89PNG\r\n\x1a\n":
+        return 0.0
+    w1, h1 = int.from_bytes(raw1[16:20], "big"), int.from_bytes(raw1[20:24], "big")
+    w2, h2 = int.from_bytes(raw2[16:20], "big"), int.from_bytes(raw2[20:24], "big")
+    if (w1, h1) != (w2, h2):
+        return 0.0
+    idat1, idat2 = raw1.find(b"IDAT"), raw2.find(b"IDAT")
+    if idat1 < 0 or idat2 < 0:
+        return 0.0
+    l1, l2 = int.from_bytes(raw1[idat1 - 4:idat1], "big"), int.from_bytes(raw2[idat2 - 4:idat2], "big")
+    try:
+        d1 = zlib.decompress(raw1[idat1 + 4:idat1 + 4 + l1])
+        d2 = zlib.decompress(raw2[idat2 + 4:idat2 + 4 + l2])
+    except Exception:
+        return 0.0
+    sub1 = memoryview(d1)[::32]
+    sub2 = memoryview(d2)[::32]
+    count = min(len(sub1), len(sub2))
+    if count == 0:
+        return 0.0
+    diff = sum(abs(a - b) for a, b in zip(sub1[:count], sub2[:count]))
+    return 1.0 - (diff / (count * 255.0))
+
+
+def _frame_text(frame: CaptionFrame) -> str:
+    if not isinstance(frame.evidence, dict):
+        return ""
+    native = frame.evidence.get("native_full")
+    if not isinstance(native, dict):
+        return ""
+    text = native.get("acceptedText") or native.get("subtitleText") or ""
+    return text.strip()
+
+
+def _frames_similar(prev_item: tuple, curr_item: tuple) -> bool:
+    prev_frame, prev_raw, _, _ = prev_item
+    curr_frame, curr_raw, _, _ = curr_item
+    if prev_frame.image_digest == curr_frame.image_digest:
+        return True
+    text1, text2 = _frame_text(prev_frame), _frame_text(curr_frame)
+    if text1 and text2:
+        words1 = re.findall(r"[^\W_]+", text1.lower())
+        words2 = re.findall(r"[^\W_]+", text2.lower())
+        if words1 and words1 == words2:
+            return True
+        if len(text1) >= 6 and len(text2) >= 6:
+            if SequenceMatcher(None, text1.lower(), text2.lower()).ratio() >= 0.80:
+                return True
+    return _image_similarity(prev_raw, curr_raw) >= 0.84
+
+
+def _cluster_pending_frames(pending: list[tuple]) -> list[list[tuple]]:
+    if not pending:
+        return []
+    clusters = []
+    current = [pending[0]]
+    for item in pending[1:]:
+        prev = current[-1]
+        time_delta = item[0].timestamp - prev[0].timestamp
+        total_duration = item[0].timestamp - current[0][0].timestamp
+        if 0 <= time_delta <= 0.35 and total_duration <= 6.0 and _frames_similar(prev, item):
+            current.append(item)
+        else:
+            clusters.append(current)
+            current = [item]
+    clusters.append(current)
+    return clusters
+
+
+def _is_high_confidence_passthrough(cluster: list[tuple]) -> tuple[bool, str]:
+    if len(cluster) < 2:
+        return False, ""
+    texts = []
+    for frame, _, _, _ in cluster:
+        evidence = frame.evidence if isinstance(frame.evidence, dict) else {}
+        if not evidence.get("admitted"):
+            return False, ""
+        native = evidence.get("native_full")
+        if not isinstance(native, dict):
+            return False, ""
+        acc = native.get("acceptedText", "").strip()
+        if not acc or "_" in acc or len(acc) < 3:
+            return False, ""
+        items = native.get("items")
+        if not items or not isinstance(items, list):
+            return False, ""
+        for item in items:
+            if not isinstance(item, dict) or float(item.get("confidence", 0)) < 0.90:
+                return False, ""
+        texts.append(acc)
+    first_words = re.findall(r"[^\W_]+", texts[0].lower())
+    if not first_words:
+        return False, ""
+    for text in texts[1:]:
+        words = re.findall(r"[^\W_]+", text.lower())
+        if words != first_words:
+            return False, ""
+    return True, texts[0]
 
 
 def crop_caption_image(raw: bytes) -> bytes:
@@ -136,7 +241,8 @@ class CaptionFrame:
 
 
 class CaptionRescue:
-    def __init__(self, model: str, url: str, cache_dir: str | Path, model_digest: str):
+    def __init__(self, model: str, url: str, cache_dir: str | Path, model_digest: str, *,
+                 concurrency: int = 1, deduplicate: bool = True):
         try:
             endpoint = urlsplit(url)
             host = "127.0.0.1" if endpoint.hostname == "localhost" else endpoint.hostname
@@ -157,10 +263,22 @@ class CaptionRescue:
         self.model_digest = model_digest
         self.url = url.rstrip("/")
         self.cache_dir = Path(cache_dir)
+        self.concurrency = max(1, int(concurrency))
+        self.deduplicate = bool(deduplicate)
         self._host, self._port = host, port
+        self.prompt = (
+            "Transcribe only the text shown in this image."
+            if "moondream" in model.lower()
+            else CAPTION_PROMPT
+        )
+        self.options = (
+            {"temperature": 0, "num_ctx": 2048, "num_predict": 128}
+            if "moondream" in model.lower()
+            else CAPTION_OPTIONS
+        )
         self.identity = hashlib.sha256(_encoded({
-            "version": 1, "model": model, "digest": model_digest, "prompt": CAPTION_PROMPT,
-            "crop": CAPTION_CROP, "options": CAPTION_OPTIONS, "think": False, "keep_alive": "2m",
+            "version": 2, "model": model, "digest": model_digest, "prompt": self.prompt,
+            "crop": CAPTION_CROP, "options": self.options, "think": False, "keep_alive": "2m",
         })).hexdigest()
 
     def _request(self, path: str, payload=None) -> dict:
@@ -190,14 +308,20 @@ class CaptionRescue:
         ):
             raise RuntimeError("Caption recognition model digest differs from the configured installed model")
 
-    @staticmethod
-    def _text(body: dict) -> str:
+    def _text(self, body: dict) -> str:
         text = body.get("response")
         if (body.get("done") is not True or body.get("done_reason") != "stop"
                 or not isinstance(text, str) or len(text.encode("utf-8")) > 2048
                 or any(ord(character) < 32 and character not in "\n\r\t" for character in text)):
             raise RuntimeError("Local caption recognition returned an incomplete or invalid caption")
-        return text.strip()
+        text = text.strip()
+        if "moondream" in self.model.lower():
+            match = re.search(r'["“]([^"”\n]+)["”]', text)
+            if match:
+                return match.group(1).strip()
+            if "no text" in text.lower() or "no visible" in text.lower():
+                return ""
+        return text
 
     def _save_evidence(self, cache, frame, raw, response=None):
         cache._directory(create=True)
@@ -253,22 +377,75 @@ class CaptionRescue:
             if progress:
                 progress(len(frames), len(frames))
             return readings
-        completed = []
+
+        clusters = _cluster_pending_frames(pending) if self.deduplicate else [[item] for item in pending]
+
+        pending_llm_clusters = []
+        for cluster in clusters:
+            can_pass, pass_text = _is_high_confidence_passthrough(cluster)
+            if can_pass:
+                for frame, raw, cache, windows in cluster:
+                    proof = {
+                        "response": pass_text,
+                        "model": "apple-vision-passthrough",
+                        "done": True,
+                        "done_reason": "stop"
+                    }
+                    self._save_evidence(cache, frame, raw, proof)
+                    cache.write(windows, [(frame.timestamp, pass_text)], fps=1)
+                    readings[frame.timestamp] = pass_text
+                if progress:
+                    progress(len(readings), len(frames))
+            else:
+                pending_llm_clusters.append(cluster)
+
+        if not pending_llm_clusters:
+            if progress:
+                progress(len(frames), len(frames))
+            return readings
+
+        def execute_cluster(cluster):
+            key_idx = len(cluster) // 2
+            key_frame, key_raw, key_cache, key_windows = cluster[key_idx]
+            body = self._request("/api/generate", {
+                "model": self.model, "prompt": self.prompt,
+                "images": [base64.b64encode(key_raw).decode("ascii")],
+                "stream": False, "think": False, "keep_alive": "2m", "options": self.options,
+            })
+            self._save_evidence(key_cache, key_frame, key_raw, body)
+            for frame, raw, cache, windows in cluster:
+                if frame != key_frame:
+                    self._save_evidence(cache, frame, raw, body)
+            text = self._text(body)
+            return cluster, text, body
+
+        workers = min(self.concurrency, len(pending_llm_clusters))
+        completed_clusters = []
         with compute_phase("ollama", ollama_url=self.url):
             self._verify_model()
-            for frame, raw, cache, windows in pending:
-                body = self._request("/api/generate", {
-                    "model": self.model, "prompt": CAPTION_PROMPT,
-                    "images": [base64.b64encode(raw).decode("ascii")],
-                    "stream": False, "think": False, "keep_alive": "2m", "options": CAPTION_OPTIONS,
-                })
-                self._save_evidence(cache, frame, raw, body)
-                text = self._text(body)
-                completed.append((frame, raw, cache, windows, text, body))
-                if progress:
-                    progress(len(readings) + len(completed), len(frames))
+            if workers > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(execute_cluster, c) for c in pending_llm_clusters]
+                    for future in as_completed(futures):
+                        cluster, text, body = future.result()
+                        completed_clusters.append((cluster, text, body))
+                        if progress:
+                            done_count = len(readings) + sum(len(c) for c, _, _ in completed_clusters)
+                            progress(done_count, len(frames))
+            else:
+                for cluster in pending_llm_clusters:
+                    cluster, text, body = execute_cluster(cluster)
+                    completed_clusters.append((cluster, text, body))
+                    if progress:
+                        done_count = len(readings) + sum(len(c) for c, _, _ in completed_clusters)
+                        progress(done_count, len(frames))
             self._verify_model()
-        for frame, raw, cache, windows, text, body in completed:
-            cache.write(windows, [(frame.timestamp, text)], fps=1)
-            readings[frame.timestamp] = text
+
+        for cluster, text, body in completed_clusters:
+            for frame, raw, cache, windows in cluster:
+                cache.write(windows, [(frame.timestamp, text)], fps=1)
+                readings[frame.timestamp] = text
+
         return readings
+
+
