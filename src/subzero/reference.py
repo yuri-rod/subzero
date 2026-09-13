@@ -40,6 +40,20 @@ def _run(argv, **kwargs):
     return proc
 
 
+def _is_audio_confirmed(report, min_confident=15, max_bad=1, max_bad_offset=5.0):
+    if report.status == 'pass':
+        return True
+    conf = [w for w in report.windows if w.confident]
+    if len(conf) < min_confident:
+        return False
+    bad = [w for w in conf if abs(w.offset) > 1.0]
+    if len(bad) > max_bad or any(abs(w.offset) > max_bad_offset for w in bad):
+        return False
+    max_c = max(w.center for w in conf)
+    thirds = {min(2, int(w.center / max_c * 3)) for w in conf}
+    return len(thirds) >= 3
+
+
 def build_reference(video, cache_dir):
     import numpy as np
     from faster_whisper.vad import VadOptions, get_speech_timestamps
@@ -90,12 +104,7 @@ def build_reference(video, cache_dir):
         if len(track) < 20:
             continue
         audio_check = evaluate(track,speech,tolerance=1.0,search_seconds=20)
-        is_pass = audio_check.status == 'pass'
-        if not is_pass and audio_check.status == 'inconclusive' and audio_check.reason == 'Isolated timing mismatch needs review':
-            conf = [w for w in audio_check.windows if w.confident]
-            if len(conf) >= 15 and all(abs(w.offset) <= 5.0 for w in conf):
-                is_pass = True
-        if is_pass:
+        if _is_audio_confirmed(audio_check):
             reference.update(text=text,spans=track,subtitle_index=stream['index'],
                              language=stream.get('tags',{}).get('language','und'))
             break
@@ -126,18 +135,12 @@ def verify_text(text, reference, phase=0):
     search_seconds = 300 if has_spans else 20
     tolerance = 0.5 if has_spans else 1.0
     report = evaluate(candidate, track, tolerance=tolerance, search_seconds=search_seconds, phase=phase)
-    if report.status == 'inconclusive' and report.reason == 'Isolated timing mismatch needs review':
-        conf = [w for w in report.windows if w.confident]
-        if len(conf) >= 15 and all(abs(w.offset) <= 5.0 for w in conf):
-            report = Report('pass', 'Timing agrees across the dialogue span', report.windows)
+    if not has_spans and _is_audio_confirmed(report):
+        report = Report('pass', 'Timing agrees across the dialogue span', report.windows)
     if report.status != 'pass':
         return report
     if has_spans:
         audio = evaluate(candidate, speech, tolerance=1.0, search_seconds=20, phase=phase)
-        if audio.status == 'inconclusive' and audio.reason == 'Isolated timing mismatch needs review':
-            conf = [w for w in audio.windows if w.confident]
-            if len(conf) >= 15 and all(abs(w.offset) <= 5.0 for w in conf):
-                audio = Report('pass', 'Audio confirmed with isolated outlier tolerated', audio.windows)
-        if audio.status != 'pass':
+        if not _is_audio_confirmed(audio):
             return Report('inconclusive', 'Audio evidence does not confirm the subtitle', report.windows)
     return report
