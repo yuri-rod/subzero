@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import urllib.error
@@ -81,6 +82,65 @@ def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, po
         if env_path:
             contribute_argv.extend(["--env", str(env_path)])
         return contribute_main(contribute_argv)
+    if cmd in ("jobs", "--jobs"):
+        code, body = _request("/jobs", method="GET", token=token, port=effective_port)
+        if code == 200:
+            try:
+                data = json.loads(body)
+                jobs = data.get("jobs", [])
+                dl = data.get("downloadsToday", 0)
+                budget = data.get("budget", 0)
+                print(f"subzero worker: {len(jobs)} jobs (downloads today: {dl}/{budget})")
+                for j in jobs:
+                    phase = f" [{j['phase']}]" if j.get("phase") else ""
+                    print(f"  {j['id'][:8]} {j['kind']:<10} {j['targetLang']:<6} {j['state']:<8} {j['percent']:>3}%{phase}")
+            except Exception:
+                print(body)
+            return 0
+        print(f"subzero worker: failed to fetch jobs (code {code}): {body}", file=sys.stderr)
+        return 1
+    if cmd in ("sweep", "--sweep"):
+        code, body = _request("/sweep", method="POST", token=token, port=effective_port)
+        if code == 200:
+            try:
+                data = json.loads(body)
+                print(f"subzero worker: sweep enqueued {data.get('enqueued', 0)} jobs")
+            except Exception:
+                print(body)
+            return 0
+        print(f"subzero worker: failed to trigger sweep (code {code}): {body}", file=sys.stderr)
+        return 1
+    if cmd in ("coverage", "--coverage"):
+        code, body = _request("/coverage", method="GET", token=token, port=effective_port)
+        if code == 200:
+            try:
+                data = json.loads(body)
+                missing = data.get("missing", [])
+                total = data.get("total", 0)
+                print(f"subzero worker: coverage for {data.get('lang', 'pt-BR')}: {total - len(missing)}/{total} ({len(missing)} missing)")
+                for m in missing[:20]:
+                    print(f"  missing: {m.get('name') or m.get('itemId')}")
+                if len(missing) > 20:
+                    print(f"  ... and {len(missing) - 20} more")
+            except Exception:
+                print(body)
+            return 0
+        print(f"subzero worker: failed to fetch coverage (code {code}): {body}", file=sys.stderr)
+        return 1
+    if cmd in ("audits", "--audits"):
+        code, body = _request("/sync/audits", method="GET", token=token, port=effective_port)
+        if code == 200:
+            try:
+                data = json.loads(body)
+                audits = data.get("audits", [])
+                print(f"subzero worker: {len(audits)} recent audits (audit_only={data.get('auditOnly', False)})")
+                for a in audits[:20]:
+                    print(f"  {a.get('status', ''):<8} {a.get('lang', ''):<6} {Path(a.get('video', '')).name}")
+            except Exception:
+                print(body)
+            return 0
+        print(f"subzero worker: failed to fetch audits (code {code}): {body}", file=sys.stderr)
+        return 1
 
     try:
         cfg = Config.load(env)

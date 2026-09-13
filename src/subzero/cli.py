@@ -624,7 +624,9 @@ def build_parser() -> argparse.ArgumentParser:
     menu.set_defaults(func=cmd_menu)
 
     worker = sub.add_parser("worker", help="subtitle worker service for Jellyfin and YUCAST")
-    worker.add_argument("action", nargs="?", default="serve", choices=["serve", "start", "stop", "shutdown", "status", "contribute"], help="action to perform (default: serve)")
+    worker.add_argument("action", nargs="?", default="serve",
+                        choices=["serve", "start", "stop", "shutdown", "status", "contribute", "jobs", "sweep", "coverage", "audits"],
+                        help="action to perform (default: serve)")
     worker.add_argument("--env", "-e", default=None, metavar="FILE", help="path to .env configuration file")
     worker.add_argument("--port", "-p", type=int, default=None, metavar="PORT", help="HTTP port (default 8787)")
     worker.set_defaults(func=cmd_worker)

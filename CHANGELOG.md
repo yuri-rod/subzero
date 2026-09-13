@@ -5,11 +5,17 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [1.12.1] - 2026-09-13
 
+### Added
+
+- Add `subzero worker jobs`, `sweep`, `coverage`, and `audits` CLI commands to inspect daemon state, library coverage, recent audits, and trigger sweeps.
+- Route worker execution cleanly between `SyncFlow` workflows and core `embedded`, `opensubtitles`, `whisper`, and `translate` handlers.
+
 ### Fixed
 
 - Remove sound descriptions spanning multiple lines before forming translation units, so sound-only cues cannot consume dialogue timing anchors.
 - Reconcile cropped fragments of a single caption row without duplicating dialogue or dropping an observed censorship mark. Invalidate older processed OCR scans and source caches.
 - Use the same subtitle-region admission checks for coarse and dense frame replay. Keep conflicting evidence rejected and report its exact timestamp.
+
 
 ## [1.12.0] - 2026-09-13
 

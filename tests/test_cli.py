@@ -68,6 +68,16 @@ def test_worker_contribute_action_parses():
     assert args.port == 9000
 
 
+@pytest.mark.parametrize("action", ["jobs", "sweep", "coverage", "audits"])
+def test_worker_query_actions_parse(action):
+    from subzero.cli import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["worker", action])
+    assert args.command == "worker"
+    assert args.action == action
+
+
+
 def test_fill_gaps_cli_parsing_and_alias():
     from subzero.cli import build_parser
     parser = build_parser()

@@ -104,3 +104,85 @@ def test_explicit_config_disappearing_before_read_stops_worker_action(config_pat
     monkeypatch.setattr(worker_main, "_request", unexpected_request)
     assert worker_main.run_worker_cmd("status", env_file=explicit) == 1
     assert repr(str(explicit)) in capsys.readouterr().err
+
+
+def test_run_worker_cmd_jobs(monkeypatch, capsys):
+    import json
+    calls = []
+    fake_jobs_data = {
+        "jobs": [
+            {"id": "abc12345def", "kind": "repair", "targetLang": "pt-BR", "state": "running", "percent": 50, "phase": "scanning"}
+        ],
+        "downloadsToday": 3,
+        "budget": 15,
+    }
+
+    def fake_request(path, method="GET", token="", port=8787):
+        calls.append((path, method, token, port))
+        return 200, json.dumps(fake_jobs_data)
+
+    monkeypatch.setattr(worker_main, "_request", fake_request)
+    assert worker_main.run_worker_cmd("jobs", port=8787) == 0
+    assert calls[0][0] == "/jobs"
+    assert calls[0][1] == "GET"
+    assert calls[0][3] == 8787
+    out = capsys.readouterr().out
+    assert "1 jobs (downloads today: 3/15)" in out
+    assert "abc12345 repair     pt-BR  running   50% [scanning]" in out
+
+    monkeypatch.setattr(worker_main, "_request", lambda *a, **kw: (500, "server error"))
+    assert worker_main.run_worker_cmd("jobs") == 1
+    assert "failed to fetch jobs (code 500)" in capsys.readouterr().err
+
+
+def test_run_worker_cmd_sweep(monkeypatch, capsys):
+    import json
+    monkeypatch.setattr(worker_main, "_request", lambda path, method="GET", token="", port=8787: (
+        200, json.dumps({"enqueued": 4})
+    ))
+    assert worker_main.run_worker_cmd("sweep") == 0
+    assert "sweep enqueued 4 jobs" in capsys.readouterr().out
+
+    monkeypatch.setattr(worker_main, "_request", lambda *a, **kw: (401, "unauthorized"))
+    assert worker_main.run_worker_cmd("sweep") == 1
+    assert "failed to trigger sweep (code 401)" in capsys.readouterr().err
+
+
+def test_run_worker_cmd_coverage(monkeypatch, capsys):
+    import json
+    data = {
+        "lang": "pt-BR",
+        "total": 10,
+        "missing": [{"itemId": "item1", "name": "Survivor S47E01"}]
+    }
+    monkeypatch.setattr(worker_main, "_request", lambda path, method="GET", token="", port=8787: (
+        200, json.dumps(data)
+    ))
+    assert worker_main.run_worker_cmd("coverage") == 0
+    out = capsys.readouterr().out
+    assert "coverage for pt-BR: 9/10 (1 missing)" in out
+    assert "missing: Survivor S47E01" in out
+
+    monkeypatch.setattr(worker_main, "_request", lambda *a, **kw: (502, "bad gateway"))
+    assert worker_main.run_worker_cmd("coverage") == 1
+    assert "failed to fetch coverage (code 502)" in capsys.readouterr().err
+
+
+def test_run_worker_cmd_audits(monkeypatch, capsys):
+    import json
+    data = {
+        "auditOnly": False,
+        "audits": [{"status": "pass", "lang": "pt-BR", "video": "/media/episode.mkv"}]
+    }
+    monkeypatch.setattr(worker_main, "_request", lambda path, method="GET", token="", port=8787: (
+        200, json.dumps(data)
+    ))
+    assert worker_main.run_worker_cmd("audits") == 0
+    out = capsys.readouterr().out
+    assert "1 recent audits (audit_only=False)" in out
+    assert "pass     pt-BR  episode.mkv" in out
+
+    monkeypatch.setattr(worker_main, "_request", lambda *a, **kw: (404, "not found"))
+    assert worker_main.run_worker_cmd("audits") == 1
+    assert "failed to fetch audits (code 404)" in capsys.readouterr().err
+

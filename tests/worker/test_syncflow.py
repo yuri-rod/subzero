@@ -1307,6 +1307,32 @@ def test_repair_omits_pure_sound_cues_before_ocr_and_preserves_dialogue(repair_f
     assert spans(target.read_text()) == spans(complete)
 
 
+def test_repair_omits_multiline_sound_cues_before_ocr_and_preserves_dialogue(repair_flow, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    dialogue_source = reference['text']
+    missing = parse(complete)[10]
+    sound = [
+        Cue(0, missing.start, missing.end, '[dramatic orchestral music\nplaying faintly]'),
+        Cue(0, 2, 4, '(waves crashing\non the distant shore)'),
+    ]
+    reference['text'] = dump(sorted(parse(dialogue_source) + sound, key=lambda cue: cue.start))
+    scanned = []
+
+    def recover(video, subtitle_path, **kwargs):
+        scanned.append(Path(subtitle_path).read_text())
+        Path(kwargs['output']).write_text(complete)
+        return SimpleNamespace(cues_recovered=1)
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', recover)
+    job = run(flow, jobs, 'repair')
+    assert job.state == 'done'
+    assert scanned == [dialogue_source]
+    assert all('SAM:' in cue.text for cue in flow.service.ollama.source_cues)
+    assert spans(target.read_text()) == spans(complete)
+
+
+
 def test_repair_audit_only_never_regenerates(repair_flow):
     flow, jobs, media, target, reference, complete, calls = repair_flow
     flow.cfg.sync_audit_only = True

@@ -48,8 +48,10 @@ class Service:
         return bool(self.bare_lang) and same_language(lang, self.bare_lang)
 
     def run(self, job: Job, progress: Progress) -> str:
-        if self.sync_flow is not None:
-            return self.sync_flow.run(job,progress)
+        if self.sync_flow is not None and job.kind in (
+            "audit", "refetch", "resync", "embedded_translate", "rebuild", "recover_gaps", "repair"
+        ):
+            return self.sync_flow.run(job, progress)
         media = self.jellyfin.media(job.item_id)
         handler = getattr(self, f"_{job.kind}")
         return handler(media, job, progress)

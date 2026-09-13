@@ -209,3 +209,30 @@ def test_pob_and_pb_recognized_as_portuguese():
     assert same_language("pb", "pt-BR")
     assert same_language("pob", "por")
     assert same_language("pt-BR", "pob")
+
+
+def test_service_run_routes_syncflow_kinds_and_core_kinds(service):
+    dispatched = []
+
+    class FakeSyncFlow:
+        def run(self, j, progress):
+            dispatched.append(("sync_flow", j.kind))
+            return f"sync_flow_{j.kind}"
+
+    service.sync_flow = FakeSyncFlow()
+    service._whisper = lambda media, j, progress: dispatched.append(("service", j.kind)) or "service_whisper"
+    service._translate = lambda media, j, progress: dispatched.append(("service", j.kind)) or "service_translate"
+
+    for kind in ("repair", "rebuild", "audit", "resync", "refetch", "recover_gaps", "embedded_translate"):
+        res = service.run(job(kind), lambda p, n: None)
+        assert res == f"sync_flow_{kind}"
+        assert dispatched[-1] == ("sync_flow", kind)
+
+    res_whisper = service.run(job("whisper"), lambda p, n: None)
+    assert res_whisper == "service_whisper"
+    assert dispatched[-1] == ("service", "whisper")
+
+    res_trans = service.run(job("translate"), lambda p, n: None)
+    assert res_trans == "service_translate"
+    assert dispatched[-1] == ("service", "translate")
+
