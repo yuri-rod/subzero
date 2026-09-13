@@ -28,7 +28,13 @@ def model_archive(path, extra=None):
             'from_code': 'en', 'to_code': 'pb', 'package_version': '1.9'}))
         archive.writestr('translate-en_pb-1_9/model/model.bin', b'model fixture')
         if extra is not None:
-            archive.writestr(*extra)
+            name, content = extra
+            if isinstance(name, str):
+                member = zipfile.ZipInfo()
+                member.filename = name
+            else:
+                member = name
+            archive.writestr(member, content)
     return path
 
 
@@ -58,7 +64,8 @@ def test_copy_rejects_symlink_source(installer, tmp_path):
 
 
 @pytest.mark.parametrize('name', ['../outside', '/outside', 'another-package/model.bin',
-                                  'translate-en_pb-1_9/../outside', 'translate-en_pb-1_9/model\\escape'])
+                                  'translate-en_pb-1_9/../outside', 'translate-en_pb-1_9/model\\escape',
+                                  'translate-en_pb-1_9/extra\x00name'])
 def test_package_rejects_unsafe_members_before_extraction(installer, tmp_path, name):
     archive = model_archive(tmp_path / 'model.zip', (name, b'bad'))
     destination = tmp_path / 'packages'
@@ -66,6 +73,18 @@ def test_package_rejects_unsafe_members_before_extraction(installer, tmp_path, n
         installer.extract_package(archive, destination)
     assert not destination.exists()
     assert not (tmp_path / 'outside').exists()
+
+
+def test_package_rejects_raw_backslash_name_after_windows_normalization(installer, tmp_path, monkeypatch):
+    archive = model_archive(tmp_path / 'model.zip', ('translate-en_pb-1_9/model\\escape', b'bad'))
+    monkeypatch.setattr(zipfile.os, 'sep', '\\')
+    with zipfile.ZipFile(archive) as package:
+        member = package.infolist()[-1]
+        assert '\\' not in member.filename
+        assert '\\' in member.orig_filename
+    with pytest.raises(ValueError, match='member'):
+        installer.extract_package(archive, tmp_path / 'packages')
+    assert not (tmp_path / 'packages').exists()
 
 
 def test_package_rejects_symlink_member_before_extraction(installer, tmp_path):
