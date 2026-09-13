@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an `applefm` translation provider using Apple Foundation Models through a local OpenAI-style server (`fm serve`). Refused or echoed subtitle units fall back to LibreTranslate per unit when `TRANSLATION_FALLBACK=libretranslate` is set.
 - Add an mlx-whisper transcription backend on Apple Silicon, selected with `WHISPER_DEVICE=mlx`. Same turbo weights as the CPU path, roughly 3x faster with equal-or-better text; stdout is kept JSON-clean for the isolated child and the sampler is seeded so runs are reproducible.
 
+### Changed
+
+- Drop burned-in captions under four spoken words from the rescue path instead of refining them. They cost about one VLM call in six while adding mostly exclamations; censor marks always survive the cut.
+
 ### Fixed
 
 - Keep caption rescue clustering from merging distinct captions. Only consecutive frames where Apple Vision reads the same words with the same censorship marks share one model call, so caption transitions, name and number changes, and dropped censor bars always get their own reading. Invalidate older rescue caches that may hold propagated readings.
