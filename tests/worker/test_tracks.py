@@ -833,3 +833,48 @@ def test_worker_translation_does_not_cut_sentence_at_twentieth_anchor():
     client = Recorder()
     translate(cues, 'pt-BR', client, lambda *args: None, source_lang='en')
     assert any(cues[19] in block and cues[20] in block for block in client.blocks)
+
+
+def test_worker_qwen_joins_complete_units_without_context_injection(monkeypatch):
+    import json
+    from subzero.translate import _ollama_payload
+    monkeypatch.setattr('subzero.worker.tracks.BLOCK', 1)
+    requests = []
+    generated = 'We found the next hidden key.'
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            requests.append(kwargs['json'])
+            return type('R', (), {'status_code': 200, 'json': lambda self: {
+                'response': json.dumps([{'id': 1, 'text': generated}]),
+                'done': True, 'done_reason': 'stop'}})()
+
+    cues = [Cue(20, 30, 31, 'ALEX: I found'), Cue(21, 31.1, 32, 'ALEX: the hidden key.'),
+            Cue(22, 32.1, 33, 'BLAIR: This is'), Cue(23, 33.1, 34, 'our next clue.')]
+    context = {'title': 'Unrelated programme', 'previous_cues': ['Unused earlier dialogue.']}
+    client = Ollama('http://localhost', 'qwen3.5:9b', http=HTTP())
+    translated = translate(cues, 'pt-BR', client, lambda *args: None, source_lang='en', context=context)
+    joined = [Cue(20, 30, 32, 'ALEX: I found\nthe hidden key.'),
+              Cue(22, 32.1, 34, 'BLAIR: This is\nour next clue.')]
+    assert requests == [_ollama_payload([cue], 'pt-BR', 'qwen3.5:9b', '2m', 4096, 2048,
+                                        source_lang='en') for cue in joined]
+    assert all('Unused earlier dialogue.' not in req['prompt'] for req in requests)
+    assert [word for cue in translated for word in cue.text.split()] == generated.split() * 2
+    assert [(cue.index, cue.start, cue.end) for cue in translated] == [(cue.index, cue.start, cue.end) for cue in cues]
+
+
+@pytest.mark.parametrize('response', [
+    {'response': 'Unstructured native text.', 'done': True, 'done_reason': 'stop'},
+    {'response': '[{"id": 2, "text": "A complete response."}]', 'done': True, 'done_reason': 'stop'},
+    {'response': '[{"id": 1, "text": "A complete response."}]', 'done': True, 'done_reason': 'length'},
+    {'response': '[{"id": 1, "text": "One"}]', 'done': True, 'done_reason': 'stop'},
+])
+def test_worker_qwen_joining_retains_json_completion_and_word_count_guards(response):
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type('R', (), {'status_code': 200, 'json': lambda self: response})()
+
+    cues = [Cue(1, 1, 2, 'I found'), Cue(2, 2.1, 3, 'the key.')]
+    client = Ollama('http://localhost', 'qwen3.5:9b', http=HTTP())
+    with pytest.raises(RuntimeError, match='preserv|fewer words'):
+        translate(cues, 'pt-BR', client, lambda *args: None, source_lang='en')
