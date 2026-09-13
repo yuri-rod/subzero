@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .caption_quality import validate_caption_readings
+from .caption_rescue import CAPTION_CROP, CaptionFrame, CaptionRescue, _image_bytes, crop_caption_image
 from .caption_scan_cache import CaptionScanCache
 from .compute import compute_lease_fd, compute_phase
 from .convert import Cue, dump_srt, parse_srt
@@ -30,7 +31,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 6
+CAPTION_SCAN_VERSION = 7
 
 
 @dataclass
@@ -638,6 +639,7 @@ def _scan_caption_frames(
     center_tolerance: float | None = 0.12,
     *,
     retry_all: bool = False,
+    frame_sink: Callable[[Path, float, dict, dict | None], None] | None = None,
 ) -> list[tuple[float, str]]:
     if not gaps:
         return []
@@ -682,6 +684,7 @@ def _scan_caption_frames(
                 ordered = [by_file[frame.name] for frame in frames]
                 selected = ([index for index, frame in enumerate(ordered) if not _caption_title_card(frame)]
                             if retry_all else caption_retry_indices(ordered, timestamps, fps))
+                retried = {}
                 if selected:
                     retry_frames = [frames[index] for index in selected]
                     retried = _vision_frames(binary, retry_frames, caption_region=True)
@@ -699,7 +702,11 @@ def _scan_caption_frames(
                                  and 0 < timestamps[position + 1] - timestamp <= 1.5 / fps else None)
                     text = (readings[position] if readings is not None else
                             caption_text(by_file[frame.name], center_tolerance, previous=previous, following=following))
-                    detections.append((g_start + timestamp, clean_ocr_text(text, ignore_patterns)))
+                    text = clean_ocr_text(text, ignore_patterns)
+                    detections.append((g_start + timestamp, text))
+                    if frame_sink is not None:
+                        frame_sink(frame, g_start + timestamp, {**by_file[frame.name], "acceptedText": text},
+                                   retried.get(frame.name))
                 recovered.extend(detections)
             except subprocess.TimeoutExpired as err:
                 raise RuntimeError(f"{err.cmd[0]} timed out during caption extraction") from err
@@ -736,7 +743,8 @@ def extract_and_ocr_gaps(
 
 def extract_all_captions(video: str | Path, duration: float, *,
                          progress: Callable[[int, int], None] | None = None,
-                         cache_dir: str | Path | None = None) -> list[Cue]:
+                         cache_dir: str | Path | None = None,
+                         caption_rescue: CaptionRescue | None = None) -> list[Cue]:
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Caption scanning requires a positive video duration")
     detections = []
@@ -753,7 +761,8 @@ def extract_all_captions(video: str | Path, duration: float, *,
         detections.extend((timestamp, text) for timestamp, text in frames if start <= timestamp < end)
         if progress:
             progress(int(50 * (index + 1) / len(starts)), 100)
-    return refine_caption_timing(video, detections, duration, progress=progress, scan_cache=cache)
+    options = {"caption_rescue": caption_rescue} if caption_rescue is not None else {}
+    return refine_caption_timing(video, detections, duration, progress=progress, scan_cache=cache, **options)
 
 
 def caption_transition_windows(detections: list[tuple[float, str]], duration: float) -> list[tuple[float, float]]:
@@ -811,7 +820,8 @@ def _normalize_english_caption(text: str) -> str:
 
 def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]], duration: float, *,
                           progress: Callable[[int, int], None] | None = None,
-                          scan_cache: CaptionScanCache | None = None) -> list[Cue]:
+                          scan_cache: CaptionScanCache | None = None,
+                          caption_rescue: CaptionRescue | None = None) -> list[Cue]:
     windows = caption_transition_windows(detections, duration)
     if not windows:
         if progress:
@@ -820,7 +830,8 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
 
     def dense_progress(done: int, total: int):
         if progress:
-            progress(50 + int(50 * done / max(1, total)), 100)
+            extent = 40 if caption_rescue is not None else 50
+            progress(50 + int(extent * done / max(1, total)), 100)
 
     if scan_cache is None:
         dense = _scan_caption_frames(video, windows, fps=10, retry_all=True, progress=dense_progress)
@@ -833,6 +844,139 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
                 scan_cache.write([window], frames, fps=10, retry_all=True)
             dense.extend(frames)
             dense_progress(index, len(windows))
+    losses = [] if caption_rescue is not None else None
+    cues = _interpret_caption_frames(detections, dense, windows, duration, losses=losses)
+    if caption_rescue is not None:
+        intervals = _caption_rescue_windows(detections, cues, losses, duration)
+        if intervals:
+            options = {"progress": lambda done, total: progress(90 + int(9 * done / max(1, total)), 100)} if progress else {}
+            detections, dense = _rescue_caption_frames(video, detections, dense, duration, windows,
+                                                       intervals, caption_rescue, **options)
+            cues = _interpret_caption_frames(detections, dense, windows, duration)
+        validate_caption_readings(cues)
+        if progress:
+            progress(100, 100)
+    return cues
+
+
+def _caption_rescue_windows(detections, cues, losses, duration):
+    intervals = list(losses)
+    for start in range(len(cues)):
+        for end in range(start + 3, min(start + 8, len(cues)) + 1):
+            try:
+                validate_caption_readings(cues[start:end])
+            except RuntimeError:
+                first = start
+                while first + 3 < end:
+                    try:
+                        validate_caption_readings(cues[first + 1:end])
+                    except RuntimeError:
+                        first += 1
+                    else:
+                        break
+                stamp = TIME.search(f"{cues[end - 1].start} --> {cues[end - 1].end}")
+                intervals.append((cue_start_seconds(cues[first]), _to_seconds(*stamp.groups()[4:])))
+                break
+    if not intervals:
+        return []
+    runs = cluster_ocr_detections(detections, min_duration=0, max_gap=.75, sample_duration=.5)
+    expanded = []
+    for left, right in intervals:
+        for cue in runs:
+            stamp = TIME.search(f"{cue.start} --> {cue.end}")
+            start, end = _to_seconds(*stamp.groups()[:4]), _to_seconds(*stamp.groups()[4:])
+            if start < right and end > left:
+                left, right = min(left, start), max(right, end)
+        expanded.append((max(0, left - .75), min(duration, right + .75)))
+    merged = []
+    for left, right in sorted(expanded):
+        if merged and left <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+        else:
+            merged.append((left, right))
+    return merged
+
+
+def _capture_caption_frame(source: Path, timestamp: float, full: dict, roi: dict | None,
+                           directory: Path) -> CaptionFrame:
+    raw = _image_bytes(source)
+    source_digest = hashlib.sha256(raw).hexdigest()
+    admitted = not _caption_title_card(full) and bool(
+        _caption_regions(full, .12, max_height=.11)
+        or (roi is not None and _caption_regions(roi, .12, max_height=.11)))
+    prefix = f"{timestamp:.6f}-{source_digest[:16]}"
+    image = directory / f"{prefix}{source.suffix}"
+    image.write_bytes(raw)
+    if admitted:
+        image = directory / f"{prefix}.png"
+        image.write_bytes(crop_caption_image(raw))
+    image_digest = hashlib.sha256(_image_bytes(image)).hexdigest()
+    evidence = {"source_sha256": source_digest, "admitted": admitted, "admission_version": CAPTION_SCAN_VERSION,
+                "crop": CAPTION_CROP if admitted else None,
+                "native_full": {key: value for key, value in full.items() if key != "file"},
+                "native_roi": {key: value for key, value in roi.items() if key != "file"} if roi else None}
+    return CaptionFrame(round(timestamp, 3), image, image_digest, evidence)
+
+
+def _rescue_caption_frames(video, coarse, dense, duration, dense_windows, intervals, client, *, progress=None):
+    selected = {round(timestamp, 3) for timestamp, _ in coarse + dense
+                if any(start <= timestamp < end for start, end in intervals)}
+    before = fingerprint(video)
+    with tempfile.TemporaryDirectory(prefix="subzero_caption_rescue_") as temporary:
+        captured = {}
+
+        def capture(source, timestamp, full, roi):
+            key = round(timestamp, 3)
+            if key not in selected:
+                return
+            frame = _capture_caption_frame(source, timestamp, full, roi, Path(temporary))
+            previous = captured.get(key)
+            if previous is not None:
+                if (previous.image_digest != frame.image_digest
+                        or previous.evidence["admitted"] != frame.evidence["admitted"]):
+                    raise RuntimeError("Caption replay produced different evidence at one exact frame timestamp")
+            else:
+                captured[key] = frame
+
+        requests = []
+        for start in range(0, math.ceil(duration), 120):
+            end = min(duration, start + 120)
+            if any(left < end and right > start for left, right in intervals):
+                requests.append(((max(0, start - 1), min(duration, end + 1)), 2))
+        for start, end in dense_windows:
+            if any(left < end and right > start for left, right in intervals):
+                requests.append(((start, end), 10))
+        total = len(requests) + len(selected)
+        for index, (window, fps) in enumerate(requests):
+            if progress:
+                progress(index, total)
+            _scan_caption_frames(video, [window], fps=fps, retry_all=fps == 10, frame_sink=capture)
+        if progress:
+            progress(len(requests), total)
+        if set(captured) != selected:
+            raise RuntimeError("Caption replay did not capture every exact input frame")
+        if fingerprint(video) != before:
+            raise RuntimeError("Video changed during caption frame capture")
+        options = {"progress": lambda done, count: progress(len(requests) + done, total)} if progress else {}
+        readings = client.read_frames(before, [captured[key] for key in sorted(captured)], **options)
+        if set(readings) != selected or not all(isinstance(text, str) for text in readings.values()):
+            raise RuntimeError("Caption rescue did not return every exact input frame")
+        replacements = {key: clean_ocr_text(readings[key]) if frame.evidence["admitted"] else ""
+                        for key, frame in captured.items()}
+        for cue in cluster_ocr_detections(coarse, min_duration=0, max_gap=.75, sample_duration=.5):
+            stamp = TIME.search(f"{cue.start} --> {cue.end}")
+            start, end = _to_seconds(*stamp.groups()[:4]), _to_seconds(*stamp.groups()[4:])
+            support = [round(timestamp, 3) for timestamp, text in coarse if start <= timestamp < end
+                       and _caption_words(text) == _caption_words(cue.text)]
+            if len(support) >= 2 and any(key in replacements and not replacements[key] for key in support):
+                raise RuntimeError(f"Caption rescue lost a confirmed coarse caption near {start:.3f}s")
+        if fingerprint(video) != before:
+            raise RuntimeError("Video changed during caption recognition")
+        return ([(timestamp, replacements.get(round(timestamp, 3), text)) for timestamp, text in coarse],
+                [(timestamp, replacements.get(round(timestamp, 3), text)) for timestamp, text in dense])
+
+
+def _interpret_caption_frames(detections, dense, windows, duration, *, losses=None):
     detections = [(timestamp, _normalize_english_caption(text)) for timestamp, text in detections]
     dense = _stabilize_dense_readings([(timestamp, _normalize_english_caption(text)) for timestamp, text in dense])
     anchors = []
@@ -883,7 +1027,9 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
         if len(support) >= 2 and not any(start - 0.75 <= timestamp <= end + 0.75
                                         and _caption_words(text) == _caption_words(caption)
                                         for timestamp, text in combined.items()):
-            raise RuntimeError(f"Dense caption verification lost a confirmed caption near {start:.3f}s")
+            if losses is None:
+                raise RuntimeError(f"Dense caption verification lost a confirmed caption near {start:.3f}s")
+            losses.append((start, end))
     combined[duration] = ""
     edges = []
     previous = None
@@ -940,6 +1086,8 @@ def fill_subtitle_gaps(
     progress: Callable[[int, int], None] | None = None,
     all_captions: bool = False,
     caption_cache_dir: str | Path | None = None,
+    caption_rescue: CaptionRescue | None = None,
+    translation_client=None,
 ) -> GapReport:
     sub_p = Path(subtitle_path)
     if sub_p.is_symlink() or not sub_p.is_file():
@@ -964,6 +1112,10 @@ def fill_subtitle_gaps(
         return GapReport(total_gaps=0, speech_seconds=0.0, cues_recovered=0, cues=[])
 
     scan_options = {"cache_dir": caption_cache_dir} if caption_cache_dir is not None else {}
+    if caption_rescue is not None:
+        if not all_captions:
+            raise ValueError("Caption rescue requires whole-video caption recovery")
+        scan_options["caption_rescue"] = caption_rescue
     recovered = (extract_all_captions(video, duration, progress=progress, **scan_options) if all_captions else
                  extract_and_ocr_gaps(video, gaps, progress=progress))
     if not recovered:
@@ -972,7 +1124,9 @@ def fill_subtitle_gaps(
     to_merge = recovered
     if target_lang and target_lang.lower() not in ("en", "eng"):
         validate_caption_readings(recovered)
-        if provider.lower() in ("openai", "openrouter", "groq", "deepseek"):
+        if translation_client is not None:
+            client = translation_client
+        elif provider.lower() in ("openai", "openrouter", "groq", "deepseek"):
             base_url = url or (
                 "https://openrouter.ai/api/v1" if provider.lower() == "openrouter" else
                 "https://api.groq.com/openai/v1" if provider.lower() == "groq" else
