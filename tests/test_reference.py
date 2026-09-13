@@ -80,3 +80,31 @@ def test_reference_closes_cache_file_before_replacement(tmp_path, monkeypatch):
     assert json.loads(cached.read_text()) == built
     assert all(handle.closed for handle in handles)
     assert list(cached.parent.iterdir()) == [cached]
+
+
+def test_verify_text_tolerates_isolated_timing_outlier(monkeypatch):
+    from subzero.timing import Window, Report
+    fake_windows = [
+        Window(i * 90.0, 0.1, 0.6, 0.1, True) for i in range(20)
+    ]
+    fake_windows[5] = Window(450.0, 3.5, 0.5, 0.08, True)
+    inconclusive_report = Report('inconclusive', 'Isolated timing mismatch needs review', fake_windows)
+    monkeypatch.setattr(reference, 'evaluate', lambda *a, **kw: inconclusive_report)
+    cues = '\n\n'.join(f'{i}\n00:{i:02d}:00,000 --> 00:{i:02d}:02,000\nLine\n' for i in range(1, 25))
+    ref = {'speech': [[1, 2]], 'text': '', 'spans': []}
+    rep = reference.verify_text(cues, ref)
+    assert rep.status == 'pass'
+
+
+def test_verify_text_rejects_when_severe_outlier_present(monkeypatch):
+    from subzero.timing import Window, Report
+    fake_windows = [
+        Window(i * 90.0, 0.1, 0.6, 0.1, True) for i in range(20)
+    ]
+    fake_windows[5] = Window(450.0, 6.5, 0.5, 0.08, True)
+    reject_report = Report('reject', 'Severe timing offset detected', fake_windows)
+    monkeypatch.setattr(reference, 'evaluate', lambda *a, **kw: reject_report)
+    cues = '\n\n'.join(f'{i}\n00:{i:02d}:00,000 --> 00:{i:02d}:02,000\nLine\n' for i in range(1, 25))
+    ref = {'speech': [[1, 2]], 'text': '', 'spans': []}
+    rep = reference.verify_text(cues, ref)
+    assert rep.status == 'reject'
