@@ -416,6 +416,8 @@ def _translate_lines(cues, target_lang, client, depth=0, source_lang=None, conte
         if (isinstance(lines, list) and len(lines) == len(cues)
                 and all(isinstance(line, str) and line.strip() for line in lines)):
             return [line.strip() for line in lines]
+        if not getattr(client, 'retry_invalid_output', True):
+            raise RuntimeError('Translation did not preserve every subtitle line')
     mismatched = isinstance(lines, list) and len(lines) > 0 and len(lines) != len(cues)
     if len(cues) > 1 and (depth < 2 or mismatched):
         mid = len(cues) // 2
@@ -562,6 +564,8 @@ def translate_cues(
     progress: Callable[[int, int], None] | None = None,
     source_lang: str | None = None,
 ) -> list[Cue]:
+    if hasattr(client, 'check_quota'):
+        client.check_quota(client.count_episode(cues))
     model = getattr(client, "model", "")
     blocks = list(translation_blocks(cues, batch_size, model,
                                     use_sentence_units=getattr(client, 'uses_sentence_units', None)))

@@ -1394,6 +1394,59 @@ def test_repair_resumes_translation_after_later_block_failure(repair_flow, monke
     assert flow.service.ollama.releases == 2
 
 
+def test_repair_admits_whole_episode_before_any_translation(repair_flow):
+    from subzero.worker.deepl import DeepLQuotaExceeded
+
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    client = flow.service.ollama
+    client.source_cues = []
+    admissions = []
+    client.count_episode = lambda cues: sum(len(c.text) for c in cues)
+
+    def quota(required):
+        admissions.append(required)
+        raise DeepLQuotaExceeded(required, 1)
+
+    client.check_quota = quota
+    paused = run(flow, jobs, 'repair')
+    assert paused.state == 'paused'
+    assert admissions == [client.count_episode(parse(complete))]
+    assert not client.source_cues
+    assert target.read_text() == 'broken old translation'
+    assert not list((flow.cache / 'translations').rglob('*.json'))
+
+
+def test_quota_resume_only_admits_uncached_blocks(repair_flow):
+    from subzero.worker.deepl import DeepLQuotaExceeded
+
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    client = flow.service.ollama
+    client.source_cues = []
+    admissions = []
+    client.count_episode = lambda cues: sum(len(c.text) for c in cues)
+    client.check_quota = admissions.append
+    original = client.translate_block
+
+    def interrupted(cues, *args, **kwargs):
+        if client.source_cues:
+            raise DeepLQuotaExceeded(100, 0)
+        return original(cues, *args, **kwargs)
+
+    client.translate_block = interrupted
+    paused = run(flow, jobs, 'repair')
+    assert paused.state == 'paused'
+    cached_count = len(client.source_cues)
+    assert cached_count == 20
+    assert target.read_text() == 'broken old translation'
+    client.translate_block = original
+    jobs.resume(paused.id)
+    Runner(jobs, {'repair': flow.run}).run_once()
+    assert jobs.get(paused.id).state == 'done'
+    assert admissions == [client.count_episode(parse(complete)),
+                          client.count_episode(parse(complete)[cached_count:])]
+    assert len(client.source_cues) == len(parse(complete))
+
+
 def test_repair_resumes_translation_after_cancellation(repair_flow):
     flow, jobs, media, target, reference, complete, calls = repair_flow
     job = jobs.enqueue('id', 'repair', 'pt-BR')
