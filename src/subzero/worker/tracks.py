@@ -202,11 +202,15 @@ def shift(cues: list[Cue], offset: float) -> list[Cue]:
 
 
 def extract_audio(video_path: str, duration: float = 0, progress: Progress = lambda p, n: None,
-                  popen=subprocess.Popen) -> str:
+                  popen=subprocess.Popen, *, audio_index: int | None = None) -> str:
+    if audio_index is not None and (type(audio_index) is not int or audio_index < 0):
+        raise ValueError('Invalid audio stream index')
     with tempfile.NamedTemporaryFile(prefix="subzero-audio-", suffix=".wav", delete=False) as handle:
         wav = Path(handle.name)
-    cmd = ["ffmpeg", "-nostdin", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000",
-           "-f", "wav", str(wav)]
+    cmd = ["ffmpeg", "-nostdin", "-y", "-i", video_path]
+    if audio_index is not None:
+        cmd += ["-map", f"0:{audio_index}"]
+    cmd += ["-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(wav)]
     complete = False
     try:
         run_ffmpeg(cmd, duration, progress, "extraindo audio", popen=popen)
@@ -454,7 +458,10 @@ def deliver(media: Media, cues: list[Cue], lang: str, jellyfin, bare: bool = Fal
     target.write_text(dump(cues), encoding="utf-8")
     video = Path(media.path)
     embedded_langs = {getattr(s, "lang", "").lower() for s in getattr(media, "embedded", [])}
-    for p in video.parent.glob(f"{video.stem}*.srt"):
+    prefix = video.stem + '.'
+    for p in video.parent.iterdir():
+        if not p.name.startswith(prefix) or not p.name.endswith('.srt'):
+            continue
         try:
             if p.resolve() == target.resolve():
                 continue

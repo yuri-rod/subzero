@@ -195,7 +195,10 @@ class SyncFlow:
         video = Path(media.path)
         bare = self.service._bare(lang)
         embedded_langs = {getattr(s, "lang", "").lower() for s in getattr(media, "embedded", [])}
-        for path in video.parent.glob(f"{video.stem}*.srt"):
+        prefix = video.stem + '.'
+        for path in video.parent.iterdir():
+            if not path.name.startswith(prefix) or not path.name.endswith('.srt'):
+                continue
             try:
                 if path.resolve() == target.resolve():
                     continue
@@ -659,20 +662,22 @@ class SyncFlow:
                     return text,tag
         return None
 
-    def translate_source(self, media, job, key, reference, progress, text, lang):
+    def translate_source(self, media, job, key, reference, progress, text, lang, *, expected_source=None):
         if getattr(self.cfg, 'ocr_enabled', False) and same_language(lang, 'en'):
-            target = self.installed(media, job.target_lang)
             original = ''
             try:
-                existed = target.exists() or target.is_symlink()
-                original = read_gap_source(target) if existed else ''
+                if expected_source is None:
+                    target = self.installed(media, job.target_lang)
+                    existed = os.path.lexists(target)
+                    original = read_gap_source(target) if existed else ''
+                    expected_source = target, digest(original) if existed else None
                 text, report = self.generate_from_english(media, job, key, reference, text, progress)
-                return self.install(media, job, key, text, report,
-                                    expected_source=(target, digest(original) if existed else None))
+                return self.install(media, job, key, text, report, expected_source=expected_source)
             except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
                 self.active(job)
                 reason = f'English subtitle generation failed: {err}'
-                self.state.audit(key, job.target_lang, digest(original), 'inconclusive', {'reason': reason})
+                source_digest = expected_source[1] if expected_source is not None else digest(original)
+                self.state.audit(key, job.target_lang, source_digest or digest(''), 'inconclusive', {'reason': reason})
                 self.jobs.needs_review(job.id, reason)
                 return None
         cues = strip_hearing_impaired(parse(text))
@@ -686,7 +691,7 @@ class SyncFlow:
         report = verify_text(text,reference)
         guard = check_excellence_guards(text,job.target_lang)
         if report.status == 'pass' and guard.ok:
-            return self.install(media,job,key,text,report)
+            return self.install(media,job,key,text,report,expected_source=expected_source)
         reason = guard.reason if not guard.ok else report.reason
         self.review(media,job,key,f'Translation failed validation: {reason}')
 
@@ -702,12 +707,20 @@ class SyncFlow:
         return self.translate_source(media,job,key,reference,progress,*source)
 
     def rebuild(self, media, job, key, reference, progress):
+        target = self.installed(media, job.target_lang)
+        original = ''
         try:
-            return self._rebuild(media,job,key,reference,progress)
-        except RuntimeError as err:
-            self.review(media,job,key,f'Audio rebuild failed: {err}')
+            existed = os.path.lexists(target)
+            original = read_gap_source(target) if existed else ''
+            return self._rebuild(media, job, key, reference, progress,
+                                 expected_source=(target, digest(original) if existed else None))
+        except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
+            self.active(job)
+            reason = f'Audio rebuild failed: {err}'
+            self.state.audit(key, job.target_lang, digest(original), 'inconclusive', {'reason': reason})
+            self.jobs.needs_review(job.id, reason)
 
-    def _rebuild(self, media, job, key, reference, progress):
+    def _rebuild(self, media, job, key, reference, progress, expected_source):
         source = self.source_sidecar(media,reference)
         if source is not None and not same_language(source[1],job.target_lang):
             try:
@@ -719,16 +732,38 @@ class SyncFlow:
                     raise
                 source = None
         if source is not None:
-            return self.translate_source(media,job,key,reference,progress,*source)
+            return self.translate_source(media, job, key, reference, progress, *source,
+                                         expected_source=expected_source)
+        ocr_enabled = getattr(self.cfg, 'ocr_enabled', False)
+        audio_index = reference.get('audio_index')
+        if ocr_enabled and (type(audio_index) is not int or audio_index < 0):
+            raise ValueError('OCR rebuild requires a valid reference audio stream index')
         if self.service.ollama is not None:
             self.service.ollama.release()
+        self.active(job)
         offset = audio_start_offset(media.path)
-        audio = extract_audio(media.path,media.duration,progress)
+        if ocr_enabled:
+            audio = extract_audio(media.path, media.duration, progress, audio_index=audio_index)
+        else:
+            audio = extract_audio(media.path, media.duration, progress)
         try:
+            self.active(job)
             cues,detected = transcribe(audio,self.service.holder,progress)
         finally:
             Path(audio).unlink(missing_ok=True)
+        self.active(job)
         cues = shift(cues,offset)
+        if ocr_enabled:
+            if same_language(detected, 'en'):
+                source = dump([cue for cue in cues if strip_hearing_impaired([cue])])
+                self.stage(key, 'en', source)
+                report = verify_text(source, reference, phase=45)
+                if report.status != 'pass':
+                    raise RuntimeError(f'Transcribed English failed audio timing validation: {report.reason}')
+                text, report = self.generate_from_english(media, job, key, reference, source, progress)
+                return self.install(media, job, key, text, report, expected_source=expected_source)
+            if same_language(media.audio_lang or 'und', 'en'):
+                raise RuntimeError('English audio was not transcribed as English; caption recovery cannot proceed')
         if not same_language(detected,job.target_lang):
             cues = self.translate_cues(cues,job.target_lang,progress,source_lang=detected)
         raw = dump(cues)
@@ -737,6 +772,6 @@ class SyncFlow:
         self.stage(key,job.target_lang,text)
         guard = check_excellence_guards(text,job.target_lang)
         if report.status == 'pass' and guard.ok:
-            return self.install(media,job,key,text,report)
+            return self.install(media,job,key,text,report,expected_source=expected_source)
         reason = guard.reason if not guard.ok else report.reason
         self.review(media,job,key,f'All stages exhausted: {reason}')

@@ -263,6 +263,25 @@ def test_deliver_writes_the_sidecar_and_refreshes(tmp_path):
     assert jf.refreshed == ["abc"]
 
 
+@pytest.mark.parametrize('suffix', ['', '[EZTVx.to]', '[TGx]'])
+def test_deliver_prunes_literal_stem_sidecars_and_preserves_neighbors(tmp_path, suffix):
+    from types import SimpleNamespace
+
+    video = tmp_path / f'Movie{suffix}.mkv'
+    video.write_bytes(b'video')
+    episode = media(path=str(video))
+    episode.embedded = [SimpleNamespace(lang='eng')]
+    stale = [video.with_suffix('.srt'), video.with_suffix('.en.srt')]
+    preserved = [video.with_suffix('.fr.srt'), tmp_path / f'{video.stem}.en.srt.bak',
+                 tmp_path / f'{video.stem}Xen.srt', tmp_path / f'{video.stem}.extended.en.srt']
+    for path in stale + preserved:
+        path.write_text('existing subtitle')
+    target = deliver(episode, [Cue(1, 0, 1, 'Oi')], 'pt-BR', FakeJellyfin())
+    assert Path(target).exists()
+    assert all(not path.exists() for path in stale)
+    assert all(path.read_text() == 'existing subtitle' for path in preserved)
+
+
 def test_deliver_refuses_an_empty_subtitle(tmp_path):
     video = tmp_path / "Filme.mkv"
     video.write_bytes(b"x")
@@ -536,6 +555,30 @@ def test_audio_extractions_for_same_video_use_separate_files(tmp_path, monkeypat
     second = Path(extract_audio("episode.mkv", popen=FakePopen([])))
     assert first != second
     assert first.is_file() and second.is_file()
+
+
+def test_audio_extraction_maps_the_reference_stream(tmp_path, monkeypatch):
+    from subzero.worker import tracks
+
+    monkeypatch.setattr(tracks.tempfile, 'tempdir', str(tmp_path))
+    commands = []
+    monkeypatch.setattr(tracks, 'run_ffmpeg', lambda cmd, *args, **kwargs: commands.append(cmd))
+    audio = Path(extract_audio('episode.mkv', audio_index=3))
+    assert commands == [['ffmpeg', '-nostdin', '-y', '-i', 'episode.mkv', '-map', '0:3',
+                         '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', str(audio)]]
+
+
+@pytest.mark.parametrize('audio_index', [True, 1.0, '1', -1])
+def test_audio_extraction_rejects_invalid_stream_before_creating_files(tmp_path, monkeypatch, audio_index):
+    from subzero.worker import tracks
+
+    monkeypatch.setattr(tracks.tempfile, 'tempdir', str(tmp_path))
+    def unexpected(*args, **kwargs):
+        pytest.fail('Invalid stream must be rejected before running FFmpeg')
+    monkeypatch.setattr(tracks, 'run_ffmpeg', unexpected)
+    with pytest.raises(ValueError, match='audio stream index'):
+        extract_audio('episode.mkv', audio_index=audio_index)
+    assert not list(tmp_path.glob('*.wav'))
 
 
 def test_failed_audio_extraction_removes_partial_wav(tmp_path, monkeypatch):
