@@ -93,14 +93,17 @@ def test_opensubtitles_handler_writes_the_downloaded_text(service, tmp_path):
 
 def test_whisper_handler_translates_when_the_language_differs(service, tmp_path, monkeypatch):
     from subzero.worker.srt import Cue
+    languages = []
 
     monkeypatch.setattr("subzero.worker.service.extract_audio", lambda path, duration=0, progress=None: "audio.wav")
     monkeypatch.setattr("subzero.worker.service.transcribe",
                         lambda audio, holder, progress: ([Cue(1, 0, 1, "hello")], "en"))
     monkeypatch.setattr("subzero.worker.service.translate",
-                        lambda cues, lang, ollama, progress: [Cue(1, 0, 1, "ola")])
+                        lambda cues, lang, ollama, progress, source_lang=None:
+                        languages.append(source_lang) or [Cue(1, 0, 1, "ola")])
 
     out = service.run(job("whisper", target="pt-BR"), lambda p, n: None)
+    assert languages == ['en']
 
     assert "ola" in open(out, encoding="utf-8").read()
 
@@ -123,13 +126,16 @@ def test_whisper_handler_skips_translation_when_it_already_matches(service, monk
 
 def test_translate_handler_reads_an_existing_sidecar(service, tmp_path, monkeypatch):
     from subzero.worker.srt import Cue
+    languages = []
 
     source = tmp_path / "Filme.en.srt"
     source.write_text("1\n00:00:01,000 --> 00:00:02,000\nhello\n", encoding="utf-8")
     monkeypatch.setattr("subzero.worker.service.translate",
-                        lambda cues, lang, ollama, progress: [Cue(1, 0, 1, "ola")])
+                        lambda cues, lang, ollama, progress, source_lang=None:
+                        languages.append(source_lang) or [Cue(1, 0, 1, "ola")])
 
     out = service.run(job("translate", target="pt-BR", source="en"), lambda p, n: None)
+    assert languages == ['en']
 
     assert out.endswith("Filme.pt-BR.srt")
     assert "ola" in open(out, encoding="utf-8").read()

@@ -33,6 +33,26 @@ def test_health_reports_the_worker(client):
     assert "gpu" in body
     assert body["model"] == "large-v3"
     assert body["translation_model"] == "subzero/hy-mt2:7b"
+    assert body['translation_provider'] == 'ollama'
+
+
+def test_cpu_provider_selection_and_health_do_not_start_models(tmp_path, monkeypatch):
+    from subzero.worker.libretranslate import LibreTranslate
+
+    def no_model(*args, **kwargs):
+        raise AssertionError('App startup and health must not start translation models')
+
+    monkeypatch.setattr('subzero.worker.api.Ollama', no_model)
+    monkeypatch.setattr(LibreTranslate, 'ensure_available', no_model)
+    cfg = Config('http://localhost', 'key', 'token', db_path=str(tmp_path / 'jobs.db'),
+                 sync_cache=str(tmp_path / 'cache'), translation_provider='libretranslate',
+                 libretranslate_runtime=str(tmp_path / 'runtime'))
+    opensubs = type('OpenSubs', (), {'login': lambda self: None})()
+    client = TestClient(create_app(cfg, runner=False, opensubs=opensubs))
+    response = client.get('/health', headers={'Authorization': 'Bearer token'})
+    assert response.status_code == 200
+    assert response.json()['translation_provider'] == 'libretranslate'
+    assert response.json()['translation_model'] == LibreTranslate.model
 
 
 def test_config_defaults():
@@ -57,4 +77,3 @@ def test_shutdown_endpoint(client):
     import time
     time.sleep(0.6)
     assert mock_server.should_exit is True
-

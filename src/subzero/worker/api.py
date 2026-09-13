@@ -100,13 +100,16 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         opensubs.login()
     except (OpenSubtitlesError, AttributeError):
         pass
+    if cfg.translation_provider == 'libretranslate':
+        from .libretranslate import LibreTranslate
+        translator = LibreTranslate(cfg.libretranslate_runtime)
+    else:
+        translator = Ollama(cfg.ollama_url, cfg.ollama_model, keep_alive=cfg.ollama_keep_alive,
+                            num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict)
     service = Service(jellyfin=jellyfin, opensubs=opensubs,
                       holder=ModelHolder(cfg.whisper_model, cfg.whisper_device,
                                          cfg.whisper_compute_type or None),
-                      ollama=Ollama(cfg.ollama_url, cfg.ollama_model,
-                                    keep_alive=cfg.ollama_keep_alive,
-                                    num_ctx=cfg.ollama_num_ctx,
-                                    num_predict=cfg.ollama_num_predict),
+                      ollama=translator,
                       bare_lang=cfg.bare_lang)
     from .syncflow import SyncFlow
     service.sync_flow = SyncFlow(store,service,cfg)
@@ -134,7 +137,8 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     def health() -> dict:
         thread = getattr(app.state, "runner_thread", None)
         return {"version": __version__, "gpu": free_vram_mb(), "model": cfg.whisper_model,
-                "translation_model": cfg.ollama_model,
+                "translation_provider": cfg.translation_provider,
+                "translation_model": service.ollama.model,
                 "auto": cfg.auto_enabled, "queued": len(store.active()),
                 "runner": bool(thread and thread.is_alive())}
 
