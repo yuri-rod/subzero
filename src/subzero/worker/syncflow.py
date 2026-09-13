@@ -25,6 +25,7 @@ from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_C
 from .deepl import DeepLPause
 from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
 from .moviehash import moviehash
+from .opensubs import OpenSubtitlesError
 from .service import same_language
 from .srt import Cue, dump, parse, strip_hearing_impaired
 from .syncstore import SyncStore, broken_file_ids
@@ -679,6 +680,8 @@ class SyncFlow:
                     or not source or verify_text(source, reference).status != 'pass'):
                 sidecar = self.source_sidecar(media, reference, languages=('en',))
                 if sidecar is None:
+                    sidecar = self.source_from_opensubtitles(media, reference, languages=('en',), progress=progress)
+                if sidecar is None:
                     raise RuntimeError('Full repair requires a verified English subtitle source')
                 source = sidecar[0]
             text, report = self.generate_from_english(media, job, key, reference, source, progress)
@@ -723,6 +726,61 @@ class SyncFlow:
                     continue
                 if verify_text(text,reference).status == 'pass':
                     return text,tag
+        return None
+
+    def source_from_opensubtitles(self, media, reference, languages=None, progress=None):
+        opensubs = getattr(self.service, 'opensubs', None)
+        if not opensubs or not getattr(self.cfg, 'opensubtitles_key', ''):
+            return None
+        if getattr(opensubs, 'quota_exhausted', lambda: False)():
+            return None
+        target_langs = list(languages) if languages is not None else getattr(self.cfg, 'translate_from', ['en'])
+        if progress:
+            progress('buscando legenda em ingles no OpenSubtitles', 5)
+        digest = None
+        try:
+            digest = moviehash(media.path)
+        except (OSError, ValueError):
+            pass
+        candidates = []
+        filename = Path(media.path).name if getattr(media, 'path', '') else None
+        if digest:
+            try:
+                candidates = opensubs.search(langs=target_langs, moviehash=digest, filename=filename)
+            except OpenSubtitlesError:
+                candidates = []
+        if not candidates:
+            try:
+                candidates = opensubs.search(langs=target_langs, filename=filename, **title_query(media))
+            except OpenSubtitlesError:
+                candidates = []
+        if not candidates:
+            return None
+
+        bad = broken_file_ids(getattr(self.jobs, '_db', None) and self.jobs, target_langs[0] if target_langs else 'en')
+        usable = [c for c in candidates if not getattr(c, 'forced', False) and c.file_id not in bad]
+        usable.sort(key=lambda c: (getattr(c, 'hash_match', False), getattr(c, 'downloads', 0)), reverse=True)
+
+        for candidate in usable[:3]:
+            try:
+                if progress:
+                    progress(f'baixando legenda {candidate.file_id} do OpenSubtitles', 10)
+                raw = opensubs.download(candidate.file_id)
+                cues = strip_hearing_impaired(parse(raw))
+                if not cues:
+                    continue
+                clean_text = dump(cues)
+                if verify_text(clean_text, reference).status == 'pass':
+                    lang_tag = getattr(candidate, 'lang', 'en') or 'en'
+                    try:
+                        en_path = Path(sidecar_path(media.path, lang_tag))
+                        if not en_path.exists():
+                            en_path.write_text(clean_text, encoding='utf-8')
+                    except OSError:
+                        pass
+                    return clean_text, lang_tag
+            except (OpenSubtitlesError, OSError, ValueError):
+                continue
         return None
 
     def translate_source(self, media, job, key, reference, progress, text, lang, *, expected_source=None):
@@ -790,8 +848,10 @@ class SyncFlow:
             self.jobs.needs_review(job.id, reason)
 
     def _rebuild(self, media, job, key, reference, progress, expected_source):
-        source = self.source_sidecar(media,reference)
-        if source is not None and not same_language(source[1],job.target_lang):
+        source = self.source_sidecar(media, reference)
+        if source is None:
+            source = self.source_from_opensubtitles(media, reference, languages=('en',), progress=progress)
+        if source is not None and not same_language(source[1], job.target_lang):
             try:
                 self.translation_ready()
             except DeepLPause:

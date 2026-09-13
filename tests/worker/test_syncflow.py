@@ -10,7 +10,7 @@ from subzero.worker.opensubs import Candidate
 from subzero.worker.service import Service
 from subzero.worker.srt import Cue,dump,parse
 from subzero.worker.syncflow import SyncFlow
-from subzero.timing import spans
+from subzero.timing import Report, spans
 
 
 def dialogue(offset=0):
@@ -1782,3 +1782,38 @@ def test_stage_keeps_existing_crlf_bytes(setup, monkeypatch):
     monkeypatch.setattr(Path, 'write_text', windows_write)
     text = '1\r\n00:00:01,000 --> 00:00:02,000\r\nUma fala.\r\n'
     assert flow.stage('video', 'pt-BR', text).read_bytes() == text.encode('utf-8')
+
+
+def test_rebuild_searches_opensubtitles_before_whisper(setup, monkeypatch):
+    flow, jobs, provider, media = setup
+    flow.cfg.opensubtitles_key = 'test-key'
+    whisper_called = []
+    monkeypatch.setattr('subzero.worker.syncflow.transcribe', lambda *a, **k: whisper_called.append(True) or ([], 'en'))
+    provider.search = lambda **k: [Candidate(99, 'movie.1080p', 'en', 500, False, True, False)]
+    provider.download = lambda fid: dialogue()
+    flow.service.opensubs = provider
+    flow.translation_ready = lambda: None
+    flow.translate_cues = lambda cues, *a, **k: cues
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'done', job.message
+    assert not whisper_called, 'Whisper was called despite verified OpenSubtitles subtitle'
+    assert Path(job.result_path).read_text() == dialogue()
+
+
+def test_repair_searches_opensubtitles_when_sidecar_missing(setup):
+    flow, jobs, provider, media = setup
+    flow.cfg.opensubtitles_key = 'test-key'
+    installed = Path(flow.installed(media, 'pt-BR'))
+    installed.write_text(dialogue())
+    provider.search = lambda **k: [Candidate(99, 'movie.1080p', 'en', 500, False, True, False)]
+    provider.download = lambda fid: dialogue()
+    flow.service.opensubs = provider
+    flow.generate_from_english = lambda media, job, key, ref, source, prog: (dialogue(), Report('pass', 'ok', []))
+    ref = flow.reference_builder()
+    ref['text'] = ''
+    job = run(flow, jobs, 'repair')
+    assert job.state == 'done', job.message
+    assert Path(job.result_path).read_text() == dialogue()
+
+
+
