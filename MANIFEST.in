@@ -1,3 +1,5 @@
 include CHANGELOG.md
 include scripts/install_libretranslate.py
 include scripts/libretranslate-runtime.json
+recursive-include tests *.py
+include tests/fixtures/caption-rescue-colors.jpg
