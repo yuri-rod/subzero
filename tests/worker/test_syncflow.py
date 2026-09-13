@@ -324,6 +324,8 @@ def test_non_english_audio_rebuild_does_not_use_english_ocr(audio_rebuild, monke
 def test_audio_rebuild_rejects_unsafe_target_before_audio(audio_rebuild, kind):
     import os
 
+    if kind == 'fifo' and not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO creation requires a POSIX filesystem')
     flow, jobs, _, target, _, _, _, _, calls = audio_rebuild
     target.unlink()
     unrelated = target.parent / 'unrelated.txt'

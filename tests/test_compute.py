@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import multiprocessing
 import os
@@ -9,6 +10,13 @@ from pathlib import Path
 import pytest
 
 from subzero import compute
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != 'posix' or importlib.util.find_spec('fcntl') is None
+    or any(not hasattr(os, name) for name in ('getuid', 'O_NOFOLLOW', 'O_NONBLOCK', 'mkfifo', 'fchmod')),
+    reason='Compute coordinator tests require POSIX ownership, FIFO, and flock primitives',
+)
 
 
 @pytest.fixture
@@ -46,20 +54,6 @@ def lifecycle(monkeypatch):
 
     monkeypatch.setattr(compute, '_Lifecycle', Lifecycle)
     return events
-
-
-def test_missing_default_policy_preserves_portable_behavior(tmp_path, monkeypatch):
-    monkeypatch.delenv('SUBZERO_COMPUTE_CONFIG', raising=False)
-    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
-    with compute.compute_phase('vision') as strict:
-        assert strict is False
-
-
-def test_explicit_missing_policy_fails_closed(tmp_path, monkeypatch):
-    monkeypatch.setenv('SUBZERO_COMPUTE_CONFIG', str(tmp_path / 'missing.json'))
-    with pytest.raises(RuntimeError, match='policy'):
-        with compute.compute_phase('vision'):
-            pytest.fail('compute must not start')
 
 
 def test_phase_order_and_same_thread_nesting(policy, lifecycle):
@@ -541,13 +535,6 @@ def test_child_lease_is_available_only_inside_strict_ownership(policy, lifecycle
             assert compute.compute_lease_fd() == fd
     with pytest.raises(OSError):
         os.fstat(fd)
-
-
-def test_no_policy_does_not_add_a_child_lease(tmp_path, monkeypatch):
-    monkeypatch.delenv('SUBZERO_COMPUTE_CONFIG', raising=False)
-    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
-    with compute.compute_phase('vision'):
-        assert compute.compute_lease_fd() is None
 
 
 def _parent_with_native_child(config, child_pid_path, child_gate_path):

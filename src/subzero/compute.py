@@ -80,6 +80,8 @@ def _load_policy():
     path = Path(custom) if custom else Path.home() / '.config/subzero/compute.json'
     if not custom and not path.exists() and not path.is_symlink():
         return None
+    if os.name != 'posix':
+        raise RuntimeError('Shared compute policy is unsupported on this platform; macOS is required')
     if not path.is_absolute():
         raise RuntimeError('Compute policy path must be absolute')
     try:
