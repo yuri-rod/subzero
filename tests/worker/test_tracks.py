@@ -43,7 +43,7 @@ class FakePopen:
             stdout = iter(holder.lines)
             stderr = type("E", (), {"read": lambda self: holder._stderr})()
 
-            def wait(self):
+            def wait(self, timeout=None):
                 return holder.code
 
         return Proc()
@@ -428,7 +428,7 @@ def test_run_ffmpeg_drains_stderr_while_stdout_is_read():
             assert released.wait(5), "stderr nunca foi drenado: deadlock"
             yield "out_time_ms=2000000\n"
 
-        def wait(self):
+        def wait(self, timeout=None):
             return 1
 
     proc = BlockingProc()

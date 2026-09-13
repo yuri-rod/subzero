@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.10.7-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.10.8-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -314,7 +314,7 @@ The worker accepts these Ollama controls:
 | `OLLAMA_NUM_PREDICT` | `2048` | Bound the generated response. |
 | `OCR_ENABLED` | `1` on macOS, `0` elsewhere | Recover burned-in captions before translating verified English sources. |
 
-For a 16 GB Apple Silicon machine, this configuration runs Whisper on the CPU and leaves GPU memory for Ollama:
+For a 16 GB Apple Silicon machine, use CPU transcription and a bounded translation context:
 
 ```dotenv
 WHISPER_MODEL=large-v3-turbo
@@ -327,6 +327,20 @@ OLLAMA_KEEP_ALIVE=2m
 ```
 
 Whisper transcribes the source language; Ollama translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job.
+
+On macOS, a shared compute policy serializes local translation, Vision OCR, and Whisper across the CLI, worker, and HTTP transcription requests. Subzero stops the managed Ollama daemon and its runners before OCR or transcription, then starts it for translation. Translation retains ownership across its batches and fully stops Ollama afterward. Whisper runs in a separate process and exits before handoff, including when configured for CPU execution.
+
+Enable this behavior with `~/.config/subzero/compute.json`, or set `SUBZERO_COMPUTE_CONFIG` to an absolute policy path. All participating processes must use the same policy and lock. Without a policy, portable behavior is retained. An explicitly selected missing or invalid policy stops the operation.
+
+| Policy field | Required value |
+| --- | --- |
+| `ollama_url` | Plain HTTP loopback endpoint matching the translation configuration. |
+| `ollama_launch_agent` | Absolute path to a dedicated user launch-agent plist running only an absolute Ollama executable with `serve`. Its `OLLAMA_HOST` must match `ollama_url`. |
+| `lock_path` | Shared absolute lock-file path in an existing directory. |
+| `startup_timeout` | Optional service startup limit in seconds, default `30`. |
+| `shutdown_timeout` | Optional shutdown limit in seconds, default `30`. |
+
+Policy and launch-agent files must be regular files owned by the current user and not writable by others. Native children retain the shared lock until they exit, even if their parent process stops. If shutdown cannot be verified, further compute stays blocked. Commands and applications outside this policy do not participate in its lock; keep other GPU workloads paused during processing. A cancelled job can remain in cleanup while its native child exits, so the API's cancelled state alone does not prove resources have been released.
 
 Hy-MT2 joins bounded consecutive fragments from the same speaker, translates each sentence unit once, and distributes the generated words across the original cue timestamps. Batches keep these units together. Complete units can use up to 32 preceding source cues, capped at 6,000 characters, plus the programme title. The context excludes the current unit and later dialogue; unfinished fragments receive no background context.
 

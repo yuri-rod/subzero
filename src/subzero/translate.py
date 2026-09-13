@@ -8,11 +8,13 @@ import re
 import time
 import urllib.request
 import urllib.error
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable
 
 from .core import Options, fix_text, read
+from .compute import compute_phase
 from .convert import Cue, parse_srt, dump_srt
 
 
@@ -433,6 +435,10 @@ class OllamaClient:
         self.num_predict = num_predict
 
     def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
+        with compute_phase("ollama", ollama_url=self.url):
+            return self._translate_block(cues, target_lang, source_lang, context=context)
+
+    def _translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
         if _is_native_translation(self.model) and not _is_translategemma(self.model) and len(cues) > 1:
             return _translate_sentence_units(cues, target_lang, self, source_lang, context)
         if _is_native_translation(self.model) and len(cues) > 1:
@@ -553,14 +559,16 @@ def translate_cues(
     model = getattr(client, "model", "")
     blocks = list(translation_blocks(cues, batch_size, model))
     translated: list[Cue] = []
-    for idx, block in enumerate(blocks, start=1):
-        context = (_previous_context(cues[:len(translated)])
-                   if _is_native_translation(model) and not _is_translategemma(model) else None)
-        lines = _translate_lines(block, target_lang, client, source_lang=source_lang, context=context)
-        for cue, text in zip(block, lines):
-            translated.append(Cue(cue.start, cue.end, text))
-        if progress:
-            progress(idx, len(blocks))
+    phase = compute_phase("ollama", ollama_url=client.url) if isinstance(client, OllamaClient) else nullcontext()
+    with phase:
+        for idx, block in enumerate(blocks, start=1):
+            context = (_previous_context(cues[:len(translated)])
+                       if _is_native_translation(model) and not _is_translategemma(model) else None)
+            lines = _translate_lines(block, target_lang, client, source_lang=source_lang, context=context)
+            for cue, text in zip(block, lines):
+                translated.append(Cue(cue.start, cue.end, text))
+            if progress:
+                progress(idx, len(blocks))
     return translated
 
 
