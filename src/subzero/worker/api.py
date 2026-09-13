@@ -106,8 +106,15 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         translator = LibreTranslate(cfg.libretranslate_runtime)
     elif cfg.translation_provider == 'deepl-free':
         from .deepl import DeepLFree
-        translator = DeepLFree(resolve_deepl_key(cfg),
-                               usage_path=Path(cfg.sync_cache) / 'deepl-free-usage.json')
+        deepl_client = DeepLFree(resolve_deepl_key(cfg),
+                                 usage_path=Path(cfg.sync_cache) / 'deepl-free-usage.json')
+        if cfg.translation_fallback == 'libretranslate':
+            from .deepl import FallbackTranslator
+            from .libretranslate import LibreTranslate
+            libre_client = LibreTranslate(cfg.libretranslate_runtime)
+            translator = FallbackTranslator(primary=deepl_client, fallback=libre_client)
+        else:
+            translator = deepl_client
     else:
         translator = Ollama(cfg.ollama_url, cfg.ollama_model, keep_alive=cfg.ollama_keep_alive,
                             num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict)

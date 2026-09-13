@@ -588,7 +588,20 @@ class SyncFlow:
                 required = sum(ollama.count_episode(block) for block, translated in pending
                                if translated is None)
                 if required:
+                    prev_provider = getattr(ollama, 'provider', None)
                     ollama.check_quota(required)
+                    if getattr(ollama, 'provider', None) != prev_provider:
+                        settings['provider'] = getattr(ollama, 'provider', 'ollama')
+                        settings['provider_options'] = getattr(ollama, 'cache_settings', {})
+                        settings['model'] = getattr(ollama, 'model', getattr(self.cfg, 'ollama_model', ''))
+                        folder = self.cache / 'translations' / key / digest(json.dumps(settings, sort_keys=True))
+                        folder.mkdir(parents=True, exist_ok=True)
+                        pending = []
+                        p_start = 0
+                        for block in blocks:
+                            self.active(job)
+                            pending.append((block, cached_block(block, p_start)))
+                            p_start += len(block)
             for block, translated in pending:
                 self.active(job)
                 start = len(completed)
