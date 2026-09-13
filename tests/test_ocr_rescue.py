@@ -102,6 +102,27 @@ def test_unresolved_flicker_after_rescue_still_fails_original_gate(monkeypatch):
         ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object())
 
 
+@pytest.mark.parametrize("first, changed", [
+    ("I go.", "go."), ("Wait.", "Walt."), ("Sam.", "Pam."), ("7.", "8."),
+    ("I can.", "I can't."), ("I _ go.", "I go."), ("I _ go.", "_ I go."),
+])
+def test_short_ambiguity_is_selected_and_independent_real_change_still_needs_review(monkeypatch, first, changed):
+    coarse = [(0, ""), (.5, first), (1, first), (1.5, "")]
+    dense = [(.4, ""), (.5, first), (.6, first), (.7, changed), (.8, first), (.9, "")]
+    monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
+    selected = []
+
+    def rescue(video, observed, scanned, duration, windows, intervals, client):
+        selected.extend(intervals)
+        return observed, scanned
+
+    monkeypatch.setattr(ocr, "_rescue_caption_frames", rescue)
+    with pytest.raises(RuntimeError, match="Unstable OCR"):
+        ocr.refine_caption_timing("video", coarse, 2, caption_rescue=object())
+    assert any(start <= .7 < end for start, end in selected)
+    assert dense[3] == (.7, changed)
+
+
 def native_frame(text):
     return {"items": [{"text": text, "confidence": 1, "x": .3, "y": .1, "width": .4,
                        "height": .06, "captionInk": .2}] if text else [], "subtitleText": text}

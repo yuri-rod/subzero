@@ -32,16 +32,19 @@ def _reading(cue: Cue) -> _Reading:
     text = text.replace(r'\N', '\n').replace(r'\n', '\n')
     speakers = frozenset(_SPEAKER.findall(text))
     text = unicodedata.normalize('NFKC', _SPEAKER.sub('', text)).casefold()
-    text = ''.join(character for character in text if character.isalnum())
+    text = re.sub(r'_+', '_', text)
+    text = ''.join(character for character in text if character.isalnum() or character == '_')
     return _Reading(_milliseconds(cue.start), _milliseconds(cue.end), text, speakers)
 
 
 def _similar(left: str, right: str) -> bool:
     if left == right:
         return True
-    if min(len(left), len(right)) < 6 or not 8 <= max(len(left), len(right)) <= 500:
+    if not left or not right or max(len(left), len(right)) > 500:
         return False
-    limit = max(2, min(4, min(len(left), len(right)) // 15))
+    if left.replace('_', '') == right.replace('_', ''):
+        return True
+    limit = 1 if max(len(left), len(right)) < 8 else max(2, min(4, min(len(left), len(right)) // 15))
     if abs(len(left) - len(right)) > limit:
         return False
     edits = sum(max(b - a, d - c) for kind, a, b, c, d in
