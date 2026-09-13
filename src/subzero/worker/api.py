@@ -6,13 +6,14 @@ import tempfile
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from . import __version__
-from .config import Config
+from .config import Config, resolve_deepl_key
 from .jellyfin import JellyfinClient, JellyfinError
 from .jobs import KINDS, Job, JobStore, Runner
 from .moviehash import moviehash
@@ -103,6 +104,10 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     if cfg.translation_provider == 'libretranslate':
         from .libretranslate import LibreTranslate
         translator = LibreTranslate(cfg.libretranslate_runtime)
+    elif cfg.translation_provider == 'deepl-free':
+        from .deepl import DeepLFree
+        translator = DeepLFree(resolve_deepl_key(cfg),
+                               usage_path=Path(cfg.sync_cache) / 'deepl-free-usage.json')
     else:
         translator = Ollama(cfg.ollama_url, cfg.ollama_model, keep_alive=cfg.ollama_keep_alive,
                             num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict)
@@ -139,6 +144,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         return {"version": __version__, "gpu": free_vram_mb(), "model": cfg.whisper_model,
                 "translation_provider": cfg.translation_provider,
                 "translation_model": service.ollama.model,
+                "paused": sum(j.state == 'paused' for j in store.active()),
                 "auto": cfg.auto_enabled, "queued": len(store.active()),
                 "runner": bool(thread and thread.is_alive())}
 
@@ -205,6 +211,14 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         if not job:
             raise HTTPException(status_code=404, detail="job desconhecido")
         store.cancel(job_id)
+        return job_json(store.get(job_id))
+
+    @app.post('/jobs/{job_id}/resume', dependencies=guard)
+    def resume_job(job_id: str) -> dict:
+        if store.get(job_id) is None:
+            raise HTTPException(status_code=404, detail='job desconhecido')
+        if not store.resume(job_id):
+            raise HTTPException(status_code=409, detail='job is not paused')
         return job_json(store.get(job_id))
 
     @app.get("/coverage", dependencies=guard)

@@ -16,6 +16,39 @@ def test_enqueue_then_pick(store):
     assert store.next_queued().id == job.id
 
 
+def test_quota_pause_holds_queue_across_restart_until_resumed(store):
+    from subzero.worker.deepl import DeepLQuotaExceeded
+
+    first = store.enqueue('episode1', 'repair', 'pt-BR')
+    second = store.enqueue('episode2', 'repair', 'pt-BR')
+
+    def over_budget(job, progress):
+        raise DeepLQuotaExceeded(60000, 59000)
+
+    Runner(store, {'repair': over_budget}).run_once()
+    assert store.get(first.id).state == 'paused'
+    assert store.get(first.id).attempts == 0
+    assert store.get(second.id).state == 'queued'
+    restarted = JobStore(store.db_path)
+    restarted.requeue_running()
+    assert restarted.claim() is None
+    assert {j.id for j in restarted.active()} == {first.id, second.id}
+    assert restarted.resume(first.id)
+    assert not restarted.resume(first.id)
+    assert restarted.claim().id == first.id
+
+
+def test_cancel_paused_job_releases_queue_without_overwriting_cancel(store):
+    first = store.enqueue('episode1', 'repair', 'pt-BR')
+    second = store.enqueue('episode2', 'repair', 'pt-BR')
+    store.start(first.id)
+    store.pause(first.id, 'Quota exhausted')
+    store.cancel(first.id)
+    store.pause(first.id, 'Late quota response')
+    assert store.get(first.id).state == 'cancelled'
+    assert store.claim().id == second.id
+
+
 def test_manual_jobs_run_before_automatic_ones(store):
     store.enqueue("auto1", "whisper", "pt-BR", origin="auto")
     manual = store.enqueue("manual1", "whisper", "pt-BR")

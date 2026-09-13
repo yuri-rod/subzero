@@ -9,7 +9,7 @@
   ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ 
 ```
 
-Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
+Subtitle cleanup, timing verification, translation, and burned-in caption recovery.
 
 [![Version](https://img.shields.io/badge/version-1.12.1-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -29,7 +29,7 @@ Subzero provides a CLI, Python library, directory watcher, and subtitle worker f
 * Extracts embedded text subtitles and converts between SRT, WebVTT, ASS, and SSA.
 * Verifies subtitle timing against local speech detection and applies supported constant-offset or framerate corrections.
 * Recovers burned-in English captions with Apple Vision on macOS, including quiet passages missed by speech detection.
-* Translates locally through Ollama or the worker's isolated LibreTranslate CPU engine. The CLI also supports explicitly selected OpenAI-compatible endpoints.
+* Translates locally through Ollama or the worker's isolated LibreTranslate CPU engine, or through the worker's explicitly selected DeepL Free API. The CLI also supports explicitly selected OpenAI-compatible endpoints.
 * Matches OpenSubtitles downloads, validates candidates, and stages replacements before installing worker output with backups.
 
 The core uses the Python standard library. Timing analysis and the worker have optional Python dependencies; video operations need FFmpeg.
@@ -315,7 +315,25 @@ ACCEPTED_LANGS=pt-BR,en,es
 ACCEPTED_LANGS=
 ```
 
-Before transcribing audio that needs translation, the worker checks the selected translation provider. A translation failure leaves the job for review, without switching providers. Malformed or incomplete output fails validation before installation. These checks do not certify the meaning of every translated sentence.
+Before transcribing audio that needs translation, the worker checks the selected translation provider. A translation failure leaves the job for review, without switching providers. DeepL Free quota holds are separate from translation failures. Malformed or incomplete output fails validation before installation. These checks do not certify the meaning of every translated sentence.
+
+#### DeepL Free API
+
+Select the Free API explicitly in the worker's environment file:
+
+```dotenv
+TRANSLATION_PROVIDER=deepl-free
+```
+
+Supply `DEEPL_API_KEY` through the process environment or a protected environment file. On macOS, an absent key is read from the Keychain entry with service `subzero.deepl.api-free` and account `worker`. The key is retrieved only when this provider is selected. It is excluded from configuration representations and health responses.
+
+The provider accepts only Free keys ending in `:fx` and connects only to `https://api-free.deepl.com`. It sends English subtitle text to DeepL for Brazilian Portuguese translation. Local OCR and transcription remain separate stages. Selecting this provider does not start Ollama for translation or fall back to another translator.
+
+The worker checks current account usage before admitting an episode for translation. If the remaining Free allowance cannot cover the episode, it pauses without submitting that episode's translation requests. Quota exhaustion during an admitted episode also pauses the work and preserves existing subtitles. Paid usage is never enabled automatically.
+
+A paused job has `state: paused` and holds later queue claims. `/health` reports the paused count, and paused work remains included in the active queue count. After resolving the hold, send an authenticated `POST /jobs/{id}/resume` to requeue the same job; the worker checks admission again before translating. Resuming a job that is not paused returns HTTP 409. `DELETE /jobs/{id}` also accepts paused jobs for cancellation.
+
+The quota journal at `SYNC_CACHE/deepl-free-usage.json` records conservative usage across worker restarts. A billing-period reset requires reconciliation against confirmed DeepL account usage before clearing that local floor. Restarting the worker or changing providers does not make a quota hold successful output.
 
 #### Native LibreTranslate CPU runtime
 

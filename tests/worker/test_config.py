@@ -1,6 +1,9 @@
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
-from subzero.worker.config import Config
+from subzero.worker.config import Config, resolve_deepl_key
 
 
 @pytest.mark.parametrize('platform,enabled', [('darwin', True), ('linux', False), ('win32', False)])
@@ -41,3 +44,76 @@ def test_native_translation_provider_must_be_explicit_and_known():
     assert cfg.libretranslate_runtime == '/local/translation'
     with pytest.raises(ValueError, match='TRANSLATION_PROVIDER'):
         Config.load(dict(env, TRANSLATION_PROVIDER='unknown'))
+
+
+def test_deepl_configuration_does_not_access_keychain(monkeypatch):
+    def forbid_keychain(*args, **kwargs):
+        raise AssertionError('Configuration loading must not access credentials')
+
+    monkeypatch.setattr('subzero.worker.config.subprocess.run', forbid_keychain)
+    env = {'JELLYFIN_URL': 'http://localhost', 'JELLYFIN_API_KEY': 'key', 'BEARER_TOKEN': 'token',
+           'TRANSLATION_PROVIDER': ' DeepL-Free '}
+    cfg = Config.load(env)
+    assert cfg.translation_provider == 'deepl-free'
+    assert cfg.deepl_api_key == ''
+    assert Config.load(dict(env, DEEPL_API_KEY=' explicit-free-key:fx ')).deepl_api_key == 'explicit-free-key:fx'
+
+
+def test_explicit_deepl_key_takes_precedence_on_any_platform(monkeypatch):
+    def forbid_keychain(*args, **kwargs):
+        raise AssertionError('An explicit key must not access Keychain')
+
+    monkeypatch.setattr('subzero.worker.config.sys.platform', 'linux')
+    monkeypatch.setattr('subzero.worker.config.subprocess.run', forbid_keychain)
+    cfg = Config('http://localhost', 'key', 'token', deepl_api_key='explicit-free-key:fx')
+    assert resolve_deepl_key(cfg) == 'explicit-free-key:fx'
+
+
+def test_deepl_keychain_reads_fixed_service_without_a_shell(monkeypatch):
+    calls = []
+
+    def keychain(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout='keychain-free-key:fx\n')
+
+    monkeypatch.setattr('subzero.worker.config.sys.platform', 'darwin')
+    monkeypatch.setattr('subzero.worker.config.subprocess.run', keychain)
+    assert resolve_deepl_key(Config('http://localhost', 'key', 'token')) == 'keychain-free-key:fx'
+    assert calls == [((['/usr/bin/security', 'find-generic-password', '-s',
+                       'subzero.deepl.api-free', '-a', 'worker', '-w'],),
+                      {'capture_output': True, 'text': True, 'timeout': 10})]
+
+
+@pytest.mark.parametrize('failure', ['missing', 'empty', 'timeout', 'os-error', 'decode-error'])
+def test_deepl_keychain_failure_does_not_expose_output(monkeypatch, failure):
+    secret = 'sensitive-keychain-output'
+
+    def keychain(*args, **kwargs):
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(args[0], 10, output=secret, stderr=secret)
+        if failure == 'os-error':
+            raise OSError(secret)
+        if failure == 'decode-error':
+            raise UnicodeError(secret)
+        return SimpleNamespace(returncode=1 if failure == 'missing' else 0,
+                               stdout=secret if failure == 'missing' else ' ', stderr=secret)
+
+    monkeypatch.setattr('subzero.worker.config.sys.platform', 'darwin')
+    monkeypatch.setattr('subzero.worker.config.subprocess.run', keychain)
+    with pytest.raises(ValueError, match='DeepL Free') as error:
+        resolve_deepl_key(Config('http://localhost', 'key', 'token'))
+    assert secret not in str(error.value)
+    assert error.value.__suppress_context__ or error.value.__context__ is None
+
+
+def test_deepl_missing_key_on_other_platforms_is_explicit(monkeypatch):
+    monkeypatch.setattr('subzero.worker.config.sys.platform', 'linux')
+    with pytest.raises(ValueError, match='requires DEEPL_API_KEY'):
+        resolve_deepl_key(Config('http://localhost', 'key', 'token'))
+
+
+def test_config_repr_omits_provider_and_service_credentials():
+    cfg = Config('http://localhost', 'jellyfin-sensitive', 'bearer-sensitive',
+                 opensubtitles_key='opensubtitles-sensitive',
+                 opensubtitles_password='password-sensitive', deepl_api_key='deepl-sensitive:fx')
+    assert 'sensitive' not in repr(cfg)

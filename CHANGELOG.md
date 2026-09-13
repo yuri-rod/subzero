@@ -5,6 +5,14 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-13
+
+### Added
+
+- Add an explicit DeepL Free worker provider for English to Brazilian Portuguese. Check the character budget for the entire uncached episode before translation, preserve completed blocks, and pause the queue when the episode does not fit.
+- Persist conservative character reservations across restarts and ambiguous requests. Keep the Free endpoint fixed, use environment or Keychain credentials, and require confirmed quota reconciliation after a billing reset.
+- Expose paused jobs in worker health and add an authenticated resume endpoint. Resuming repeats episode admission before sending more text.
+
 ## [1.12.1] - 2026-09-13
 
 ### Added

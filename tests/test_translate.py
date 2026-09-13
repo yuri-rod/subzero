@@ -729,3 +729,34 @@ def test_sentence_grouping_scope_keeps_other_generic_models_unchanged(model, exp
     cues = [Cue(i, i + .9, 'Complete thought.') for i in range(19)]
     cues += [Cue(19, 19.9, 'ALEX: I found'), Cue(20, 20.9, 'the hidden key.')]
     assert [len(block) for block in translation_blocks(cues, 20, model)] == expected_sizes
+
+
+def test_paid_requests_are_not_repeated_for_invalid_line_count():
+    from types import SimpleNamespace
+    from subzero.translate import _translate_lines
+    requests = []
+    client = SimpleNamespace(retry_invalid_output=False,
+                             translate_block=lambda cues, *args, **kwargs: requests.append(cues) or [])
+    cues = [Cue(0, 1, 'First.'), Cue(2, 3, 'Second.')]
+    with pytest.raises(RuntimeError, match='preserve every subtitle'):
+        _translate_lines(cues, 'pt-BR', client, source_lang='en')
+    assert requests == [cues]
+
+
+def test_generic_translation_admits_all_cues_before_first_block():
+    from types import SimpleNamespace
+    from subzero.translate import translate_cues
+    from subzero.worker.deepl import DeepLQuotaExceeded
+    cues = [Cue(i * 2, i * 2 + 1, 'A complete sentence.') for i in range(25)]
+    admissions, requests = [], []
+
+    def reject(required):
+        admissions.append(required)
+        raise DeepLQuotaExceeded(required, 1)
+
+    client = SimpleNamespace(check_quota=reject, count_episode=lambda cues: sum(len(c.text) for c in cues),
+                             translate_block=lambda *args, **kwargs: requests.append(args))
+    with pytest.raises(DeepLQuotaExceeded):
+        translate_cues(cues, 'pt-BR', client, source_lang='en')
+    assert admissions == [500]
+    assert not requests

@@ -15,6 +15,7 @@ from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_t
                                _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
                                _translate_lines, _translate_sentence_units, _uses_sentence_units, translation_blocks)
 
+from .deepl import DeepLPause
 from .jellyfin import Media
 from .asr_process import transcribe_in_process
 from .srt import Cue, dump
@@ -427,7 +428,9 @@ class Ollama:
 
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-              strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
+              strict: bool = False, source_lang: str | None = None, *, context=None, admit=True) -> list[Cue]:
+    if admit and hasattr(ollama, 'check_quota'):
+        ollama.check_quota(ollama.count_episode(cues))
     phase = (compute_phase('ollama', ollama_url=getattr(ollama, 'url', None))
              if getattr(ollama, 'needs_local_compute', True) else nullcontext())
     with phase:
@@ -446,6 +449,8 @@ def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Prog
             if getattr(ollama, 'supports_context', _is_native_translation(model) and not _is_translategemma(model)):
                 options['context'] = _previous_context(cues[:len(done)], context)
             lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang, **options)
+        except DeepLPause:
+            raise
         except RuntimeError as err:
             raise RuntimeError(f'Falha no bloco {n}: {err}') from None
         for cue, text in zip(block, lines):

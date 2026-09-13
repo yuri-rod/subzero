@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
+from .deepl import DeepLPause
+
 KINDS = ("embedded", "opensubtitles", "whisper", "translate",
          "audit", "refetch", "resync", "embedded_translate", "rebuild", "recover_gaps", "repair")
 
@@ -96,11 +98,11 @@ class JobStore:
 
     def active(self) -> list[Job]:
         with self._db() as db:
-            rows = db.execute("SELECT * FROM jobs WHERE state IN ('queued', 'running') ORDER BY created").fetchall()
+            rows = db.execute("SELECT * FROM jobs WHERE state IN ('queued', 'running', 'paused') ORDER BY created").fetchall()
         return [Job(**dict(r)) for r in rows]
 
     def _next(self, db, allow_auto):
-        if db.execute("SELECT 1 FROM jobs WHERE state = 'running' LIMIT 1").fetchone():
+        if db.execute("SELECT 1 FROM jobs WHERE state IN ('running', 'paused') LIMIT 1").fetchone():
             return None
         origin_filter = "" if allow_auto else " AND origin = 'manual'"
         return db.execute(
@@ -140,6 +142,18 @@ class JobStore:
             db.execute("UPDATE jobs SET state='needs_review', message=?, phase=?, updated=?"
                        " WHERE id=? AND state='running'",(message,message,time.time(),job_id))
 
+    def pause(self, job_id, message):
+        with self._db() as db:
+            db.execute("UPDATE jobs SET state='paused', message=?, phase='quota', updated=?"
+                       " WHERE id=? AND state='running'", (message[:500], time.time(), job_id))
+
+    def resume(self, job_id):
+        with self._db() as db:
+            changed = db.execute("UPDATE jobs SET state='queued', message='', phase='',"
+                                 " next_attempt=0, updated=? WHERE id=? AND state='paused'",
+                                 (time.time(), job_id))
+            return changed.rowcount == 1
+
     def _set(self, job_id: str, **fields) -> None:
         fields["updated"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -174,7 +188,7 @@ class JobStore:
 
     def cancel(self, job_id: str) -> None:
         with self._db() as db:
-            db.execute("UPDATE jobs SET state = 'cancelled', updated = ? WHERE id = ? AND state IN ('queued', 'running')",
+            db.execute("UPDATE jobs SET state = 'cancelled', updated = ? WHERE id = ? AND state IN ('queued', 'running', 'paused')",
                        (time.time(), job_id))
 
     def requeue_running(self) -> None:
@@ -218,6 +232,8 @@ class Runner:
 
         try:
             result = handler(job, progress)
+        except DeepLPause as err:
+            self.store.pause(job.id, str(err))
         except Exception as err:
             self.store.fail(job.id, f"{type(err).__name__}: {err}", retryable=True)
         else:

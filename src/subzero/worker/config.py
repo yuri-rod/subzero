@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,11 +9,11 @@ from typing import Mapping
 @dataclass
 class Config:
     jellyfin_url: str
-    jellyfin_key: str
-    bearer_token: str
-    opensubtitles_key: str = ""
+    jellyfin_key: str = field(repr=False)
+    bearer_token: str = field(repr=False)
+    opensubtitles_key: str = field(default="", repr=False)
     opensubtitles_user: str = ""
-    opensubtitles_password: str = ""
+    opensubtitles_password: str = field(default="", repr=False)
     db_path: str = "jobs.db"
     state_path: str = "watch.json"
     log_dir: str = "logs"
@@ -25,6 +26,7 @@ class Config:
     ollama_num_ctx: int = 4096
     ollama_num_predict: int = 2048
     translation_provider: str = 'ollama'
+    deepl_api_key: str = field(default='', repr=False)
     libretranslate_runtime: str = str(Path.home() / '.local/share/subzero/libretranslate')
     ocr_enabled: bool = field(default_factory=lambda: sys.platform == 'darwin')
     ocr_rescue_model: str = ""
@@ -54,8 +56,8 @@ class Config:
     idle_shutdown_minutes: int = 15
 
     def __post_init__(self):
-        if self.translation_provider not in ('ollama', 'libretranslate'):
-            raise ValueError('TRANSLATION_PROVIDER must be ollama or libretranslate')
+        if self.translation_provider not in ('ollama', 'libretranslate', 'deepl-free'):
+            raise ValueError('TRANSLATION_PROVIDER must be ollama, libretranslate or deepl-free')
         if bool(self.ocr_rescue_model) != bool(self.ocr_rescue_model_digest):
             raise ValueError('OCR rescue requires both a model and its digest')
 
@@ -85,6 +87,7 @@ class Config:
             ollama_num_ctx=int(env.get("OLLAMA_NUM_CTX", "4096")),
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
             translation_provider=env.get('TRANSLATION_PROVIDER', 'ollama').strip().lower(),
+            deepl_api_key=env.get('DEEPL_API_KEY', '').strip(),
             libretranslate_runtime=env.get('LIBRETRANSLATE_RUNTIME', str(Path.home() / '.local/share/subzero/libretranslate')),
             ocr_enabled=env.get('OCR_ENABLED', '1' if sys.platform == 'darwin' else '0').lower() not in ('0', 'false', 'no'),
             ocr_rescue_model=env.get('OCR_RESCUE_MODEL', '').strip(),
@@ -108,6 +111,25 @@ class Config:
             sync_audit_only=env.get('SYNC_AUDIT_ONLY','0') in ('1','true','yes'),
             idle_shutdown_minutes=int(env.get("IDLE_SHUTDOWN_MINUTES", "15")),
         )
+
+
+def resolve_deepl_key(cfg: Config) -> str:
+    if cfg.deepl_api_key:
+        return cfg.deepl_api_key
+    if sys.platform != 'darwin':
+        raise ValueError('DeepL Free requires DEEPL_API_KEY')
+    try:
+        keychain = subprocess.run(
+            ['/usr/bin/security', 'find-generic-password', '-s', 'subzero.deepl.api-free',
+             '-a', 'worker', '-w'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        raise ValueError('DeepL Free key could not be read from macOS Keychain') from None
+    if keychain.returncode != 0 or not keychain.stdout.strip():
+        raise ValueError('DeepL Free requires DEEPL_API_KEY or the macOS Keychain entry '
+                         'subzero.deepl.api-free for account worker')
+    return keychain.stdout.strip()
 
 
 def read_env_file(path: str | Path, *, required: bool = False) -> dict[str, str]:

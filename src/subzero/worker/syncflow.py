@@ -22,6 +22,7 @@ from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_C
                                TRANSLATION_CONTEXT_CHARS, _is_native_translation,
                                _is_translategemma, _previous_context, translation_blocks)
 
+from .deepl import DeepLPause
 from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
 from .moviehash import moviehash
 from .service import same_language
@@ -244,6 +245,8 @@ class SyncFlow:
                 and not same_language(audio_lang,job.target_lang)):
             try:
                 self.translation_ready()
+            except DeepLPause:
+                raise
             except RuntimeError as err:
                 return self.review(media,job,key,f'Translation unavailable: {err}')
         progress('verificando referencia de audio',0)
@@ -422,6 +425,8 @@ class SyncFlow:
                     raise RuntimeError(f'Merged subtitle failed validation: {reason}')
                 return self.install(media, job, key, text, report,
                                     expected_source=(target, digest(original)))
+        except DeepLPause:
+            raise
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
             self.active(job)
             reason = f'Gap recovery failed: {err}'
@@ -552,32 +557,49 @@ class SyncFlow:
                 return False
             return check_language_completeness(text, job.target_lang)[0]
 
+        def cached_block(block, start):
+            source = dump(block)
+            cache = folder / f'{start:06d}.json'
+            translated = None
+            if cache.exists():
+                try:
+                    cached = json.loads(read_gap_source(cache))
+                    text = cached.get('text') if isinstance(cached, dict) else None
+                    if (isinstance(text, str) and cached.get('source') == source
+                            and cached.get('digest') == digest(text)):
+                        candidate = parse(text)
+                        if valid_block(block, candidate):
+                            translated = [Cue(a.index, b.start, b.end, b.text)
+                                          for a, b in zip(block, candidate)]
+                except (ValueError, UnicodeError):
+                    pass
+            return translated
+
+        blocks = list(translation_blocks(cues, settings['block_size'], settings['model'],
+                                         use_sentence_units=getattr(ollama, 'uses_sentence_units', None)))
         try:
-            for block in translation_blocks(cues, settings['block_size'], settings['model'],
-                                            use_sentence_units=getattr(ollama, 'uses_sentence_units', None)):
+            pending = []
+            start = 0
+            for block in blocks:
+                self.active(job)
+                pending.append((block, cached_block(block, start)))
+                start += len(block)
+            if hasattr(ollama, 'check_quota'):
+                required = sum(ollama.count_episode(block) for block, translated in pending
+                               if translated is None)
+                if required:
+                    ollama.check_quota(required)
+            for block, translated in pending:
                 self.active(job)
                 start = len(completed)
                 source = dump(block)
                 cache = folder / f'{start:06d}.json'
-                translated = None
-                if cache.exists():
-                    try:
-                        cached = json.loads(read_gap_source(cache))
-                        text = cached.get('text') if isinstance(cached, dict) else None
-                        if (isinstance(text, str) and cached.get('source') == source
-                                and cached.get('digest') == digest(text)):
-                            candidate = parse(text)
-                            if valid_block(block, candidate):
-                                translated = [Cue(a.index, b.start, b.end, b.text)
-                                              for a, b in zip(block, candidate)]
-                    except (ValueError, UnicodeError):
-                        pass
                 if translated is None:
                     options = {}
                     if use_context:
                         options['context'] = _previous_context(cues[:start], {'title': title})
                     translated = translate(block, job.target_lang, ollama,
-                                           lambda *_: self.active(job), strict=True, source_lang='en', **options)
+                                           lambda *_: self.active(job), strict=True, source_lang='en', admit=False, **options)
                     self.active(job)
                     if not valid_block(block, translated):
                         raise RuntimeError(f'Translation block at cue {start + 1} is incomplete or untranslated')
@@ -649,6 +671,8 @@ class SyncFlow:
             text, report = self.generate_from_english(media, job, key, reference, source, progress)
             return self.install(media, job, key, text, report,
                                 expected_source=(target, digest(original)))
+        except DeepLPause:
+            raise
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
             self.active(job)
             reason = f'Full repair failed: {err}'
@@ -699,6 +723,8 @@ class SyncFlow:
                     expected_source = target, digest(original) if existed else None
                 text, report = self.generate_from_english(media, job, key, reference, text, progress)
                 return self.install(media, job, key, text, report, expected_source=expected_source)
+            except DeepLPause:
+                raise
             except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
                 self.active(job)
                 reason = f'English subtitle generation failed: {err}'
@@ -710,6 +736,8 @@ class SyncFlow:
         if not same_language(lang,job.target_lang):
             try:
                 cues = self.translate_cues(cues,job.target_lang,progress,source_lang=lang)
+            except DeepLPause:
+                raise
             except RuntimeError as err:
                 return self.review(media,job,key,f'Translation failed: {err}')
         raw = dump(cues)
@@ -740,6 +768,8 @@ class SyncFlow:
             original = read_gap_source(target) if existed else ''
             return self._rebuild(media, job, key, reference, progress,
                                  expected_source=(target, digest(original) if existed else None))
+        except DeepLPause:
+            raise
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
             self.active(job)
             reason = f'Audio rebuild failed: {err}'
@@ -751,6 +781,8 @@ class SyncFlow:
         if source is not None and not same_language(source[1],job.target_lang):
             try:
                 self.translation_ready()
+            except DeepLPause:
+                raise
             except RuntimeError:
                 audio_lang = (media.audio_lang or '').strip()
                 if (audio_lang.lower() not in ('','und','unknown','mul','zxx')

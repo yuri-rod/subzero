@@ -10,6 +10,7 @@ Keep code checks, deployed behavior, installed-file verification, and translatio
 - [ ] Verify complete repair and rebuild outputs after these fixes, including original source anchors, recovered caption timing, target language, backups, installed hashes, and media-server delivery.
 - [ ] Audit the generic CLI translation defaults separately from worker provider selection. Some OCR paths still default to `subzero/hy-mt2:7b` when no translation client is supplied. Removing a local model does not remove those defaults; do not silently substitute a provider.
 - [ ] Keep external queue monitors compatible with exact installation digests, fresh health observations, approved deployed versions, and explicit holds. Monitor corrections need a process restart and a fresh observation, not just a file edit.
+- [ ] Verify a complete DeepL Free episode through translation, installation, and served-subtitle checks. Exercise quota holds separately from output failures and retain resumable caches when the remaining allowance cannot fit an episode.
 
 ## Verified protections to retain
 
@@ -27,7 +28,9 @@ These checks cover their documented scope. They do not prove that every caption,
 
 ## Provider limitations and operating rules
 
-The selected local LibreTranslate engine can still mistranslate ambiguous terms, idioms, names or compressed dialogue, and omit details. Target-language and formatting checks do not detect every semantic error. Keep representative source/output review separate from provider availability and speed measurements.
+DeepL Free is an explicit worker provider with a fixed Free endpoint and whole-episode quota admission. A quota hold must never turn into paid usage or an automatic change of provider. Account usage can change outside this worker, so a successful initial allowance check does not eliminate the need to handle quota exhaustion during translation.
+
+LibreTranslate and the optional providers can mistranslate ambiguous terms, idioms, names or compressed dialogue, and omit details. Target-language and formatting checks do not detect every semantic error. Keep representative source/output review separate from provider availability and speed measurements, including when DeepL is selected.
 
 Optional Ollama providers remain supported. Compatibility code and examples are not evidence that a model is installed or selected. Change provider/model settings deliberately, invalidate affected caches, and test the actual worker path before removing a selected runtime.
 
