@@ -8,6 +8,7 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Added
 
 - Add an `applefm` translation provider using Apple Foundation Models through a local OpenAI-style server (`fm serve`). Refused or echoed subtitle units fall back to LibreTranslate per unit when `TRANSLATION_FALLBACK=libretranslate` is set.
+- Add an mlx-whisper transcription backend on Apple Silicon, selected with `WHISPER_DEVICE=mlx`. It uses the corresponding Whisper weights, keeps the isolated child's stdout in JSON format, and seeds the sampler for reproducible runs.
 
 ### Fixed
 
