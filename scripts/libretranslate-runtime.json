@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "python_version": "3.13.15",
+  "platform": "darwin",
+  "machine": "arm64",
+  "wheels": [
+    {
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "filename": "pyyaml-6.0.3-cp313-cp313-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/b1/16/95309993f1d3748cd644e02e38b75d50cbc0d9561d21f390a76242ce073f/pyyaml-6.0.3-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "2283a07e2c21a2aa78d9c4442724ec1eb15f5e42a723b99cb3d822d48f5f7ad1",
+      "size": 173252
+    },
+    {
+      "name": "argos-translate-lt",
+      "version": "1.12.1",
+      "filename": "argos_translate_lt-1.12.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/c8/25/8b08b70191bff0b639746d8a41f2f00b276740c5181ca1f0a078167bf9c6/argos_translate_lt-1.12.1-py3-none-any.whl",
+      "sha256": "bc0649c67f59c6417909b30ccd3b7f7fbe5c6958515a6a46c4762f9bf90977f8",
+      "size": 41222
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "filename": "click-8.5.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl",
+      "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360",
+      "size": 125251
+    },
+    {
+      "name": "cloudpickle",
+      "version": "3.1.2",
+      "filename": "cloudpickle-3.1.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl",
+      "sha256": "9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a",
+      "size": 22228
+    },
+    {
+      "name": "ctranslate2",
+      "version": "4.8.2",
+      "filename": "ctranslate2-4.8.2-cp313-cp313-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/2c/00/3f5d12d94daa22ddf51de0252313476c0f8fca8b1c7776592953764a8b85/ctranslate2-4.8.2-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "a40b190248389e1adb38ff90407937131c6bb9d7f9771f29ca1dca01946ff252",
+      "size": 1271572
+    },
+    {
+      "name": "filelock",
+      "version": "3.32.6",
+      "filename": "filelock-3.32.6-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/cc/06/4f138f618dbea66803291274f228f01daf29f306fe8b96bc30dab765df75/filelock-3.32.6-py3-none-any.whl",
+      "sha256": "3f16ecd0117feae0dfc147e8c62eb5daeccd8bd800378c3ddf416de9b4feb6b1",
+      "size": 100189
+    },
+    {
+      "name": "flatbuffers",
+      "version": "25.12.19",
+      "filename": "flatbuffers-25.12.19-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl",
+      "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4",
+      "size": 26661
+    },
+    {
+      "name": "joblib",
+      "version": "1.6.0",
+      "filename": "joblib-1.6.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/18/53/84099323c2ec4be98d935f63c033ac4151ee83836ca1050ede3b3aadf155/joblib-1.6.0-py3-none-any.whl",
+      "sha256": "3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba",
+      "size": 306115
+    },
+    {
+      "name": "minisbd",
+      "version": "0.9.5",
+      "filename": "minisbd-0.9.5-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/d2/47/7b13b62127a6e1460e1bc3fabf3aab0cf281f73cad81d5972b3aef40c0ff/minisbd-0.9.5-py3-none-any.whl",
+      "sha256": "a573a3bb62349a5a7f22f6e12c8305814dbe6765d83bcb034c6f780d1e69d1df",
+      "size": 41125
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.3",
+      "filename": "numpy-2.5.3-cp313-cp313-macosx_14_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/ab/2a/98282aa5b8f58b1157d440bb6282eed47e3632a5de53a714fbab17e659fe/numpy-2.5.3-cp313-cp313-macosx_14_0_arm64.whl",
+      "sha256": "f9a2353b37a1a9e78fd82b27ad7e2a32a2d036604d18f02b05e3136c62ca3b09",
+      "size": 5439695
+    },
+    {
+      "name": "onnxruntime",
+      "version": "1.30.0",
+      "filename": "onnxruntime-1.30.0-cp313-cp313-macosx_14_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/f0/75/508454c5d01f31641dabc597fe559594c931a520a2673031179319d0afd8/onnxruntime-1.30.0-cp313-cp313-macosx_14_0_arm64.whl",
+      "sha256": "05e4fc41711d1f4abd19a9124b5be7a65a506cb2670a7f14b16162ef13c58134",
+      "size": 21544990
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "filename": "packaging-26.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "size": 129956
+    },
+    {
+      "name": "protobuf",
+      "version": "7.36.1",
+      "filename": "protobuf-7.36.1-cp310-abi3-macosx_10_9_universal2.whl",
+      "url": "https://files.pythonhosted.org/packages/f7/6c/3a54a58f2948b0f485df9ecdd06590f15d0a7abf46a89d50c3de709ff4ff/protobuf-7.36.1-cp310-abi3-macosx_10_9_universal2.whl",
+      "sha256": "3cf2ee25d006cee57294a1196ea43b37feb78e0dcd1e8af5c1aeddb777655aca",
+      "size": 456046
+    },
+    {
+      "name": "regex",
+      "version": "2026.9.10",
+      "filename": "regex-2026.9.10-cp313-cp313-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/fa/68/241f88458b17c46ed2f80147a60a03b2ada7fb815c23b6bc76c298abb0a5/regex-2026.9.10-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "d8c668af8f7bdb1d18739c27d30cd9f4b371495a883f75a002fb7a39d740fecd",
+      "size": 291741
+    },
+    {
+      "name": "sacremoses",
+      "version": "0.1.1",
+      "filename": "sacremoses-0.1.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/0b/f0/89ee2bc9da434bd78464f288fdb346bc2932f2ee80a90b2a4bbbac262c74/sacremoses-0.1.1-py3-none-any.whl",
+      "sha256": "31e04c98b169bfd902144824d191825cd69220cdb4ae4bcf1ec58a7db5587b1a",
+      "size": 897476
+    },
+    {
+      "name": "sentencepiece",
+      "version": "0.2.2",
+      "filename": "sentencepiece-0.2.2-cp313-cp313-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/34/db/f9ea1a6844b4fa5dfe2312095cd866a1f724cd0905054ab9d5991778ba50/sentencepiece-0.2.2-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "201a8e0f55501a76e08dbf2c54bc45f4642b379271e89c667d517bfbc2191f2a",
+      "size": 1347267
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.1",
+      "filename": "tqdm-4.70.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl",
+      "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73",
+      "size": 80199
+    }
+  ],
+  "archive": {
+    "filename": "translate-en_pb-1_9.argosmodel",
+    "url": "https://argos-net.com/v1/translate-en_pb-1_9.argosmodel",
+    "sha256": "1d1cd5e9540c6b38c258bed002a42d3b311b8a189acb74feaa311ef30d175c5b",
+    "size": 66179201
+  },
+  "segmenter": {
+    "filename": "en.onnx",
+    "url": "https://github.com/LibreTranslate/MiniSBD/releases/download/v0.0.1/en.onnx",
+    "sha256": "6fa9f3a3b201687bd43e329b2b0736789efc97b37883b5b759b31988dca9f353",
+    "size": 188043
+  }
+}

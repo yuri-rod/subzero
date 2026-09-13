@@ -1,1 +1,3 @@
 include CHANGELOG.md
+include scripts/install_libretranslate.py
+include scripts/libretranslate-runtime.json
