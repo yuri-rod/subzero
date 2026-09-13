@@ -1,5 +1,6 @@
 import json
 import math
+import queue
 import subprocess
 import tempfile
 import threading
@@ -8,11 +9,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
+from subzero.compute import ComputeShutdownError, compute_phase
 from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_translategemma,
                                _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
                                _translate_lines, _translate_sentence_units, translation_blocks)
 
 from .jellyfin import Media
+from .asr_process import transcribe_in_process
 from .srt import Cue, dump
 
 BLOCK = 20
@@ -56,6 +59,27 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
     proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], stdout=subprocess.PIPE,
                  stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, bufsize=1)
     errors: list[str] = []
+    lines = queue.Queue(maxsize=64)
+    stopped = threading.Event()
+
+    def send(line):
+        while not stopped.is_set():
+            try:
+                lines.put(line, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def read_progress():
+        try:
+            for line in proc.stdout:
+                if stopped.is_set():
+                    return
+                send(line)
+        except (OSError, UnicodeError, ValueError, RuntimeError) as err:
+            send(err)
+        finally:
+            send(None)
 
     def drain() -> None:
         try:
@@ -64,15 +88,59 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
             errors.append("")
 
     reader = threading.Thread(target=drain, name="ffmpeg-stderr", daemon=True)
-    reader.start()
-
-    total = max(1.0, duration)
-    for line in proc.stdout:
-        if line.startswith("out_time_ms="):
-            done = int(line.split("=", 1)[1].strip() or 0) / 1_000_000
-            progress(phase, int(min(99, done / total * 100)))
-    code = proc.wait()
-    reader.join(timeout=10)
+    stdout = threading.Thread(target=read_progress, name="ffmpeg-progress", daemon=True)
+    finished = False
+    percent = 0
+    last_progress = time.monotonic()
+    try:
+        reader.start()
+        stdout.start()
+        total = max(1.0, duration)
+        while True:
+            try:
+                line = lines.get(timeout=1)
+            except queue.Empty:
+                if time.monotonic() - last_progress >= 5:
+                    progress(phase, percent)
+                    last_progress = time.monotonic()
+                continue
+            if line is None:
+                break
+            if isinstance(line, Exception):
+                raise RuntimeError("FFmpeg progress stream failed") from line
+            if line.startswith("out_time_ms="):
+                done = int(line.split("=", 1)[1].strip() or 0) / 1_000_000
+                percent = int(min(99, done / total * 100))
+                progress(phase, percent)
+                last_progress = time.monotonic()
+        while True:
+            try:
+                code = proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - last_progress >= 5:
+                    progress(phase, percent)
+                    last_progress = time.monotonic()
+        finished = True
+    finally:
+        stopped.set()
+        if not finished:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired as err:
+                    raise ComputeShutdownError("FFmpeg did not exit after termination", pids=(proc.pid,)) from err
+        if reader.ident is not None:
+            reader.join(timeout=10)
+        if stdout.ident is not None:
+            stdout.join(timeout=2)
     if code != 0:
         raise RuntimeError(f"ffmpeg falhou: {last_lines(errors[0] if errors else '')}")
 
@@ -210,7 +278,10 @@ class ModelHolder:
 
 def transcribe(audio_path: str, holder: ModelHolder, progress: Progress) -> tuple[list[Cue], str]:
     with holder.lock:
-        return _transcribe(audio_path, holder, progress)
+        with compute_phase("whisper") as isolated:
+            if isolated:
+                return transcribe_in_process(audio_path, holder, progress)
+            return _transcribe(audio_path, holder, progress)
 
 
 def _transcribe(audio_path: str, holder: ModelHolder, progress: Progress) -> tuple[list[Cue], str]:
@@ -273,6 +344,10 @@ class Ollama:
         self.http = http
 
     def ensure_available(self) -> None:
+        with compute_phase("ollama", ollama_url=self.url):
+            self._ensure_available()
+
+    def _ensure_available(self) -> None:
         import httpx
         try:
             response = self.http.request("POST", f"{self.url}/api/show",
@@ -285,6 +360,12 @@ class Ollama:
             raise RuntimeError(f"Ollama model check failed ({response.status_code})")
 
     def release(self) -> None:
+        with compute_phase("ollama", ollama_url=self.url, start_ollama=False) as isolated:
+            if isolated:
+                return
+            self._release()
+
+    def _release(self) -> None:
         """Pede ao ollama para largar o modelo agora. Best-effort: se falhar, o
         keep_alive derruba sozinho em seguida."""
         import httpx
@@ -295,6 +376,10 @@ class Ollama:
             pass
 
     def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
+        with compute_phase("ollama", ollama_url=self.url):
+            return self._translate_block(cues, target_lang, source_lang, context=context)
+
+    def _translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
         import httpx
         if _is_native_translation(self.model) and not _is_translategemma(self.model) and len(cues) > 1:
             return _translate_sentence_units(cues, target_lang, self, source_lang=source_lang, context=context)
@@ -337,6 +422,12 @@ class Ollama:
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
               strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
+    with compute_phase("ollama", ollama_url=getattr(ollama, 'url', None)):
+        return _translate(cues, target_lang, ollama, progress, strict, source_lang, context=context)
+
+
+def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
+               strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
     done: list[Cue] = []
     model = getattr(ollama, 'model', '')
     blocks = list(translation_blocks(cues, BLOCK, model))

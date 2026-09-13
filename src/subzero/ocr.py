@@ -21,6 +21,7 @@ from typing import Callable, Iterable
 
 from .caption_quality import validate_caption_readings
 from .caption_scan_cache import CaptionScanCache
+from .compute import compute_lease_fd, compute_phase
 from .convert import Cue, dump_srt, parse_srt
 from .core import Options, fix_text, read
 from .reference import build_reference, fingerprint
@@ -580,10 +581,17 @@ def cluster_ocr_detections(
 
 
 def _vision_frames(binary: str, frames: list[Path], caption_region: bool = False) -> dict[str, dict]:
+    with compute_phase("vision"):
+        return _run_vision_frames(binary, frames, caption_region)
+
+
+def _run_vision_frames(binary: str, frames: list[Path], caption_region: bool = False) -> dict[str, dict]:
+    lease = compute_lease_fd()
     res = subprocess.run([binary, "--json"] + (["--caption-region"] if caption_region else [])
                          + [str(frame) for frame in frames],
              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-             check=False, timeout=max(120, len(frames) * 10))
+             check=False, timeout=max(120, len(frames) * 10),
+             pass_fds=() if lease is None else (lease,))
     if res.returncode:
         raise RuntimeError(f"Vision OCR failed: {res.stderr[-400:]}")
     try:

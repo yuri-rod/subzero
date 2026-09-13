@@ -11,6 +11,7 @@ from pathlib import Path
 
 from subzero.caption_quality import validate_caption_readings
 from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
+from subzero.compute import compute_phase
 from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
@@ -492,6 +493,10 @@ class SyncFlow:
         return text
 
     def repair_translation(self, job, key, cues, progress, *, title=''):
+        with compute_phase('ollama', ollama_url=getattr(self.service.ollama, 'url', None)):
+            return self._repair_translation(job, key, cues, progress, title=title)
+
+    def _repair_translation(self, job, key, cues, progress, *, title=''):
         ollama = self.service.ollama
         title = ' '.join(title.split())[:256]
         settings = {
