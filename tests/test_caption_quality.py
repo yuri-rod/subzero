@@ -18,6 +18,11 @@ def cue(start_ms, end_ms, text):
     ["I'll come back at night.", "I'II come back at night.", "I'll come back at night."],
     ['have our four.', 'have our tour.', 'have our four.'],
     ['You will race on separate paths...', 'You will race on separate paths ii', 'You will race on separate paths...'],
+    ['I got you.', 'got you.', 'I got you.'],
+    ['I go.', 'go.', 'I go.'],
+    ['Go on.', 'Goron.', 'Go on.'],
+    ['I _ got you.', 'I got you.', 'I _ got you.'],
+    ['I _ go.', '_ I go.', 'I _ go.'],
 ])
 def test_rejects_rapid_return_to_an_earlier_word_reading(texts):
     readings = [cue(10000, 10700, texts[0]), cue(10700, 10800, texts[1]), cue(10800, 11300, texts[2])]
@@ -55,7 +60,6 @@ def test_detects_instability_when_formatting_differs_without_mutating_cues():
 
 @pytest.mark.parametrize('texts', [
     ['Yes.', 'No.', 'Go!'],
-    ['Sam.', 'Pam.', 'Sam.'],
     ['Come here now.', 'Get the other rope.', 'We won the challenge!'],
     ['Bring seven bags.', 'Bring eight bags.', 'Bring nine bags.'],
     ['I see Sam.', 'I see Pam.', 'I see Tom.'],
@@ -73,6 +77,7 @@ def test_preserves_short_and_genuinely_changing_dialogue(texts):
     ['Go now.', 'GO NOW!', '<i>Go now...</i>'],
     ["He didn't stop.", 'He didn t stop.', "He didn't stop!"],
     ['I found it.', 'I found it.', 'I found it.'],
+    ['I _ got you.', 'I ___ got you!', 'I_ got you.'],
 ])
 def test_punctuation_case_and_spacing_do_not_count_as_lexical_changes(texts):
     validate_caption_readings([cue(10000 + i * 150, 10150 + i * 150, text) for i, text in enumerate(texts)])
@@ -132,3 +137,22 @@ def test_one_speaker_label_can_persist_over_an_unlabelled_continuation():
 def test_empty_and_single_short_caption_are_valid_for_this_gate():
     assert validate_caption_readings([]) is None
     assert validate_caption_readings([cue(10000, 10040, 'Run!')]) is None
+
+
+@pytest.mark.parametrize('texts', [
+    ['Sam.', 'Pam.', 'Sam.'],
+    ['7.', '8.', '7.'],
+    ['I can.', "I can't.", 'I can.'],
+    ['I _ go.', 'I go _.', 'I _ go.'],
+])
+def test_ambiguous_real_changes_are_reviewed_without_erasing_any_reading(texts):
+    readings = [cue(10000 + i * 150, 10150 + i * 150, text) for i, text in enumerate(texts)]
+    original = readings.copy()
+    with pytest.raises(RuntimeError, match='OCR'):
+        validate_caption_readings(readings)
+    assert all(before is after for before, after in zip(original, readings))
+
+
+def test_stable_short_readings_and_one_way_censor_changes_remain_valid():
+    validate_caption_readings([cue(0, 100, 'I _ go.'), cue(100, 250, 'I go.'), cue(250, 400, 'Go now.')])
+    validate_caption_readings([cue(0, 100, 'I _ go.'), cue(100, 250, 'I ___ go.'), cue(250, 400, 'I _ go.')])
