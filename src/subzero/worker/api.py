@@ -104,6 +104,13 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     if cfg.translation_provider == 'libretranslate':
         from .libretranslate import LibreTranslate
         translator = LibreTranslate(cfg.libretranslate_runtime)
+    elif cfg.translation_provider == 'applefm':
+        from .applefm import AppleFM
+        fallback = None
+        if cfg.translation_fallback == 'libretranslate':
+            from .libretranslate import LibreTranslate
+            fallback = LibreTranslate(cfg.libretranslate_runtime)
+        translator = AppleFM(cfg.applefm_url, fallback=fallback)
     elif cfg.translation_provider == 'deepl-free':
         from .deepl import DeepLFree
         deepl_client = DeepLFree(resolve_deepl_key(cfg),
