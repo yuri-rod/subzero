@@ -307,9 +307,15 @@ class _Lifecycle:
         while True:
             loaded, pid = self._service()
             if loaded and pid is not None:
-                self._managed(pid, _processes())
-                if self._ready():
-                    return
+                processes = _processes()
+                try:
+                    self._managed(pid, processes)
+                except RuntimeError:
+                    # launchd can publish a PID before setting its final UID and group.
+                    pass
+                else:
+                    if self._ready():
+                        return
             if time.monotonic() >= deadline:
                 raise RuntimeError('Managed Ollama did not become ready before the startup timeout')
             time.sleep(.05)
