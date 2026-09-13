@@ -12,7 +12,7 @@ from typing import Callable
 from subzero.compute import ComputeShutdownError, compute_phase
 from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_translategemma,
                                _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
-                               _translate_lines, _translate_sentence_units, translation_blocks)
+                               _translate_lines, _translate_sentence_units, _uses_sentence_units, translation_blocks)
 
 from .jellyfin import Media
 from .asr_process import transcribe_in_process
@@ -386,7 +386,7 @@ class Ollama:
 
     def _translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
         import httpx
-        if _is_native_translation(self.model) and not _is_translategemma(self.model) and len(cues) > 1:
+        if _uses_sentence_units(self.model) and len(cues) > 1:
             return _translate_sentence_units(cues, target_lang, self, source_lang=source_lang, context=context)
         if _is_native_translation(self.model) and len(cues) > 1:
             return [line for index, cue in enumerate(cues)

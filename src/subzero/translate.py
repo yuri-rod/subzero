@@ -44,7 +44,7 @@ LANG_ALIASES = {
 }
 
 MAX_RESPONSE_BYTES = 131072
-TRANSLATION_PROMPT_VERSION = "native-hymt2-prior-terminology-8"
+TRANSLATION_PROMPT_VERSION = "sentence-units-qwen-generic-9"
 TRANSLATION_CONTEXT_CUES = 32
 TRANSLATION_CONTEXT_CHARS = 6000
 NATIVE_CONTROL = re.compile(r"<(?:[|｜ｆｈｺｂ]|/?(?:think|suggested_response)\b)")
@@ -163,6 +163,11 @@ def _is_native_translation(model: str) -> bool:
     return model.rsplit("/", 1)[-1].split(":", 1)[0].lower() in {"translategemma", "hy-mt2"}
 
 
+def _uses_sentence_units(model: str) -> bool:
+    return (model == "qwen3.5:9b"
+            or (_is_native_translation(model) and not _is_translategemma(model)))
+
+
 SPEAKER = re.compile(r"(?m)^\s*(?:[-\u2013\u2014]\s*)?([A-Z][A-Z0-9 '\-]{1,40}):\s*")
 DIALOGUE_TURN = re.compile(r"(?m)^\s*[-\u2013\u2014]\s*\S")
 SUBTITLE_FORMATTING = re.compile(r"<[^>]*>|\{[^}]*\}")
@@ -207,7 +212,7 @@ def sentence_units(cues):
 def translation_blocks(cues, batch_size, model):
     if batch_size < 1:
         raise ValueError("Translation batch size must be positive")
-    if not _is_native_translation(model) or _is_translategemma(model):
+    if not _uses_sentence_units(model):
         yield from chunks(cues, batch_size)
         return
     block = []
@@ -268,7 +273,8 @@ def _translate_sentence_units(cues, target_lang, client, source_lang=None, conte
             parts.append(cue.text[repeated.end():] if speaker and repeated
                          and speaker.group(1) == repeated.group(1) else cue.text)
         joined = replace(unit[0], end=unit[-1].end, text="\n".join(parts))
-        neighbors = _previous_context(cues[:start], context)
+        neighbors = (_previous_context(cues[:start], context)
+                     if _is_native_translation(getattr(client, "model", "")) else None)
         translated = _translate_lines([joined], target_lang, client, source_lang=source_lang, context=neighbors)
         lines.extend(reflow_translation(unit, translated[0]))
         start += len(unit)
@@ -439,7 +445,7 @@ class OllamaClient:
             return self._translate_block(cues, target_lang, source_lang, context=context)
 
     def _translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
-        if _is_native_translation(self.model) and not _is_translategemma(self.model) and len(cues) > 1:
+        if _uses_sentence_units(self.model) and len(cues) > 1:
             return _translate_sentence_units(cues, target_lang, self, source_lang, context)
         if _is_native_translation(self.model) and len(cues) > 1:
             return [line for index, cue in enumerate(cues)

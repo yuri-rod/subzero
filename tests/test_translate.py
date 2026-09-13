@@ -686,3 +686,46 @@ def test_translategemma_game_terms_do_not_change_its_exact_prompt():
 def test_hymt2_terminology_retains_native_control_token_rejection(source, context):
     with pytest.raises(RuntimeError, match='control tokens'):
         _ollama_payload([Cue(0, 1, source)], 'pt-BR', 'subzero/hy-mt2:7b', '2m', 4096, 512, context=context)
+
+
+def test_qwen_complete_units_keep_generic_payload_reflow_and_timestamps(monkeypatch):
+    from io import BytesIO
+    requests = []
+    generated = 'ALEX: We found the next hidden key.'
+
+    def request(req, timeout):
+        requests.append(json.loads(req.data))
+        response = BytesIO(json.dumps({'response': json.dumps([{'id': 1, 'text': generated}]),
+                                      'done': True, 'done_reason': 'stop'}).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    cues = [Cue('00:00:01,000', '00:00:02,000', 'ALEX: I found'),
+            Cue('00:00:02,100', '00:00:03,000', 'ALEX: the hidden key.'),
+            Cue('00:00:03,100', '00:00:04,000', 'BLAIR: This is'),
+            Cue('00:00:04,100', '00:00:05,000', 'our next clue.')]
+    translated = translate_cues(cues, 'pt-BR', OllamaClient(model='qwen3.5:9b'),
+                                source_lang='en', batch_size=1)
+    joined = [Cue(cues[0].start, cues[1].end, 'ALEX: I found\nthe hidden key.'),
+              Cue(cues[2].start, cues[3].end, 'BLAIR: This is\nour next clue.')]
+    assert requests == [_ollama_payload([cue], 'pt-BR', 'qwen3.5:9b', '2m', 4096, 2048,
+                                        source_lang='en') for cue in joined]
+    assert [word for cue in translated for word in cue.text.split()] == generated.split() * 2
+    assert [(cue.start, cue.end) for cue in translated] == [(cue.start, cue.end) for cue in cues]
+    assert all(cue.text for cue in translated)
+
+
+@pytest.mark.parametrize('model,expected_sizes', [
+    ('qwen3.5:9b', [19, 2]),
+    ('subzero/hy-mt2:7b', [19, 2]),
+    ('translategemma:4b', [20, 1]),
+    ('qwen3.5:4b', [20, 1]),
+    ('qwen3:9b', [20, 1]),
+    ('generic:7b', [20, 1]),
+])
+def test_sentence_grouping_scope_keeps_other_generic_models_unchanged(model, expected_sizes):
+    from subzero.translate import translation_blocks
+    cues = [Cue(i, i + .9, 'Complete thought.') for i in range(19)]
+    cues += [Cue(19, 19.9, 'ALEX: I found'), Cue(20, 20.9, 'the hidden key.')]
+    assert [len(block) for block in translation_blocks(cues, 20, model)] == expected_sizes
