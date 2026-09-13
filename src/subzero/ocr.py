@@ -78,6 +78,10 @@ def get_vision_ocr_bin() -> str | None:
             if res.returncode == 0 and cache_bin.is_file():
                 cache_bin.chmod(0o755)
                 return str(cache_bin)
+    elif sys.platform == "darwin":
+        cache_bin = Path.home() / ".cache" / "subzero" / "bin" / "vision_ocr"
+        if cache_bin.is_file() and os.access(cache_bin, os.X_OK):
+            return str(cache_bin)
     return None
 
 
