@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, local translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.11.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.11.1-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -421,7 +421,7 @@ jobs when `OCR_ENABLED=1`.
 
 Use `kind: "rebuild"` when no verified subtitle source is available. With `OCR_ENABLED=1`, English audio is transcribed from the same audio stream used by the independent timing reference. The transcript must pass timing checks before entering the full caption-recovery and translation pipeline. A detected-language mismatch on known English audio stops for review. Rebuild preserves the target snapshot taken before source selection or transcription, including when it finds an existing source sidecar. Failed retries repeat transcription; completed OCR and translation work can use their existing caches.
 
-The source scan samples at two frames per second, then scans caption transitions at ten frames per second to refine their starts and ends. Timestamps come from the selected input frames. Native recognition and frame sampling still limit timing precision; this does not establish word-level audio alignment.
+The source scan samples at two frames per second, then scans caption transitions at ten frames per second to refine their starts and ends. Timestamps come from the selected input frames. A one-nanosecond comparison tolerance prevents floating-point rounding from skipping a frame at the sampling boundary. Native recognition and frame sampling still limit timing precision; this does not establish word-level audio alignment.
 
 If the dense scan loses a caption confirmed by repeated source frames, recovery stops for review and keeps the installed subtitle.
 
