@@ -1,6 +1,6 @@
 """Universal subtitle & audio AI toolkit."""
 
-__version__ = "1.12.0"
+__version__ = "1.12.1"
 
 from .convert import (
     Cue,

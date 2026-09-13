@@ -31,7 +31,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 7
+CAPTION_SCAN_VERSION = 8
 
 
 @dataclass
@@ -363,8 +363,39 @@ def _contained_caption_fragment(fragment: dict, line: dict) -> bool:
                     for index in range(len(complete) - len(words) + 1)))
 
 
+def _restore_split_caption_censors(frame: dict, retry: dict, center_tolerance: float | None) -> dict:
+    if _caption_title_card(frame):
+        return frame
+    fragments = _caption_regions(retry, center_tolerance, max_height=0.12)
+    replacements = list(frame.get("items", []))
+    for line in _caption_regions(frame, center_tolerance, max_height=0.12):
+        words = _caption_words(line["text"])
+        if "_" in words:
+            continue
+        row = sorted((fragment for fragment in fragments
+                      if abs(fragment["y"] + fragment["height"] / 2 - line["y"] - line["height"] / 2) <= 0.025
+                      and fragment["x"] >= line["x"] - 0.03
+                      and fragment["x"] + fragment["width"] <= line["x"] + line["width"] + 0.03),
+                     key=lambda fragment: fragment["x"])
+        if (len(row) < 2 or sum(fragment["width"] for fragment in row) < 0.8 * line["width"]
+                or any(left["x"] + left["width"] > right["x"] + 0.005
+                       for left, right in zip(row, row[1:]))):
+            continue
+        text = " ".join(fragment["text"] for fragment in row)
+        observed = _caption_words(text)
+        if ("_" not in observed or [word for word in observed if word != "_"] != words
+                or _protected_caption_change(line["text"], re.sub(r"_+", " ", text))):
+            continue
+        # The crop split one physical row; appending its suffix duplicates visible words.
+        replacements = [{**prior, "text": text, "candidates": []} if prior == line else prior
+                        for prior in replacements]
+    return {**frame, "items": replacements}
+
+
 def recover_caption_runs(frames: list[dict], retries: dict[int, dict], timestamps: list[float],
                          center_tolerance: float | None = 0.12) -> list[str]:
+    frames = [_restore_split_caption_censors(frame, retries[index], center_tolerance)
+              if index in retries else frame for index, frame in enumerate(frames)]
     regions = [_caption_regions(frame, center_tolerance, max_height=0.12) for frame in frames]
     retried = {index: _caption_regions(frame, center_tolerance, max_height=0.12) for index, frame in retries.items()
                if not _caption_title_card(frames[index])}
@@ -934,7 +965,7 @@ def _rescue_caption_frames(video, coarse, dense, duration, dense_windows, interv
             if previous is not None:
                 if (previous.image_digest != frame.image_digest
                         or previous.evidence["admitted"] != frame.evidence["admitted"]):
-                    raise RuntimeError("Caption replay produced different evidence at one exact frame timestamp")
+                    raise RuntimeError(f"Caption replay produced different evidence at exact frame {key:.3f}s")
             else:
                 captured[key] = frame
 
@@ -950,7 +981,7 @@ def _rescue_caption_frames(video, coarse, dense, duration, dense_windows, interv
         for index, (window, fps) in enumerate(requests):
             if progress:
                 progress(index, total)
-            _scan_caption_frames(video, [window], fps=fps, retry_all=fps == 10, frame_sink=capture)
+            _scan_caption_frames(video, [window], fps=fps, retry_all=True, frame_sink=capture)
         if progress:
             progress(len(requests), total)
         if set(captured) != selected:

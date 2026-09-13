@@ -55,7 +55,8 @@ def strip_hearing_impaired(cues: list["Cue"], strip_tags: bool = True) -> list["
     kept: list[Cue] = []
     for cue in cues:
         lines = []
-        for line in cue.text.splitlines():
+        caption = BRACKETED.sub(lambda match: ' ' if len(match[0].splitlines()) > 1 else match[0], cue.text)
+        for line in caption.splitlines():
             if strip_tags:
                 line = TAG.sub("", line)
                 line = ASS.sub("", line)

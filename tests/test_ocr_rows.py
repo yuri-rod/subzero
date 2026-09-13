@@ -106,3 +106,55 @@ def test_punctuation_glyph_retry_does_not_delete_words(first, second):
     retried = {"items": [region(second)]}
     readings = ocr.recover_caption_runs([original] * 3, dict(enumerate([retried] * 3)), [0, 0.1, 0.2])
     assert readings == [first] * 3
+
+
+def test_split_retry_keeps_its_same_frame_censor_without_duplicating_the_full_row():
+    original = {"items": [region("Look at that thing.", x=.33, width=.33)]}
+    split = {"items": [region("Look at", x=.33, width=.16, y=.113, height=.049),
+                       region("_ that thing.", x=.51, width=.15, y=.091, height=.086)]}
+
+    readings = ocr.recover_caption_runs([original] * 3, {1: split}, [1, 1.1, 1.2])
+
+    assert readings == ["Look at that thing.", "Look at _ that thing.", "Look at that thing."]
+    cues = ocr.cluster_ocr_detections(list(zip([1, 1.1, 1.2], readings)), min_duration=0,
+                                     sample_duration=.1, stabilize_text=False)
+    with pytest.raises(RuntimeError, match="Unstable OCR"):
+        ocr.validate_caption_readings(cues)
+    assert ocr._caption_rescue_windows([], cues, [], 3) == [(0.25, 2.05)]
+
+
+def test_split_retry_preserves_the_censor_on_every_same_frame_reading():
+    original = {"items": [region("Look at that thing.", x=.33, width=.33)]}
+    split = {"items": [region("Look at", x=.33, width=.16, y=.113, height=.049),
+                       region("_ that thing.", x=.51, width=.15, y=.091, height=.086)]}
+
+    assert ocr.recover_caption_runs([original] * 3, dict(enumerate([split] * 3)),
+                                    [1, 1.1, 1.2]) == ["Look at _ that thing."] * 3
+
+
+@pytest.mark.parametrize(("caption", "left", "right"), [
+    ("Sam holds 7 keys.", "Pam holds", "_ 7 keys."),
+    ("Sam holds 7 keys.", "Sam holds", "_ 8 keys."),
+    ("We should not go.", "We should", "_ go."),
+    ("Look at that thing.", "Look at", "_ that person."),
+    ("Look _ at that thing.", "Look at", "_ that thing."),
+])
+def test_split_retry_does_not_change_words_or_move_an_existing_censor(caption, left, right):
+    original = {"items": [region(caption, x=.33, width=.33)]}
+    split = {"items": [region(left, x=.33, width=.16, y=.113, height=.049),
+                       region(right, x=.51, width=.15, y=.091, height=.086)]}
+
+    assert ocr.recover_caption_runs([original], {0: split}, [1]) == [caption]
+
+
+@pytest.mark.parametrize("geometry", [
+    {"x": .46, "width": .15, "y": .091, "height": .086},
+    {"x": .51, "width": .15, "y": .168, "height": .065},
+    {"x": .63, "width": .08, "y": .091, "height": .086},
+])
+def test_split_retry_censor_requires_nonoverlapping_fragments_of_one_full_row(geometry):
+    original = {"items": [region("Look at that thing.", x=.33, width=.33)]}
+    split = {"items": [region("Look at", x=.33, width=.16, y=.113, height=.049),
+                       region("_ that thing.", **geometry)]}
+
+    assert ocr.recover_caption_runs([original], {0: split}, [1]) == ["Look at that thing."]

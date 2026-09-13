@@ -251,3 +251,53 @@ def test_frame_replay_reports_progress_after_chunks_and_model_frames(tmp_path, m
     assert updates[:3] == [(0, 22), (1, 22), (2, 22)]
     assert updates[-1] == (22, 22)
     assert [done for done, _ in updates] == sorted(done for done, _ in updates)
+
+
+def test_frame_replay_uses_the_same_roi_admission_for_both_capture_cadences(tmp_path, monkeypatch):
+    monkeypatch.setattr(ocr, "fingerprint", lambda video: "video-proof")
+    monkeypatch.setattr(ocr, "crop_caption_image", lambda raw: b"cropped " + raw)
+
+    def scan(video, windows, *, fps, retry_all, frame_sink):
+        source = tmp_path / "frame.jpg"
+        source.write_bytes(b"same exact source pixels")
+        roi = native_frame("Bring your things.") if retry_all else None
+        frame_sink(source, .5, native_frame(""), roi)
+        return [(.5, "Bring your things." if roi else "")]
+
+    monkeypatch.setattr(ocr, "_scan_caption_frames", scan)
+
+    class Client:
+        def read_frames(self, video_key, frames):
+            assert len(frames) == 1
+            assert frames[0].evidence["admitted"] is True
+            return {.5: "Bring your things."}
+
+    assert ocr._rescue_caption_frames("video", [(.5, "")], [(.5, "Bring your things.")],
+                                     1, [(0, 1)], [(0, 1)], Client()) == (
+        [(.5, "Bring your things.")], [(.5, "Bring your things.")])
+
+
+@pytest.mark.parametrize("conflict", ["pixels", "admission"])
+def test_frame_replay_still_rejects_real_same_timestamp_evidence_conflicts(tmp_path, monkeypatch, conflict):
+    monkeypatch.setattr(ocr, "fingerprint", lambda video: "video-proof")
+    monkeypatch.setattr(ocr, "crop_caption_image", lambda raw: b"cropped " + raw)
+
+    def scan(video, windows, *, fps, retry_all, frame_sink):
+        source = tmp_path / "frame.jpg"
+        source.write_bytes(b"different pixels" if fps == 10 and conflict == "pixels" else b"same pixels")
+        full = native_frame("Bring your things.")
+        if fps == 10 and conflict == "admission":
+            full["items"].append({"text": "TITLE", "confidence": 1, "x": .2, "y": .4,
+                                  "width": .6, "height": .2, "captionInk": .2})
+        frame_sink(source, .5, full, None)
+        return [(.5, "Bring your things.")]
+
+    monkeypatch.setattr(ocr, "_scan_caption_frames", scan)
+
+    class Client:
+        def read_frames(self, *args):
+            pytest.fail("Conflicting evidence reached recognition")
+
+    with pytest.raises(RuntimeError, match=r"different evidence.*0\.500"):
+        ocr._rescue_caption_frames("video", [(.5, "Bring your things.")], [(.5, "Bring your things.")],
+                                  1, [(0, 1)], [(0, 1)], Client())

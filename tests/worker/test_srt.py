@@ -1,3 +1,5 @@
+import pytest
+
 from subzero.worker.srt import Cue, chunks, dump, parse, timestamp
 
 SAMPLE = """1
@@ -101,3 +103,49 @@ def test_strip_hearing_impaired_strips_html_and_ass_tags():
 
     out = strip_hearing_impaired(cues)
     assert [c.text for c in out] == ["Texto em itálico", "Fala no topo", "Atenção!"]
+
+
+@pytest.mark.parametrize('description', [
+    '(indistinct,\noverlapping chatter)',
+    '[indistinct,\noverlapping chatter]',
+    '<i>(indistinct,\noverlapping chatter)</i>',
+    '{\\an8}[indistinct,\noverlapping chatter]',
+])
+def test_multiline_sound_description_does_not_become_a_dialogue_anchor(description):
+    from subzero.worker.srt import strip_hearing_impaired
+
+    cues = [Cue(1542, 3485.114, 3487.784, description),
+            Cue(1543, 3487.851, 3489.452, 'Go.')]
+    original = list(cues)
+
+    assert strip_hearing_impaired(cues) == [Cue(1, 3487.851, 3489.452, 'Go.')]
+    assert [c for c in cues if strip_hearing_impaired([c])] == [cues[1]]
+    assert cues == original
+
+
+def test_multiline_sound_description_keeps_dialogue_on_both_sides():
+    from subzero.worker.srt import strip_hearing_impaired
+
+    cue = Cue(3, 1.25, 3.75, 'SUE: Keep (voices\noverlapping) going.\nDo not stop.')
+    assert strip_hearing_impaired([cue]) == [Cue(1, 1.25, 3.75, 'Keep going.\nDo not stop.')]
+
+
+def test_multiline_description_does_not_join_separate_dialogue_turns():
+    from subzero.worker.srt import strip_hearing_impaired
+
+    cue = Cue(1, 0, 3, '- Stay here.\n- (indistinct,\noverlapping chatter)\n- No, go!')
+    assert strip_hearing_impaired([cue]) == [Cue(1, 0, 3, '- Stay here.\n- No, go!')]
+
+
+def test_multiline_description_removal_preserves_single_line_music_filter():
+    from subzero.worker.srt import strip_hearing_impaired
+
+    cues = [Cue(1, 0, 1, 'Sung words (♪)'), Cue(2, 1, 2, 'Spoken words.')]
+    assert strip_hearing_impaired(cues) == [Cue(1, 1, 2, 'Spoken words.')]
+
+
+def test_description_matching_never_crosses_cue_boundaries():
+    from subzero.worker.srt import strip_hearing_impaired
+
+    cues = [Cue(1, 0, 1, '(unfinished'), Cue(2, 1, 2, 'Keep this dialogue.)')]
+    assert strip_hearing_impaired(cues) == cues
