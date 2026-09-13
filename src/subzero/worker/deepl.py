@@ -320,3 +320,97 @@ class DeepLFree:
             if attempt < 2:
                 time.sleep(2 ** attempt)
         raise RuntimeError(f'DeepL request failed after three attempts (HTTP {status})')
+
+
+class FallbackTranslator:
+    """Uses a primary provider up to its quota limit, then falls back to a secondary provider."""
+
+    def __init__(self, primary, fallback):
+        self.primary = primary
+        self.fallback = fallback
+        self._current = primary
+        self._lock = threading.RLock()
+
+    @property
+    def provider(self):
+        with self._lock:
+            return self._current.provider
+
+    @property
+    def model(self):
+        with self._lock:
+            return self._current.model
+
+    @property
+    def needs_local_compute(self):
+        with self._lock:
+            return getattr(self._current, 'needs_local_compute', False)
+
+    @property
+    def uses_sentence_units(self):
+        with self._lock:
+            return getattr(self._current, 'uses_sentence_units', True)
+
+    @property
+    def supports_context(self):
+        with self._lock:
+            return getattr(self._current, 'supports_context', False)
+
+    @property
+    def cache_settings(self):
+        with self._lock:
+            return self._current.cache_settings
+
+    @property
+    def url(self):
+        with self._lock:
+            return getattr(self._current, 'url', None)
+
+    def count_episode(self, cues):
+        if hasattr(self.primary, 'count_episode'):
+            return self.primary.count_episode(cues)
+        from ..srt import dump
+        return len(dump(cues))
+
+    def ensure_available(self):
+        with self._lock:
+            self.fallback.ensure_available()
+            try:
+                self.primary.ensure_available()
+            except DeepLQuotaExceeded as err:
+                LOG.info('Primary provider quota exhausted on startup (%d remaining); routing to %s',
+                         err.remaining, self.fallback.provider)
+                self._current = self.fallback
+            except (DeepLPause, RuntimeError) as err:
+                LOG.warning('Primary provider %s unavailable (%s); routing to %s',
+                            getattr(self.primary, 'provider', 'primary'), err, self.fallback.provider)
+                self._current = self.fallback
+
+    def check_quota(self, required):
+        with self._lock:
+            try:
+                snapshot = self.primary.check_quota(required)
+                self._current = self.primary
+                return snapshot
+            except DeepLQuotaExceeded as err:
+                LOG.info('Primary quota exceeded (%d needed, %d remaining); falling back to %s',
+                         err.required, err.remaining, self.fallback.provider)
+                self._current = self.fallback
+                if hasattr(self.fallback, 'check_quota'):
+                    return self.fallback.check_quota(required)
+                return {'provider': self.fallback.provider, 'fallback': True,
+                        'required': required, 'primary_remaining': err.remaining}
+
+    def translate_block(self, cues, target_lang, source_lang=None, *, context=None):
+        with self._lock:
+            active = self._current
+        return active.translate_block(cues, target_lang, source_lang=source_lang, context=context)
+
+    def release(self):
+        with self._lock:
+            if hasattr(self.primary, 'release'):
+                self.primary.release()
+            if hasattr(self.fallback, 'release'):
+                self.fallback.release()
+            self._current = self.primary
+

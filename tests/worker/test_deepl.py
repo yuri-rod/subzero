@@ -366,3 +366,82 @@ def test_trace_header_cannot_smuggle_credentials_into_logs(monkeypatch, caplog):
         with pytest.raises(RuntimeError):
             client.check_quota(1)
     assert KEY not in caplog.text
+
+
+def test_fallback_translator_uses_primary_when_quota_sufficient(monkeypatch):
+    from subzero.worker.deepl import FallbackTranslator
+    client, seen, _ = adapter(monkeypatch, success)
+    fallback_calls = []
+
+    class DummyLibre:
+        provider = 'libretranslate'
+        model = 'argos-translate-lt:1.12.1/en-pb:1.9'
+        cache_settings = {'provider': 'libretranslate'}
+        needs_local_compute = False
+        uses_sentence_units = True
+        supports_context = False
+
+        def ensure_available(self):
+            fallback_calls.append('ensure_available')
+
+        def translate_block(self, cues, target_lang, source_lang=None, *, context=None):
+            fallback_calls.append(('translate', len(cues)))
+            return ['Vá.']
+
+    fallback = DummyLibre()
+    coordinator = FallbackTranslator(primary=client, fallback=fallback)
+    coordinator.ensure_available()
+    assert 'ensure_available' in fallback_calls
+
+    cues = [Cue(1, 0, 1, 'Go.')]
+    assert coordinator.count_episode(cues) == 3
+    snapshot = coordinator.check_quota(3)
+    assert coordinator.provider == 'deepl-free'
+    assert coordinator.model == 'deepl-free/en:pt-BR'
+    assert snapshot.get('required') == 3
+
+    lines = coordinator.translate_block(cues, 'pt-BR', 'en')
+    assert len(lines) == 1
+    assert any(req.method == 'POST' for req in seen)
+    assert not any(call[0] == 'translate' for call in fallback_calls if isinstance(call, tuple))
+    coordinator.release()
+
+
+def test_fallback_translator_routes_to_fallback_when_quota_exceeded(monkeypatch):
+    from subzero.worker.deepl import FallbackTranslator
+    client, seen, _ = adapter(monkeypatch, lambda req: success(req, used=499998))
+    fallback_calls = []
+
+    class DummyLibre:
+        provider = 'libretranslate'
+        model = 'argos-translate-lt:1.12.1/en-pb:1.9'
+        cache_settings = {'provider': 'libretranslate'}
+        needs_local_compute = False
+        uses_sentence_units = True
+        supports_context = False
+
+        def ensure_available(self):
+            pass
+
+        def translate_block(self, cues, target_lang, source_lang=None, *, context=None):
+            fallback_calls.append(('translate', len(cues)))
+            return ['Vá.']
+
+    fallback = DummyLibre()
+    coordinator = FallbackTranslator(primary=client, fallback=fallback)
+    cues = [Cue(1, 0, 1, 'Go.')]
+
+    snapshot = coordinator.check_quota(10)
+    assert snapshot.get('fallback') is True
+    assert coordinator.provider == 'libretranslate'
+    assert coordinator.model == 'argos-translate-lt:1.12.1/en-pb:1.9'
+    assert coordinator.cache_settings == {'provider': 'libretranslate'}
+
+    lines = coordinator.translate_block(cues, 'pt-BR', 'en')
+    assert lines == ['Vá.']
+    assert fallback_calls == [('translate', 1)]
+    assert not any(req.method == 'POST' for req in seen)
+
+    coordinator.release()
+    assert coordinator.provider == 'deepl-free'
+
