@@ -5,6 +5,23 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-09-12
+
+### Added
+
+- Add an optional native LibreTranslate worker provider using `argos-translate-lt` 1.12.1 and the direct English to Brazilian Portuguese package 1.9. Translation runs in an isolated CPU process without external translation requests or automatic provider fallback.
+- Add a pinned runtime installer for macOS 14+ ARM64 and CPython 3.13.15, with verified model and dependency hashes, offline wheel installation, dependency checks, and a separate environment. Include the installer in source distributions.
+- Add optional caption rescue through an installed local image model pinned by SHA-256 digest. Retry unresolved native Vision intervals using the exact sampled frames, preserve native blank and title-card decisions, and retain image and recognition evidence for review.
+
+### Changed
+
+- Keep complete sentence units together when translating with `qwen3.5:9b`; retain its existing JSON prompt without Hy-MT2 context.
+- Check the selected worker translation provider before transcription and separate translation caches by provider, model and settings. Existing installations retain Ollama as their default provider.
+
+### Fixed
+
+- Detect rapid returns between short-word, initial and positioned censor-mark variants. Route unresolved readings through optional caption rescue or stop for review without rewriting the source cues.
+
 ## [1.11.2] - 2026-09-12
 
 ### Fixed
