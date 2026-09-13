@@ -274,6 +274,18 @@ subzero worker serve
 # Check worker health and queue status
 subzero worker status
 
+# Inspect active and recent queue jobs
+subzero worker jobs
+
+# Trigger a library sweep
+subzero worker sweep
+
+# Check subtitle coverage across the library
+subzero worker coverage
+
+# Inspect recent subtitle sync audits
+subzero worker audits
+
 # Request a graceful shutdown
 subzero worker stop
 ```
