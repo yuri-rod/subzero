@@ -42,6 +42,11 @@ def test_native_translation_provider_must_be_explicit_and_known():
     cfg = Config.load(dict(env, TRANSLATION_PROVIDER='libretranslate', LIBRETRANSLATE_RUNTIME='/local/translation'))
     assert cfg.translation_provider == 'libretranslate'
     assert cfg.libretranslate_runtime == '/local/translation'
+    cfg = Config.load(dict(env, TRANSLATION_PROVIDER='applefm'))
+    assert cfg.translation_provider == 'applefm'
+    assert cfg.applefm_url == 'http://127.0.0.1:1976'
+    cfg = Config.load(dict(env, TRANSLATION_PROVIDER='applefm', APPLEFM_URL='http://127.0.0.1:1980/'))
+    assert cfg.applefm_url == 'http://127.0.0.1:1980'
     with pytest.raises(ValueError, match='TRANSLATION_PROVIDER'):
         Config.load(dict(env, TRANSLATION_PROVIDER='unknown'))
 

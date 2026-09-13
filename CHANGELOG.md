@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an `applefm` translation provider using Apple Foundation Models through a local OpenAI-style server (`fm serve`). Refused or echoed subtitle units fall back to LibreTranslate per unit when `TRANSLATION_FALLBACK=libretranslate` is set.
+
 ### Fixed
 
 - Keep caption rescue clustering from merging distinct captions. Only consecutive frames where Apple Vision reads the same words with the same censorship marks share one model call, so caption transitions, name and number changes, and dropped censor bars always get their own reading. Invalidate older rescue caches that may hold propagated readings.

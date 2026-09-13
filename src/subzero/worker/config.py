@@ -27,6 +27,7 @@ class Config:
     ollama_num_predict: int = 2048
     translation_provider: str = 'ollama'
     translation_fallback: str = ""
+    applefm_url: str = 'http://127.0.0.1:1976'
     deepl_api_key: str = field(default='', repr=False)
     libretranslate_runtime: str = str(Path.home() / '.local/share/subzero/libretranslate')
     ocr_enabled: bool = field(default_factory=lambda: sys.platform == 'darwin')
@@ -57,8 +58,8 @@ class Config:
     idle_shutdown_minutes: int = 15
 
     def __post_init__(self):
-        if self.translation_provider not in ('ollama', 'libretranslate', 'deepl-free'):
-            raise ValueError('TRANSLATION_PROVIDER must be ollama, libretranslate or deepl-free')
+        if self.translation_provider not in ('ollama', 'libretranslate', 'deepl-free', 'applefm'):
+            raise ValueError('TRANSLATION_PROVIDER must be ollama, libretranslate, deepl-free or applefm')
         if self.translation_fallback and self.translation_fallback not in ('libretranslate',):
             raise ValueError('TRANSLATION_FALLBACK must be libretranslate or empty')
         if bool(self.ocr_rescue_model) != bool(self.ocr_rescue_model_digest):
@@ -91,6 +92,7 @@ class Config:
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
             translation_provider=env.get('TRANSLATION_PROVIDER', 'ollama').strip().lower(),
             translation_fallback=env.get('TRANSLATION_FALLBACK', env.get('TRANSLATION_FALLBACK_PROVIDER', '')).strip().lower(),
+            applefm_url=env.get('APPLEFM_URL', 'http://127.0.0.1:1976').rstrip('/'),
             deepl_api_key=env.get('DEEPL_API_KEY', '').strip(),
             libretranslate_runtime=env.get('LIBRETRANSLATE_RUNTIME', str(Path.home() / '.local/share/subzero/libretranslate')),
             ocr_enabled=env.get('OCR_ENABLED', '1' if sys.platform == 'darwin' else '0').lower() not in ('0', 'false', 'no'),
