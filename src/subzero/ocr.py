@@ -30,7 +30,7 @@ from .timing import spans
 from .translate import OllamaClient, OpenAIClient, translate_cues
 
 
-CAPTION_SCAN_VERSION = 4
+CAPTION_SCAN_VERSION = 5
 
 
 @dataclass
@@ -648,10 +648,11 @@ def _scan_caption_frames(
                 continue
             gap_dir = Path(tempfile.mkdtemp(prefix=f"gap_{idx:03d}_", dir=work_dir))
             dur = g_end - g_start
+            # Millisecond PTS can subtract exact 100 ms intervals to just below 0.1.
             cmd = [
                 "ffmpeg", "-hide_banner", "-nostdin", "-y", "-ss", f"{g_start:.3f}", "-i", str(video),
                 "-t", f"{dur:.3f}", "-an", "-sn", "-vf",
-                f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{1 / fps:.9f}),showinfo",
+                f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{1 / fps:.9f}-0.000000001),showinfo",
                 "-fps_mode", "vfr", "-q:v", "2",
                 str(gap_dir / "f_%03d.jpg"),
             ]
