@@ -93,15 +93,18 @@ class Service:
 
         if not same_language(detected, job.target_lang):
             progress("traduzindo", 0)
-            cues = translate(cues, job.target_lang, self.ollama, progress)
+            cues = translate(cues, job.target_lang, self.ollama, progress, source_lang=detected)
 
         progress("gravando sidecar", 95)
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
 
     def _translate(self, media, job: Job, progress: Progress) -> str:
         source = self._source_cues(media, job)
+        source_id = str(job.source_id)
+        source_lang = (self.embedded_track(media, int(source_id.split(':', 1)[1])).lang
+                       if source_id.startswith('embedded:') else source_id)
         progress("traduzindo", 0)
-        cues = translate(source, job.target_lang, self.ollama, progress)
+        cues = translate(source, job.target_lang, self.ollama, progress, source_lang=source_lang)
         progress("gravando sidecar", 95)
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
 

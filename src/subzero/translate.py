@@ -209,10 +209,10 @@ def sentence_units(cues):
         yield unit
 
 
-def translation_blocks(cues, batch_size, model):
+def translation_blocks(cues, batch_size, model, *, use_sentence_units=None):
     if batch_size < 1:
         raise ValueError("Translation batch size must be positive")
-    if not _uses_sentence_units(model):
+    if not (_uses_sentence_units(model) if use_sentence_units is None else use_sentence_units):
         yield from chunks(cues, batch_size)
         return
     block = []
@@ -274,7 +274,7 @@ def _translate_sentence_units(cues, target_lang, client, source_lang=None, conte
                          and speaker.group(1) == repeated.group(1) else cue.text)
         joined = replace(unit[0], end=unit[-1].end, text="\n".join(parts))
         neighbors = (_previous_context(cues[:start], context)
-                     if _is_native_translation(getattr(client, "model", "")) else None)
+                     if getattr(client, 'supports_context', _is_native_translation(getattr(client, 'model', ''))) else None)
         translated = _translate_lines([joined], target_lang, client, source_lang=source_lang, context=neighbors)
         lines.extend(reflow_translation(unit, translated[0]))
         start += len(unit)
@@ -563,7 +563,8 @@ def translate_cues(
     source_lang: str | None = None,
 ) -> list[Cue]:
     model = getattr(client, "model", "")
-    blocks = list(translation_blocks(cues, batch_size, model))
+    blocks = list(translation_blocks(cues, batch_size, model,
+                                    use_sentence_units=getattr(client, 'uses_sentence_units', None)))
     translated: list[Cue] = []
     phase = compute_phase("ollama", ollama_url=client.url) if isinstance(client, OllamaClient) else nullcontext()
     with phase:

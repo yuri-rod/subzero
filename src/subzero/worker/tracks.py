@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
 
@@ -427,7 +428,9 @@ class Ollama:
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
               strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
-    with compute_phase("ollama", ollama_url=getattr(ollama, 'url', None)):
+    phase = (compute_phase('ollama', ollama_url=getattr(ollama, 'url', None))
+             if getattr(ollama, 'needs_local_compute', True) else nullcontext())
+    with phase:
         return _translate(cues, target_lang, ollama, progress, strict, source_lang, context=context)
 
 
@@ -435,11 +438,12 @@ def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Prog
                strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
     done: list[Cue] = []
     model = getattr(ollama, 'model', '')
-    blocks = list(translation_blocks(cues, BLOCK, model))
+    blocks = list(translation_blocks(cues, BLOCK, model,
+                                    use_sentence_units=getattr(ollama, 'uses_sentence_units', None)))
     for n, block in enumerate(blocks, start=1):
         try:
             options = {'context': context} if context is not None else {}
-            if _is_native_translation(model) and not _is_translategemma(model):
+            if getattr(ollama, 'supports_context', _is_native_translation(model) and not _is_translategemma(model)):
                 options['context'] = _previous_context(cues[:len(done)], context)
             lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang, **options)
         except RuntimeError as err:

@@ -24,7 +24,11 @@ class Config:
     ollama_keep_alive: str = "2m"
     ollama_num_ctx: int = 4096
     ollama_num_predict: int = 2048
+    translation_provider: str = 'ollama'
+    libretranslate_runtime: str = str(Path.home() / '.local/share/subzero/libretranslate')
     ocr_enabled: bool = field(default_factory=lambda: sys.platform == 'darwin')
+    ocr_rescue_model: str = ""
+    ocr_rescue_model_digest: str = ""
     daily_download_budget: int = 15
     auto_langs: list[str] = field(default_factory=lambda: ["pt-BR"])
     accepted_langs: list[str] = field(default_factory=list)
@@ -48,6 +52,12 @@ class Config:
     sync_cache: str = str(Path.home()/'.cache/subzero')
     sync_audit_only: bool = False
     idle_shutdown_minutes: int = 15
+
+    def __post_init__(self):
+        if self.translation_provider not in ('ollama', 'libretranslate'):
+            raise ValueError('TRANSLATION_PROVIDER must be ollama or libretranslate')
+        if bool(self.ocr_rescue_model) != bool(self.ocr_rescue_model_digest):
+            raise ValueError('OCR rescue requires both a model and its digest')
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -74,7 +84,11 @@ class Config:
             ollama_keep_alive=env.get("OLLAMA_KEEP_ALIVE", "2m"),
             ollama_num_ctx=int(env.get("OLLAMA_NUM_CTX", "4096")),
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
+            translation_provider=env.get('TRANSLATION_PROVIDER', 'ollama').strip().lower(),
+            libretranslate_runtime=env.get('LIBRETRANSLATE_RUNTIME', str(Path.home() / '.local/share/subzero/libretranslate')),
             ocr_enabled=env.get('OCR_ENABLED', '1' if sys.platform == 'darwin' else '0').lower() not in ('0', 'false', 'no'),
+            ocr_rescue_model=env.get('OCR_RESCUE_MODEL', '').strip(),
+            ocr_rescue_model_digest=env.get('OCR_RESCUE_MODEL_DIGEST', '').strip(),
             daily_download_budget=int(env.get("DAILY_DOWNLOAD_BUDGET", "15")),
             auto_langs=langs,
             accepted_langs=[l.strip() for l in env.get("ACCEPTED_LANGS", "").split(",") if l.strip()],

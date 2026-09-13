@@ -732,9 +732,7 @@ def gap_recovery(setup, monkeypatch):
         assert Path(subtitle_path) != target
         assert Path(subtitle_path).read_text() == original
         assert kwargs['target_lang'] == 'pt-BR'
-        assert kwargs['provider'] == 'ollama'
-        assert kwargs['model'] == 'translategemma:4b'
-        assert kwargs['url'] == 'http://127.0.0.1:11434'
+        assert kwargs['translation_client'] is flow.service.ollama
         assert kwargs['cache_dir'] == flow.cache / 'references'
         assert kwargs['backup'] is False
         assert Path(kwargs['output']) != target
@@ -1138,6 +1136,48 @@ def test_repair_reuses_completed_ocr_source_after_translation_failure(repair_flo
     assert spans(target.read_text()) == spans(complete)
 
 
+def test_cpu_provider_cache_is_pinned_and_does_not_start_ollama(repair_flow, monkeypatch):
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    client = flow.service.ollama
+    client.provider = 'libretranslate'
+    client.model = 'argos-en-pb'
+    client.needs_local_compute = False
+    client.uses_sentence_units = True
+    client.supports_context = False
+    client.cache_settings = {'package_sha256': 'a' * 64}
+
+    def no_gpu(*args, **kwargs):
+        raise AssertionError('CPU translation must not acquire an Ollama phase')
+
+    monkeypatch.setattr('subzero.worker.syncflow.compute_phase', no_gpu)
+    monkeypatch.setattr('subzero.worker.tracks.compute_phase', no_gpu)
+    assert run(flow, jobs, 'repair').state == 'done'
+    translated_count = len(client.source_cues)
+    assert translated_count == len(parse(complete))
+    assert run(flow, jobs, 'repair').state == 'done'
+    assert len(client.source_cues) == translated_count
+    client.cache_settings = {'package_sha256': 'b' * 64}
+    assert run(flow, jobs, 'repair').state == 'done'
+    assert len(client.source_cues) == 2 * translated_count
+    assert len(calls) == 1
+
+
+def test_gap_recovery_uses_selected_translation_client(gap_recovery, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, original, complete = gap_recovery
+    recover = syncflow.fill_subtitle_gaps
+    clients = []
+
+    def scan(*args, **kwargs):
+        clients.append(kwargs['translation_client'])
+        assert 'model' not in kwargs and 'provider' not in kwargs
+        return recover(*args, **kwargs)
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', scan)
+    assert run(flow, jobs, 'recover_gaps').state == 'done'
+    assert clients == [flow.service.ollama]
+
+
 @pytest.mark.parametrize('change', ['source', 'cache'])
 def test_repair_does_not_reuse_changed_or_corrupt_ocr_source(repair_flow, change):
     flow, jobs, media, target, reference, complete, calls = repair_flow
@@ -1149,6 +1189,35 @@ def test_repair_does_not_reuse_changed_or_corrupt_ocr_source(repair_flow, change
         cache.write_text('{"text":"tampered","digest":"invalid"}')
     assert run(flow, jobs, 'repair').state == 'done'
     assert len(calls) == 2
+
+
+def test_ocr_rescue_config_pins_source_cache_and_reaches_scanner(repair_flow, monkeypatch):
+    from subzero.worker import syncflow
+    flow, jobs, media, target, reference, complete, calls = repair_flow
+    assert run(flow, jobs, 'repair').state == 'done'
+    flow.cfg.ocr_rescue_model = 'qwen3.5:9b'
+    flow.cfg.ocr_rescue_model_digest = 'a' * 64
+    flow.cfg.ollama_url = 'http://127.0.0.1:11434'
+    rescue_flow = syncflow.SyncFlow(jobs, flow.service, flow.cfg, reference_builder=flow.reference_builder)
+    flow.service.sync_flow = rescue_flow
+    recover = syncflow.fill_subtitle_gaps
+    seen = []
+
+    def scan(*args, **kwargs):
+        seen.append(kwargs['caption_rescue'].identity)
+        return recover(*args, **kwargs)
+
+    monkeypatch.setattr(syncflow, 'fill_subtitle_gaps', scan)
+    assert run(rescue_flow, jobs, 'repair').state == 'done'
+    assert len(calls) == 2
+    assert run(rescue_flow, jobs, 'repair').state == 'done'
+    assert len(calls) == 2
+    flow.cfg.ocr_rescue_model_digest = 'b' * 64
+    changed_flow = syncflow.SyncFlow(jobs, flow.service, flow.cfg, reference_builder=flow.reference_builder)
+    flow.service.sync_flow = changed_flow
+    assert run(changed_flow, jobs, 'repair').state == 'done'
+    assert len(calls) == 3
+    assert len(set(seen)) == 2
 
 
 @pytest.mark.parametrize('failure', ['ocr', 'translation', 'timing', 'cancel', 'target_changed'])

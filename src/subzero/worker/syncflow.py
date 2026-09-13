@@ -7,6 +7,7 @@ import shutil
 import stat
 import tempfile
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 
 from subzero.caption_quality import validate_caption_readings
@@ -30,7 +31,7 @@ from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, tran
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
-OCR_SOURCE_VERSION = 15
+OCR_SOURCE_VERSION = 16
 
 
 def digest(text):
@@ -93,6 +94,12 @@ class SyncFlow:
         self.reference_builder = reference_builder
         self.cache = Path(cfg.sync_cache).expanduser().resolve()
         self.cache.mkdir(parents=True,exist_ok=True)
+        self.caption_rescue = None
+        if getattr(cfg, 'ocr_rescue_model', ''):
+            from ..caption_rescue import CaptionRescue
+            self.caption_rescue = CaptionRescue(
+                model=cfg.ocr_rescue_model, url=cfg.ollama_url,
+                cache_dir=self.cache / 'caption-rescue', model_digest=cfg.ocr_rescue_model_digest)
 
     def installed(self, media, lang):
         video = Path(media.path)
@@ -377,7 +384,7 @@ class SyncFlow:
 
     def translation_ready(self):
         if self.service.ollama is None:
-            raise RuntimeError('Ollama is not configured')
+            raise RuntimeError('Translation provider is not configured')
         self.service.ollama.ensure_available()
 
     def recover_gaps(self, media, job, key, reference, progress):
@@ -400,7 +407,7 @@ class SyncFlow:
                 self.active(job)
                 recovered = fill_subtitle_gaps(
                     media.path, source, output=output, target_lang=job.target_lang,
-                    provider='ollama', model=self.cfg.ollama_model, url=self.cfg.ollama_url,
+                    translation_client=self.service.ollama,
                     cache_dir=self.cache / 'references', backup=False, progress=ocr_progress,
                 )
                 self.active(job)
@@ -437,7 +444,10 @@ class SyncFlow:
             raise RuntimeError(f'English source failed audio timing validation: {baseline.reason}')
         folder = self.cache / 'ocr-sources' / key
         folder.mkdir(parents=True, exist_ok=True)
-        cache = folder / f'{digest(str(OCR_SOURCE_VERSION) + ":" + source)}.json'
+        identity = str(OCR_SOURCE_VERSION) + ':' + source
+        if self.caption_rescue is not None:
+            identity += ':' + self.caption_rescue.identity
+        cache = folder / f'{digest(identity)}.json'
         if cache.exists():
             try:
                 cached = json.loads(read_gap_source(cache))
@@ -462,7 +472,8 @@ class SyncFlow:
                                           target_lang='en', backup=False,
                                           cache_dir=self.cache / 'references', progress=ocr_progress,
                                           caption_cache_dir=self.cache / 'caption-scans',
-                                          all_captions=True)
+                                          all_captions=True,
+                                          **({'caption_rescue': self.caption_rescue} if self.caption_rescue is not None else {}))
             self.active(job)
             text = read_gap_source(output_path) if recovered.cues_recovered else source
             candidate = self.stage(key, 'en', text)
@@ -500,23 +511,31 @@ class SyncFlow:
         return text
 
     def repair_translation(self, job, key, cues, progress, *, title=''):
-        with compute_phase('ollama', ollama_url=getattr(self.service.ollama, 'url', None)):
+        translator = self.service.ollama
+        phase = (compute_phase('ollama', ollama_url=getattr(translator, 'url', None))
+                 if getattr(translator, 'needs_local_compute', True) else nullcontext())
+        with phase:
             return self._repair_translation(job, key, cues, progress, title=title)
 
     def _repair_translation(self, job, key, cues, progress, *, title=''):
         ollama = self.service.ollama
         title = ' '.join(title.split())[:256]
         settings = {
+            'provider': getattr(ollama, 'provider', 'ollama'),
+            'provider_options': getattr(ollama, 'cache_settings', {}),
             'source': digest(dump(cues)), 'target_lang': job.target_lang, 'source_lang': 'en',
             'model': getattr(ollama, 'model', getattr(self.cfg, 'ollama_model', '')),
-            'url': getattr(ollama, 'url', getattr(self.cfg, 'ollama_url', '')),
-            'num_ctx': getattr(ollama, 'num_ctx', getattr(self.cfg, 'ollama_num_ctx', 4096)),
-            'num_predict': getattr(ollama, 'num_predict', getattr(self.cfg, 'ollama_num_predict', 2048)),
             'prompt_version': TRANSLATION_PROMPT_VERSION, 'block_size': 20,
             'title': title, 'previous_cues': TRANSLATION_CONTEXT_CUES,
             'following_cues': 0, 'passage_chars': TRANSLATION_CONTEXT_CHARS,
         }
-        use_context = _is_native_translation(settings['model']) and not _is_translategemma(settings['model'])
+        if getattr(ollama, 'needs_local_compute', True):
+            settings.update(
+                url=getattr(ollama, 'url', getattr(self.cfg, 'ollama_url', '')),
+                num_ctx=getattr(ollama, 'num_ctx', getattr(self.cfg, 'ollama_num_ctx', 4096)),
+                num_predict=getattr(ollama, 'num_predict', getattr(self.cfg, 'ollama_num_predict', 2048)))
+        use_context = getattr(ollama, 'supports_context',
+                              _is_native_translation(settings['model']) and not _is_translategemma(settings['model']))
         folder = self.cache / 'translations' / key / digest(json.dumps(settings, sort_keys=True))
         folder.mkdir(parents=True, exist_ok=True)
         completed = []
@@ -534,7 +553,8 @@ class SyncFlow:
             return check_language_completeness(text, job.target_lang)[0]
 
         try:
-            for block in translation_blocks(cues, settings['block_size'], settings['model']):
+            for block in translation_blocks(cues, settings['block_size'], settings['model'],
+                                            use_sentence_units=getattr(ollama, 'uses_sentence_units', None)):
                 self.active(job)
                 start = len(completed)
                 source = dump(block)

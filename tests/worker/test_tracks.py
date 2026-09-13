@@ -878,3 +878,28 @@ def test_worker_qwen_joining_retains_json_completion_and_word_count_guards(respo
     client = Ollama('http://localhost', 'qwen3.5:9b', http=HTTP())
     with pytest.raises(RuntimeError, match='preserv|fewer words'):
         translate(cues, 'pt-BR', client, lambda *args: None, source_lang='en')
+
+
+def test_cpu_provider_keeps_sentence_boundaries_without_starting_ollama(monkeypatch):
+    def no_gpu(*args, **kwargs):
+        raise AssertionError('CPU translation must not acquire an Ollama phase')
+
+    monkeypatch.setattr('subzero.worker.tracks.compute_phase', no_gpu)
+    seen = []
+
+    class CPUTranslator:
+        model = 'argos-en-pb'
+        needs_local_compute = False
+        uses_sentence_units = True
+        supports_context = False
+
+        def translate_block(self, cues, target_lang, source_lang=None, **kwargs):
+            seen.append(cues)
+            assert not kwargs.get('context')
+            return ['Fala traduzida.' for cue in cues]
+
+    cues = [Cue(i, i, i + .9, 'Complete thought.') for i in range(19)]
+    cues += [Cue(19, 19, 19.9, 'I found'), Cue(20, 20, 20.9, 'the hidden key.')]
+    translated = translate(cues, 'pt-BR', CPUTranslator(), lambda *args: None, source_lang='en')
+    assert [len(block) for block in seen] == [19, 2]
+    assert [(cue.index, cue.start, cue.end) for cue in translated] == [(cue.index, cue.start, cue.end) for cue in cues]
