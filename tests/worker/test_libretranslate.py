@@ -48,6 +48,23 @@ def test_too_few_generated_words_for_anchors_fails(tmp_path, monkeypatch):
         client.translate_block([Cue(1, 1, 2, 'The sentence'), Cue(2, 2, 3, 'continues.')], 'pb', 'en')
 
 
+def test_multiline_sdh_does_not_take_an_anchor_from_short_provider_output(tmp_path, monkeypatch):
+    from subzero.worker.srt import strip_hearing_impaired
+    from subzero.worker.tracks import translate
+
+    client = libre.LibreTranslate(tmp_path)
+    requests = []
+    monkeypatch.setattr(client, '_run', lambda request: requests.append(request) or {'outputs': ['Vá.']})
+    source = [Cue(1542, 3485.114, 3487.784, '(indistinct,\noverlapping chatter)'),
+              Cue(1543, 3487.851, 3489.452, 'Go.')]
+    eligible = [cue for cue in source if strip_hearing_impaired([cue])]
+
+    translated = translate(eligible, 'pt-BR', client, lambda *_: None, strict=True, source_lang='en')
+
+    assert translated == [Cue(1543, 3487.851, 3489.452, 'Vá.')]
+    assert requests == [{'action': 'translate', 'texts': ['Go.']}]
+
+
 def test_cache_identity_pins_engine_models_and_cpu_settings(tmp_path):
     client = libre.LibreTranslate(tmp_path)
     assert client.provider == 'libretranslate'

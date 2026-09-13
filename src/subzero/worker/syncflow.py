@@ -31,7 +31,7 @@ from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, tran
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
-OCR_SOURCE_VERSION = 16
+OCR_SOURCE_VERSION = 17
 
 
 def digest(text):
