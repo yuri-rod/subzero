@@ -136,6 +136,21 @@ def test_health_reports_whether_the_runner_is_alive(tmp_path):
 
     # sem runner a fila nao anda; o health tem de dizer isso em vez de so responder 200
     assert body["runner"] is False
+    assert body["whisperDevice"] == cfg.whisper_device
+
+
+def test_deepl_can_fall_back_to_apple_local_translation(tmp_path):
+    from subzero.worker.deepl import FallbackTranslator
+
+    cfg = Config.load({"JELLYFIN_URL": "http://jf", "JELLYFIN_API_KEY": "k",
+                       "BEARER_TOKEN": "segredo", "DB_PATH": str(tmp_path / "jobs.db"),
+                       "TRANSLATION_PROVIDER": "deepl-free", "DEEPL_API_KEY": "free-key:fx",
+                       "TRANSLATION_FALLBACK": "applefm"})
+    app = create_app(cfg, runner=False, jellyfin=FakeJellyfin(), opensubs=FakeOpenSubs())
+
+    translator = app.state.service.ollama
+    assert isinstance(translator, FallbackTranslator)
+    assert translator.provider == "deepl-free"
 
 
 def test_sweep_enqueues_jobs_via_api(tmp_path):

@@ -5,24 +5,30 @@ All notable changes to Subzero are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.14.0] - 2026-09-14
 
 ### Added
 
 - Add an `applefm` translation provider using Apple Foundation Models through a local OpenAI-style server (`fm serve`). Refused or echoed subtitle units fall back to LibreTranslate per unit when `TRANSLATION_FALLBACK=libretranslate` is set.
 - Add an mlx-whisper transcription backend on Apple Silicon, selected with `WHISPER_DEVICE=mlx`. Same turbo weights as the CPU path, roughly 3x faster with equal-or-better text; stdout is kept JSON-clean for the isolated child and the sampler is seeded so runs are reproducible.
+- Accept `TRANSLATION_FALLBACK=applefm` on the DeepL Free provider, so a quota hold or API outage continues on Apple's on-device model instead of the CPU runtime.
+- Report the active Whisper device as `whisperDevice` in worker health.
 
 ### Changed
 
 - Drop burned-in captions under four spoken words from the rescue path instead of refining them. They cost about one VLM call in six while adding mostly exclamations; censor marks always survive the cut.
 - Add `subzero worker triage`, an Apple FM digest of jobs waiting on review. Clustering is rule-based; FM only writes the human summary and falls back to a template on refusal. Prints always, notifies ntfy when NTFY_TOPIC is set.
 - Salvage timing-shifted OpenSubtitles downloads instead of transcribing. When the only problem is a constant offset the worker shifts the cues and re-verifies twice before accepting; drifted cuts still fall through to Whisper.
+- Split ntfy pings by outcome and origin. Review and quota pauses get their own titles instead of sharing the failure copy, automatic successes stay quiet, failures report their retry count, and the daily auto sweep sends one low-priority summary.
+- Default `WHISPER_DEVICE` to `mlx` on Apple Silicon when unset; `cuda` remains the default elsewhere.
 
 ### Fixed
 
 - Keep caption rescue clustering from merging distinct captions. Only consecutive frames where Apple Vision reads the same words with the same censorship marks share one model call, so caption transitions, name and number changes, and dropped censor bars always get their own reading. Invalidate older rescue caches that may hold propagated readings.
 - Keep high-confidence Apple Vision readings as a direct pass-through without a model call. Verified identical to the model on every sampled cluster.
 - Drop the parallel model dispatch and the compact-model prompt path. Measured against the local model they added no speedup and lowered reading accuracy, so rescue stays sequential on the configured model.
+- Gate mlx-whisper with the same Silero VAD spans faster-whisper uses before decoding. Without the gate mlx invented dialogue over music and montage; speech is now collected into 30s chunks like the CPU path and timestamps are restored afterwards. Measured on 90s of 1080p episode audio: 8.4s vs 21.6s with 92% word overlap.
+- Read capped ASR uploads into a bytearray instead of copying a growing bytes value. Accumulating 512 MB drops from about 19s to 0.14s of worker time.
 
 ## [1.13.0] - 2026-09-13
 

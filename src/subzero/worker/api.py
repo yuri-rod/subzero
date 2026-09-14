@@ -52,14 +52,14 @@ def free_vram_mb() -> int | None:
 async def read_capped(upload: UploadFile, cfg: Config) -> bytes:
     """Recusa uploads grandes antes que esgotem a memoria do worker."""
     cap = cfg.asr_max_mb * 1024 * 1024
-    data = b""
+    data = bytearray()
     while chunk := await upload.read(1024 * 1024):
-        data += chunk
+        data.extend(chunk)
         if len(data) > cap:
             raise HTTPException(status_code=413, detail=f"audio acima de {cfg.asr_max_mb} MB")
     if not data:
         raise HTTPException(status_code=400, detail="audio_file vazio")
-    return data
+    return bytes(data)
 
 
 def transcribe_upload(data: bytes, holder: ModelHolder):
@@ -115,13 +115,18 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         from .deepl import DeepLFree
         deepl_client = DeepLFree(resolve_deepl_key(cfg),
                                  usage_path=Path(cfg.sync_cache) / 'deepl-free-usage.json')
+        fallback = None
         if cfg.translation_fallback == 'libretranslate':
-            from .deepl import FallbackTranslator
             from .libretranslate import LibreTranslate
-            libre_client = LibreTranslate(cfg.libretranslate_runtime)
-            translator = FallbackTranslator(primary=deepl_client, fallback=libre_client)
-        else:
+            fallback = LibreTranslate(cfg.libretranslate_runtime)
+        elif cfg.translation_fallback == 'applefm':
+            from .applefm import AppleFM
+            fallback = AppleFM(cfg.applefm_url)
+        if fallback is None:
             translator = deepl_client
+        else:
+            from .deepl import FallbackTranslator
+            translator = FallbackTranslator(primary=deepl_client, fallback=fallback)
     else:
         translator = Ollama(cfg.ollama_url, cfg.ollama_model, keep_alive=cfg.ollama_keep_alive,
                             num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict)
@@ -156,6 +161,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     def health() -> dict:
         thread = getattr(app.state, "runner_thread", None)
         return {"version": __version__, "gpu": free_vram_mb(), "model": cfg.whisper_model,
+                "whisperDevice": cfg.whisper_device,
                 "translation_provider": cfg.translation_provider,
                 "translation_model": service.ollama.model,
                 "paused": sum(j.state == 'paused' for j in store.active()),
@@ -336,9 +342,15 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
             if allow_auto and watcher and last_sweep_day != today_str and current_hour == cfg.auto_window_start:
                 last_sweep_day = today_str
                 try:
-                    watcher.sweep()
+                    enqueued = watcher.sweep()
                 except Exception:
                     pass
+                else:
+                    try:
+                        notifier.sweep(enqueued, store.downloads_today(),
+                                       cfg.daily_download_budget)
+                    except Exception:
+                        pass
 
             try:
                 job = runner.run_once(allow_auto=allow_auto)
@@ -347,7 +359,7 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
                 continue
             if job:
                 last_busy = time.time()
-                if job.state in ("done", "failed", "needs_review"):
+                if job.state in ("done", "failed", "needs_review", "paused"):
                     name = None
                     try:
                         name = jellyfin.media(job.item_id).name

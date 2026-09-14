@@ -1,9 +1,17 @@
 import os
+import platform as host
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+
+
+def default_whisper_device(platform: str | None = None, machine: str | None = None) -> str:
+    """mlx is the accelerated backend on Apple Silicon; cuda everywhere else."""
+    platform = sys.platform if platform is None else platform
+    machine = host.machine() if machine is None else machine
+    return "mlx" if platform == "darwin" and machine == "arm64" else "cuda"
 
 
 @dataclass
@@ -18,7 +26,7 @@ class Config:
     state_path: str = "watch.json"
     log_dir: str = "logs"
     whisper_model: str = "large-v3"
-    whisper_device: str = "cuda"
+    whisper_device: str = field(default_factory=default_whisper_device)
     whisper_compute_type: str = ""
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "subzero/hy-mt2:7b"
@@ -60,8 +68,8 @@ class Config:
     def __post_init__(self):
         if self.translation_provider not in ('ollama', 'libretranslate', 'deepl-free', 'applefm'):
             raise ValueError('TRANSLATION_PROVIDER must be ollama, libretranslate, deepl-free or applefm')
-        if self.translation_fallback and self.translation_fallback not in ('libretranslate',):
-            raise ValueError('TRANSLATION_FALLBACK must be libretranslate or empty')
+        if self.translation_fallback and self.translation_fallback not in ('libretranslate', 'applefm'):
+            raise ValueError('TRANSLATION_FALLBACK must be libretranslate, applefm or empty')
         if bool(self.ocr_rescue_model) != bool(self.ocr_rescue_model_digest):
             raise ValueError('OCR rescue requires both a model and its digest')
 
@@ -83,7 +91,7 @@ class Config:
             state_path=env.get("STATE_PATH", "watch.json"),
             log_dir=env.get("LOG_DIR", "logs"),
             whisper_model=env.get("WHISPER_MODEL", "large-v3"),
-            whisper_device=env.get("WHISPER_DEVICE", "cuda"),
+            whisper_device=env.get("WHISPER_DEVICE") or default_whisper_device(),
             whisper_compute_type=env.get("WHISPER_COMPUTE_TYPE", ""),
             ollama_url=env.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
             ollama_model=env.get("OLLAMA_MODEL", "subzero/hy-mt2:7b"),

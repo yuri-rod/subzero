@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.12.1-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.14.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -293,9 +293,11 @@ subzero worker triage
 subzero worker stop
 ```
 
+Set `NTFY_TOPIC` to receive phone pings. Manual jobs notify on every outcome; automatic jobs stay quiet on success and only ping on failure, review, or a quota pause. The daily auto sweep sends one low-priority summary with the enqueued mix, and `worker triage` pushes its digest on demand.
+
 The worker binds to `127.0.0.1:8787`. Configure `JELLYFIN_URL`, `JELLYFIN_API_KEY`, and `BEARER_TOKEN` before starting it. API requests require `Authorization: Bearer TOKEN`.
 
-`worker status` reports the transcription model, translation provider and model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. For Ollama translation, use `ollama ps` to inspect where the model is running.
+`worker status` reports the transcription model and device (`whisperDevice`), translation provider and model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. For Ollama translation, use `ollama ps` to inspect where the model is running.
 
 Configuration is read from an explicit `--env` file, the current directory's `.env`, the package/project `.env`, or `~/.config/subzero/.env`, in that order. Process environment variables override file values. The retired `~/.config/srtworker/.env` location is no longer discovered automatically; select it with `--env` during migration. The `srtworker` command and the existing macOS launchd label remain compatible.
 
@@ -337,6 +339,12 @@ The worker checks current account usage before admitting an episode for translat
 A paused job has `state: paused` and holds later queue claims. `/health` reports the paused count, and paused work remains included in the active queue count. After resolving the hold, send an authenticated `POST /jobs/{id}/resume` to requeue the same job; the worker checks admission again before translating. Resuming a job that is not paused returns HTTP 409. `DELETE /jobs/{id}` also accepts paused jobs for cancellation.
 
 The quota journal at `SYNC_CACHE/deepl-free-usage.json` records conservative usage across worker restarts. A billing-period reset requires reconciliation against confirmed DeepL account usage before clearing that local floor. Restarting the worker or changing providers does not make a quota hold successful output.
+
+#### Apple Foundation Models
+
+Set `TRANSLATION_PROVIDER=applefm` to translate through Apple's on-device model. Start the local server with `fm serve` and leave it running; `APPLEFM_URL` defaults to `http://127.0.0.1:1976` and only loopback endpoints are accepted. The worker sends one sentence unit per request. A unit the model refuses or echoes falls back to LibreTranslate per unit when `TRANSLATION_FALLBACK=libretranslate` is set; without a fallback the block fails for review.
+
+On-device generation is slower than the Argos CPU engine for long batches (measured on an M3 Pro: 47s versus 7s for 100 cues), so select `applefm` for on-device translation, not for throughput. `TRANSLATION_FALLBACK=applefm` is also accepted with `TRANSLATION_PROVIDER=deepl-free`; an episode that does not fit the Free allowance then continues on-device.
 
 #### Native LibreTranslate CPU runtime
 
@@ -391,7 +399,7 @@ OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m
 ```
 
-Whisper transcribes the source language; the selected provider translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job. On Apple Silicon, `WHISPER_DEVICE=mlx` runs the same weights through mlx-whisper (the `mlx-community/whisper-` model must be the cached one), roughly 3x faster than CPU faster-whisper with equal-or-better text.
+Whisper transcribes the source language; the selected provider translates into the requested target language. Provision the configured Whisper model in the local Hugging Face cache before starting transcription. The worker requires a complete cached model and does not download it during a job. When `WHISPER_DEVICE` is unset, the worker picks `mlx` on Apple Silicon and `cuda` elsewhere. On Apple Silicon, `mlx` runs the same weights through mlx-whisper (the `mlx-community/whisper-` model must be the cached one), roughly 2.5x faster than CPU faster-whisper. The mlx path gates decoding with the same Silero VAD speech spans as the CPU path, so music and montage do not turn into invented dialogue.
 
 On macOS, a shared compute policy serializes Ollama translation, Vision OCR, and Whisper across the CLI, worker, and HTTP transcription requests. Subzero stops the managed Ollama daemon and its runners before OCR or transcription, then starts it when Ollama translation is selected. Ollama translation retains ownership across its batches and fully stops the daemon afterward. Whisper runs in a separate process and exits before handoff, including when configured for CPU execution. The native LibreTranslate engine uses CPU execution and does not start the Ollama daemon.
 
