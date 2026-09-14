@@ -726,8 +726,11 @@ class SyncFlow:
                     text = raw.decode('utf-8-sig')
                 except (OSError,UnicodeError):
                     continue
-                if verify_text(text,reference).status == 'pass':
-                    return text,tag
+                stripped = dump([cue for cue in parse(text) if strip_hearing_impaired([cue])])
+                if not stripped.strip():
+                    continue
+                if verify_text(stripped,reference).status == 'pass':
+                    return stripped,tag
         return None
 
     def source_from_opensubtitles(self, media, reference, languages=None, progress=None):
