@@ -129,7 +129,7 @@ def test_rescue_collects_separate_loss_intervals_without_global_text_mapping(mon
 def test_unresolved_flicker_after_rescue_still_fails_original_gate(monkeypatch):
     coarse = [(0, ""), (.5, "Go on with it please."), (1, "Go on with it please."), (1.5, "")]
     dense = [(.4, ""), (.5, "Go on with it please."), (.6, "Goron with it please."),
-             (.7, "Go on with it please."), (.8, "")]
+             (.7, "Go on with it please."), (.8, "Goron with it please."), (.9, "")]
     monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: dense)
     monkeypatch.setattr(ocr, "_rescue_caption_frames", lambda *a: (coarse, dense), raising=False)
     with pytest.raises(RuntimeError, match="Unstable OCR"):

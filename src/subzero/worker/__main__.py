@@ -61,6 +61,10 @@ def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, po
             if res.returncode == 0:
                 print("subzero worker: started via launchd")
                 return 0
+        else:
+            print("subzero worker: no service manager on this platform; run 'subzero worker serve' "
+                  "in the foreground or wrap it in systemd (Linux) or Task Scheduler/NSSM (Windows)",
+                  file=sys.stderr)
         cmd = "serve"
     if cmd in ("stop", "shutdown", "--stop"):
         code, body = _request("/shutdown", method="POST", token=token, port=effective_port)
@@ -141,6 +145,9 @@ def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, po
             return 0
         print(f"subzero worker: failed to fetch audits (code {code}): {body}", file=sys.stderr)
         return 1
+    if cmd in ("console", "repl", "shell"):
+        from .console import run_console
+        return run_console(effective_port, token)
     if cmd in ("triage", "--triage"):
         from .applefm import AppleFM
         from .notify import Notifier

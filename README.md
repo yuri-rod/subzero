@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.14.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.15.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -289,9 +289,14 @@ subzero worker audits
 # Summarize jobs waiting on review (sent to ntfy when NTFY_TOPIC is set)
 subzero worker triage
 
+# Open an interactive console for live monitoring and control
+subzero worker console
+
 # Request a graceful shutdown
 subzero worker stop
 ```
+
+The interactive console is a read-eval loop over the worker API. Type `help` for the command list. It covers health, the queue, job inspection, cancellation and resume, manual enqueueing, sweeps, coverage, audits, media streams, and OpenSubtitles search, plus a `watch` live refresh. It needs only the standard library, so it runs from any host that can reach the worker.
 
 Set `NTFY_TOPIC` to receive phone pings. Manual jobs notify on every outcome; automatic jobs stay quiet on success and only ping on failure, review, or a quota pause. The daily auto sweep sends one low-priority summary with the enqueued mix, and `worker triage` pushes its digest on demand.
 
@@ -585,6 +590,21 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 ```
+
+The worker daemon runs the same way on Linux, pointing `ExecStart` at
+`subzero worker serve` with a `--env` file that holds `JELLYFIN_URL`,
+`JELLYFIN_API_KEY`, and `BEARER_TOKEN`.
+
+### Windows and Linux notes
+
+The core CLI, watcher, and worker are cross-platform and CI-tested on Linux, macOS, and Windows. A few features are deliberately gated to a platform:
+
+* **Native caption recovery** (`fill-gaps`, `OCR_ENABLED=1`) uses Apple Vision and runs only on macOS. The worker defaults `OCR_ENABLED` to `1` on macOS and `0` elsewhere.
+* **Shared compute policy** (`~/.config/subzero/compute.json`) coordinates Ollama, Vision, and Whisper through launchd and is macOS-only. Leave the policy unset to keep portable behavior on Linux and Windows.
+* **DeepL Free keychain fallback** reads the key from macOS Keychain; on Linux and Windows set `DEEPL_API_KEY` explicitly.
+* **Native LibreTranslate runtime** (`scripts/install_libretranslate.py`) currently supports macOS 14+ ARM64 only. On Linux and Windows select Ollama or a LibreTranslate/Argos install you run yourself.
+
+`subzero worker start` uses launchd on macOS. On Linux and Windows there is no bundled service manager: run `subzero worker serve` in the foreground, or wrap it in systemd (Linux) or Task Scheduler/NSSM (Windows). All file paths, sidecar matching, and the interactive console handle Windows separators and loopback HTTP regardless of host.
 
 ---
 
