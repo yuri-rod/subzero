@@ -500,7 +500,7 @@ def test_aligned_source_sidecar_avoids_transcription(setup, monkeypatch, kind):
     monkeypatch.setattr(syncflow,'transcribe',no_transcription)
     job=run(flow,jobs,kind)
     assert job.state=='done'
-    assert source.read_text()==dialogue()
+    assert not source.exists()
     output=Path(job.result_path).read_text()
     assert 'Fala traduzida' in output
     assert spans(output)==spans(dialogue())
@@ -1829,6 +1829,30 @@ def test_repair_searches_opensubtitles_when_sidecar_missing(setup):
     job = run(flow, jobs, 'repair')
     assert job.state == 'done', job.message
     assert Path(job.result_path).read_text() == dialogue()
+
+
+def test_prune_sidecars_removes_english_after_pt_install(setup, tmp_path):
+    flow, _, _, _ = setup
+    video = tmp_path / 'movie.mkv'
+    en = tmp_path / 'movie.en.srt'
+    eng = tmp_path / 'movie.eng.srt'
+    target = tmp_path / 'movie.pt-BR.srt'
+    en.write_text('english'); eng.write_text('english'); target.write_text('portugues')
+    media = SimpleNamespace(path=str(video), embedded=[])
+    flow.prune_sidecars(media, target, 'pt-BR')
+    assert not en.exists() and not eng.exists()
+    assert target.exists()
+
+
+def test_prune_sidecars_keeps_english_for_english_target(setup, tmp_path):
+    flow, _, _, _ = setup
+    video = tmp_path / 'movie.mkv'
+    target = tmp_path / 'movie.en.srt'
+    other = tmp_path / 'movie.eng.srt'
+    target.write_text('english'); other.write_text('english')
+    media = SimpleNamespace(path=str(video), embedded=[])
+    flow.prune_sidecars(media, target, 'en')
+    assert target.exists() and other.exists()
 
 
 

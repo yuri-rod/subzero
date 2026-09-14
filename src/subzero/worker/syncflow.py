@@ -218,6 +218,8 @@ class SyncFlow:
                 tag = path.name[len(video.stem) + 1:-4].lower()
                 if tag and any(same_language(tag, el) for el in embedded_langs if el):
                     path.unlink(missing_ok=True)
+                elif tag and not same_language(lang, 'en') and same_language(tag, 'en'):
+                    path.unlink(missing_ok=True)
             except OSError:
                 pass
 
