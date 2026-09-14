@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from subzero.worker.config import Config, resolve_deepl_key
+from subzero.worker.config import Config, default_whisper_device, resolve_deepl_key
 
 
 @pytest.mark.parametrize('platform,enabled', [('darwin', True), ('linux', False), ('win32', False)])
@@ -19,6 +19,32 @@ def test_ocr_setting_can_override_platform(value, enabled):
     env = {'JELLYFIN_URL': 'http://localhost', 'JELLYFIN_API_KEY': 'key', 'BEARER_TOKEN': 'token',
            'OCR_ENABLED': value}
     assert Config.load(env).ocr_enabled is enabled
+
+
+@pytest.mark.parametrize('platform,machine,device', [
+    ('darwin', 'arm64', 'mlx'),
+    ('darwin', 'x86_64', 'cuda'),
+    ('linux', 'x86_64', 'cuda'),
+    ('win32', 'AMD64', 'cuda'),
+])
+def test_whisper_device_default_follows_apple_silicon(platform, machine, device):
+    assert default_whisper_device(platform, machine) == device
+
+
+def test_whisper_device_explicit_setting_wins_over_the_platform_default(monkeypatch):
+    env = {'JELLYFIN_URL': 'http://localhost', 'JELLYFIN_API_KEY': 'key', 'BEARER_TOKEN': 'token'}
+    monkeypatch.setattr('subzero.worker.config.default_whisper_device', lambda: 'mlx')
+    assert Config.load(env).whisper_device == 'mlx'
+    assert Config.load(dict(env, WHISPER_DEVICE='cpu')).whisper_device == 'cpu'
+
+
+def test_translation_fallback_accepts_apple_local_engines():
+    env = {'JELLYFIN_URL': 'http://localhost', 'JELLYFIN_API_KEY': 'key', 'BEARER_TOKEN': 'token',
+           'TRANSLATION_PROVIDER': 'deepl-free', 'DEEPL_API_KEY': 'key:fx'}
+    assert Config.load(dict(env, TRANSLATION_FALLBACK='applefm')).translation_fallback == 'applefm'
+    assert Config.load(dict(env, TRANSLATION_FALLBACK='libretranslate')).translation_fallback == 'libretranslate'
+    with pytest.raises(ValueError, match='TRANSLATION_FALLBACK'):
+        Config.load(dict(env, TRANSLATION_FALLBACK='openai'))
 
 
 @pytest.mark.parametrize('model,digest', [('qwen3.5:9b', ''), ('', 'a' * 64)])

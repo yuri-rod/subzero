@@ -587,6 +587,36 @@ def test_mlx_holder_reports_missing_local_cache(monkeypatch):
         ModelHolder("large-v3-turbo", device="mlx").load()
 
 
+def test_mlx_speech_chunks_split_at_thirty_seconds(monkeypatch):
+    import numpy as np
+    import faster_whisper.audio
+    import faster_whisper.vad
+    from subzero.worker.mlx_asr import restore_time, speech_chunks
+
+    monkeypatch.setattr(faster_whisper.audio, "decode_audio",
+                        lambda path, sampling_rate: np.zeros(16_000 * 60, dtype="float32"))
+    monkeypatch.setattr(faster_whisper.vad, "get_speech_timestamps",
+                        lambda samples, options: [{"start": 16_000, "end": 16_000 * 21},
+                                                  {"start": 16_000 * 25, "end": 16_000 * 40}])
+
+    chunks = speech_chunks("audio.wav")
+    assert [c["parts"] for c in chunks] == [
+        [(0.0, 20.0, 1.0, 21.0)],
+        [(0.0, 15.0, 25.0, 40.0)],
+    ]
+    # local 1.5s sits 1.5s into the first span, so its original time is 2.5s
+    assert restore_time(1.5, chunks[0]["parts"]) == 2.5
+    assert restore_time(99.0, chunks[0]["parts"]) == 21.0
+
+
+def test_mlx_refuses_audio_without_speech(monkeypatch):
+    from subzero.worker import mlx_asr
+
+    monkeypatch.setattr(mlx_asr, "speech_chunks", lambda audio_path: [])
+    with pytest.raises(RuntimeError, match="no speech"):
+        mlx_asr.MlxModel("snapshot").transcribe("audio.wav", vad_filter=True)
+
+
 def test_mlx_transcribe_builds_cues_and_drops_faster_options(tmp_path, monkeypatch, capsys):
     import huggingface_hub
     import sys
@@ -610,14 +640,20 @@ def test_mlx_transcribe_builds_cues_and_drops_faster_options(tmp_path, monkeypat
     stub = types.ModuleType("mlx_whisper")
     stub.transcribe = fake_transcribe
     monkeypatch.setitem(sys.modules, "mlx_whisper", stub)
+    from subzero.worker import mlx_asr
+    sentinel = object()
+    monkeypatch.setattr(mlx_asr, "speech_chunks",
+                        lambda audio_path: [{"audio": sentinel, "parts": [(0.0, 3.0, 10.0, 13.0)]}])
 
     seen = []
     holder = ModelHolder("large-v3-turbo", device="mlx")
     cues, lang = transcribe("audio.wav", holder, progress=lambda phase, pct: seen.append(pct))
 
     assert [c.text for c in cues] == ["Ola", "mundo"]
+    assert [round(c.start, 2) for c in cues] == [10.0, 12.0]
     assert lang == "en"
     assert seen
+    assert calls["audio"] is sentinel
     assert calls["kwargs"]["path_or_hf_repo"] == str(tmp_path)
     assert calls["kwargs"]["verbose"] is False
     assert "vad_filter" not in calls["kwargs"] and "beam_size" not in calls["kwargs"]
