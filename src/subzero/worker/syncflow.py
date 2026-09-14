@@ -770,7 +770,19 @@ class SyncFlow:
                 if not cues:
                     continue
                 clean_text = dump(cues)
-                if verify_text(clean_text, reference).status == 'pass':
+                report = verify_text(clean_text, reference)
+                if report.status != 'pass':
+                    change = correction(report)
+                    if change is not None:
+                        scale, offset = change
+                        repaired, _ = shift_timestamps(clean_text, offset, scale)
+                        if verify_text(repaired, reference).status == 'pass':
+                            report = verify_text(repaired, reference, phase=45)
+                            if report.status == 'pass':
+                                if progress:
+                                    progress('corrigindo atraso da legenda do OpenSubtitles', 10)
+                                clean_text = repaired
+                if report.status == 'pass':
                     lang_tag = getattr(candidate, 'lang', 'en') or 'en'
                     try:
                         en_path = Path(sidecar_path(media.path, lang_tag))

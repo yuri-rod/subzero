@@ -1800,6 +1800,21 @@ def test_rebuild_searches_opensubtitles_before_whisper(setup, monkeypatch):
     assert Path(job.result_path).read_text() == dialogue()
 
 
+def test_rebuild_shifts_offset_opensubtitles_instead_of_whisper(setup, monkeypatch):
+    flow, jobs, provider, media = setup
+    flow.cfg.opensubtitles_key = 'test-key'
+    whisper_called = []
+    monkeypatch.setattr('subzero.worker.syncflow.transcribe', lambda *a, **k: whisper_called.append(True) or ([], 'en'))
+    provider.search = lambda **k: [Candidate(99, 'movie.1080p', 'en', 500, False, True, False)]
+    provider.download = lambda fid: dialogue(7.5)
+    flow.service.opensubs = provider
+    flow.translation_ready = lambda: None
+    flow.translate_cues = lambda cues, *a, **k: cues
+    job = run(flow, jobs, 'rebuild')
+    assert job.state == 'done', job.message
+    assert not whisper_called, 'Whisper was called despite shiftable OpenSubtitles subtitle'
+
+
 def test_repair_searches_opensubtitles_when_sidecar_missing(setup):
     flow, jobs, provider, media = setup
     flow.cfg.opensubtitles_key = 'test-key'
