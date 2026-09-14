@@ -143,8 +143,28 @@ def test_guards_reject_untranslated_middle_cue_with_translated_tail():
     'Ele é válido por três Tribal Councils.',
     'Leve o ídolo ao Tribal Council.',
 ])
-def test_guards_reject_english_game_terms_in_portuguese(dialogue):
+def test_guards_keep_english_game_terms_in_portuguese(dialogue):
     text = f'1\n00:00:01,000 --> 00:00:03,000\n{dialogue}\n'
+    assert check_language_completeness(text, 'pt-BR')[0]
+
+
+@pytest.mark.parametrize('dialogue', [
+    'Tonight on Tribal Council.',
+    'She found an Immunity Idol.',
+])
+def test_guards_reject_untranslated_game_term_cues(dialogue):
+    text = f'1\n00:00:01,000 --> 00:00:03,000\n{dialogue}\n'
+    assert not check_language_completeness(text, 'pt-BR')[0]
+
+
+def test_guards_keep_quoted_english_title_in_portuguese_line():
+    text = ('1\n00:00:01,000 --> 00:00:03,000\nÓtimo. Então, essa nova música\n'
+            'se chama “I Ain\'t Worried About It”.\n')
+    assert check_language_completeness(text, 'pt-BR')[0]
+
+
+def test_guards_reject_fully_english_quoted_cue():
+    text = '1\n00:00:01,000 --> 00:00:03,000\n"I really think that we should go now."\n'
     assert not check_language_completeness(text, 'pt-BR')[0]
 
 
