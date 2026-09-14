@@ -52,6 +52,7 @@ EN_CLAUSE = re.compile(
     r"\s+[a-z]+\b"
 )
 EN_GAME_TERMS = re.compile(r"\b(?:immunity\s+idols?|tribal\s+councils?)\b")
+QUOTED_SPAN = re.compile(r"[“\"«]([^“\"»]+)[”\"»]")
 
 
 def check_language_completeness(text: str, target_lang: str | None) -> tuple[bool, str]:
@@ -59,13 +60,18 @@ def check_language_completeness(text: str, target_lang: str | None) -> tuple[boo
         return True, "pass"
     for index, cue in enumerate(parse_srt(text), start=1):
         dialogue = ASS.sub(" ", TAG.sub("", cue.text)).lower().replace("’", "'")
+        unquoted = QUOTED_SPAN.sub(" ", dialogue)
+        if unquoted != dialogue and any(word in PT_WORDS for word in LANGUAGE_WORD.findall(unquoted)):
+            dialogue = unquoted
         reason = (
             "Falha no guard de traducao: trecho nao traduzido "
             f"no bloco {index} em {cue.start}"
         )
-        if EN_CLAUSE.search(dialogue) or EN_GAME_TERMS.search(dialogue):
+        if EN_CLAUSE.search(dialogue):
             return False, reason
         words = LANGUAGE_WORD.findall(dialogue)
+        if EN_GAME_TERMS.search(dialogue) and not any(word in PT_WORDS for word in words):
+            return False, reason
         for start in range(len(words)):
             english = set()
             for word in words[start:start + 8]:
