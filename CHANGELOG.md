@@ -3,6 +3,22 @@
 Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.15.0] - 2026-09-14
+
+### Added
+
+- Add `subzero worker console`, an interactive read-eval loop over the worker API for live health, queue, job, sweep, coverage, audit, media, and search control. It uses only the standard library and connects to the worker on loopback. For a remote worker, forward its port locally.
+
+### Fixed
+
+- Collapse an A/B/A OCR flicker run onto its dominant reading before the caption stability gate. A one-glyph misread of a frozen caption no longer fails whole-video English recovery; runs with no majority or with a moved censorship bar still go to review.
+
+### Changed
+
+- Clarify `subzero worker start` on Linux and Windows, which have no bundled service manager, and document systemd, Task Scheduler, and NSSM setups plus the platform-gated features in the README.
+
 ## [1.14.0] - 2026-09-14
 
 ### Added

@@ -173,3 +173,82 @@ def test_short_caption_glyph_correction_preserves_words_and_protected_changes(fi
     with patch("subzero.ocr._scan_caption_frames", return_value=dense), \
          pytest.raises(RuntimeError, match="lost a confirmed caption"):
         ocr.refine_caption_timing("video.mkv", coarse, 2)
+
+
+def _stamp(value):
+    millis = round(value * 1000)
+    hours, millis = divmod(millis, 3_600_000)
+    minutes, millis = divmod(millis, 60_000)
+    seconds, millis = divmod(millis, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def _flicker_readings(pattern, template="I would do higher, {}"):
+    from subzero.convert import Cue
+    return [Cue(_stamp(index / 10), _stamp((index + 1) / 10), template.format(name))
+            for index, name in enumerate(pattern)]
+
+
+def test_reading_stabilization_collapses_a_dominant_flicker_run():
+    from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
+
+    cues = _flicker_readings(["Ant.", "Ani.", "Ant.", "Ani.", "Ani.", "Ani.",
+                              "Ani.", "Ani.", "Ant.", "Ani."])
+    stable = stabilize_caption_readings(cues)
+
+    assert [cue.text for cue in stable] == ["I would do higher, Ani."] * 10
+    validate_caption_readings(stable)
+
+
+def test_reading_stabilization_keeps_a_tie_for_review():
+    from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
+
+    cues = _flicker_readings(["Ant.", "Ani.", "Ant.", "Ani."])
+
+    assert [cue.text for cue in stabilize_caption_readings(cues)] == [cue.text for cue in cues]
+    with pytest.raises(RuntimeError, match="Unstable OCR caption readings"):
+        validate_caption_readings(cues)
+
+
+def test_reading_stabilization_leaves_a_sustained_change_alone():
+    from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
+
+    cues = _flicker_readings(["Ant.", "Ant.", "Ant.", "Ani.", "Ani.", "Ani."])
+    stable = stabilize_caption_readings(cues)
+
+    assert [cue.text for cue in stable] == [cue.text for cue in cues]
+    validate_caption_readings(stable)
+
+
+def test_reading_stabilization_ignores_long_readings():
+    from subzero.convert import Cue
+    from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
+
+    cues = [Cue(_stamp(index / 2), _stamp(index / 2 + 0.5), f"I would do higher, {name}")
+            for index, name in enumerate(["Ant.", "Ani.", "Ant."])]
+    stable = stabilize_caption_readings(cues)
+
+    assert [cue.text for cue in stable] == [cue.text for cue in cues]
+    validate_caption_readings(stable)
+
+
+def test_reading_stabilization_leaves_neighboring_captions_untouched():
+    from subzero.convert import Cue
+    from subzero.caption_quality import stabilize_caption_readings
+
+    cues = _flicker_readings(["Ant.", "Ani.", "Ant.", "Ani.", "Ani.", "Ani."])
+    cues.append(Cue(_stamp(1.0), _stamp(1.4), "We shouldn't do higher."))
+    stable = stabilize_caption_readings(cues)
+
+    assert all(cue.text == "I would do higher, Ani." for cue in stable[:-1])
+    assert stable[-1].text == "We shouldn't do higher."
+
+
+def test_reading_stabilization_collapses_a_two_to_one_run():
+    from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
+
+    cues = _flicker_readings(["Ant.", "Ani.", "Ant."])
+    stable = stabilize_caption_readings(cues)
+
+    assert [cue.text for cue in stable] == ["I would do higher, Ant."] * 3
+    validate_caption_readings(stable)

@@ -19,7 +19,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .caption_quality import validate_caption_readings
+from .caption_quality import stabilize_caption_readings, validate_caption_readings
 from .caption_rescue import CAPTION_CROP, CaptionFrame, CaptionRescue, _image_bytes, crop_caption_image
 from .caption_scan_cache import CaptionScanCache
 from .compute import compute_lease_fd, compute_phase
@@ -907,7 +907,7 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
             detections, dense = _rescue_caption_frames(video, detections, dense, duration, windows,
                                                        intervals, caption_rescue, **options)
             cues = _interpret_caption_frames(detections, dense, windows, duration)
-        cues = [cue for cue in cues if _substantial_caption(cue.text)]
+        cues = stabilize_caption_readings([cue for cue in cues if _substantial_caption(cue.text)])
         validate_caption_readings(cues)
         if progress:
             progress(100, 100)
@@ -1179,6 +1179,7 @@ def fill_subtitle_gaps(
 
     to_merge = recovered
     if target_lang and target_lang.lower() not in ("en", "eng"):
+        recovered = stabilize_caption_readings(recovered)
         validate_caption_readings(recovered)
         if translation_client is not None:
             client = translation_client
