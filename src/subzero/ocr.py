@@ -1205,13 +1205,22 @@ def fill_subtitle_gaps(
         )
         if len(to_merge) != len(recovered):
             raise RuntimeError("Caption translation did not preserve every recovered cue")
-        english = {"the", "you", "your", "that", "with", "this", "they", "have", "what",
-                   "were", "about", "there", "would", "don't", "can't", "yes", "no"}
+        english = {"i", "me", "my", "we", "us", "our", "he", "him", "his", "she",
+                   "her", "it", "they", "them", "their", "you", "your", "the", "a",
+                   "an", "of", "to", "in", "on", "at", "for", "and", "or", "but",
+                   "is", "are", "was", "were", "do", "does", "did", "has", "have",
+                   "had", "can", "could", "should", "would", "will", "not", "no",
+                   "yes", "that", "this", "with", "what", "about", "there",
+                   "don't", "can't", "now", "here", "how", "when", "who", "so",
+                   "if", "up", "out", "just", "as", "be", "by", "from", "all",
+                   "than", "then", "too", "into", "over"}
         for source, translated in zip(recovered, to_merge):
             src_words = re.findall(r"[a-zA-Z']+", source.text.lower())
             dst_words = re.findall(r"[a-zA-Z']+", translated.text.lower())
+            # Identical output without English function words is a proper noun
+            # or location card the translator rightly left alone, keep it.
             if (target_lang.lower().startswith("pt") and src_words == dst_words
-                    and (len(src_words) >= 2 or english.intersection(src_words))):
+                    and english.intersection(src_words)):
                 raise RuntimeError(f"Caption translation returned untranslated English: {source.text[:100]}")
         to_merge = [Cue(source.start, source.end, translated.text, source.style)
                     for source, translated in zip(recovered, to_merge)]
