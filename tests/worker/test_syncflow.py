@@ -1855,4 +1855,21 @@ def test_prune_sidecars_keeps_english_for_english_target(setup, tmp_path):
     assert target.exists() and other.exists()
 
 
+def test_source_sidecar_returns_stripped_text(setup):
+    flow,jobs,provider,media=setup
+    source=Path(media.path).with_suffix('.en.srt')
+    source.write_text(dialogue()+'\n5000\n01:23:20,000 --> 01:23:22,000\n[Thunder rumbling]\n')
+    text,tag=flow.source_sidecar(media,flow.reference_builder())
+    assert tag=='en'
+    assert '[Thunder rumbling]' not in text
+    assert 'Fala traduzida' not in text
+
+
+def test_source_sidecar_skips_sdh_only_file(setup):
+    flow,jobs,provider,media=setup
+    source=Path(media.path).with_suffix('.en.srt')
+    source.write_text('1\n00:00:01,000 --> 00:00:03,000\n[Music playing]\n')
+    assert flow.source_sidecar(media,flow.reference_builder()) is None
+
+
 
