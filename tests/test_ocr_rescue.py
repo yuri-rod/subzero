@@ -34,6 +34,37 @@ def test_fill_gaps_uses_supplied_translation_client(tmp_path, monkeypatch):
     assert report.cues[0].text == "Guarde este segredo."
 
 
+def _gap_run(monkeypatch, tmp_path, caption, translated):
+    subtitle = tmp_path / "source.srt"
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nExisting dialogue.\n", encoding="utf-8")
+    monkeypatch.setattr(ocr, "find_caption_gaps", lambda *a, **kw: [(2, 4)])
+    monkeypatch.setattr(ocr, "extract_and_ocr_gaps", lambda *a, **kw: [
+        Cue("00:00:02,000", "00:00:03,000", caption)])
+
+    def translate(cues, *, client, **kwargs):
+        return [Cue(cues[0].start, cues[0].end, translated)]
+
+    monkeypatch.setattr(ocr, "translate_cues", translate)
+    return ocr.fill_subtitle_gaps("video", subtitle, target_lang="pt-BR", dry_run=True,
+                                  translation_client=object())
+
+
+def test_identical_proper_noun_caption_is_kept(tmp_path, monkeypatch):
+    report = _gap_run(monkeypatch, tmp_path, "HOLLYWOOD, CALIFORNIA", "HOLLYWOOD, CALIFORNIA")
+    assert report.cues_recovered == 1
+    assert report.cues[0].text == "HOLLYWOOD, CALIFORNIA"
+
+
+def test_identical_sentence_with_function_words_still_fails(tmp_path, monkeypatch):
+    with pytest.raises(RuntimeError, match="untranslated English"):
+        _gap_run(monkeypatch, tmp_path, "You are safe tonight.", "You are safe tonight.")
+
+
+def test_identical_phrase_with_preposition_still_fails(tmp_path, monkeypatch):
+    with pytest.raises(RuntimeError, match="untranslated English"):
+        _gap_run(monkeypatch, tmp_path, "Previously on Survivor", "Previously on Survivor")
+
+
 def test_rescue_reconciles_coarse_and_dense_censor_evidence_before_loss_check(monkeypatch):
     monkeypatch.setattr(ocr, "_scan_caption_frames", lambda *a, **kw: DENSE)
     with pytest.raises(RuntimeError, match="lost a confirmed"):
