@@ -5,6 +5,12 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [1.16.2] - 2026-09-14
+
+### Fixed
+
+- Only record a qBittorrent torrent as processed once its Jellyfin item is found and enqueued. A download that finished before Jellyfin had indexed it was being marked seen and dropped forever; it now stays pending and retries on the next poll.
+
 ## [1.16.1] - 2026-09-14
 
 ### Fixed
