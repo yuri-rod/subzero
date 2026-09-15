@@ -5,6 +5,16 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-09-14
+
+### Added
+
+- Add a qBittorrent completion trigger. With `QBT_ENABLED=1` and `QBT_API_KEY` set, the worker polls the qBittorrent Web API and enqueues an `audit` job when polling finds a completed torrent in `QBT_CATEGORIES`. It refreshes the matching Jellyfin library (derived from `/Library/VirtualFolders`), waits for the new item to be indexed, and fires once per torrent via a seen-hash ledger under `SYNC_CACHE/qbt-seen.json`. Season packs enqueue one job per episode.
+
+### Changed
+
+- Automatic jobs enqueued by the qBittorrent trigger are claimed even when `AUTO_ENABLED=0`, without re-enabling the daily sweep or periodic `tick()`.
+
 ## [1.15.0] - 2026-09-14
 
 ### Added
