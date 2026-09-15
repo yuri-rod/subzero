@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.15.0-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.16.0-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)
@@ -307,6 +307,22 @@ The worker binds to `127.0.0.1:8787`. Configure `JELLYFIN_URL`, `JELLYFIN_API_KE
 Configuration is read from an explicit `--env` file, the current directory's `.env`, the package/project `.env`, or `~/.config/subzero/.env`, in that order. Process environment variables override file values. The retired `~/.config/srtworker/.env` location is no longer discovered automatically; select it with `--env` during migration. The `srtworker` command and the existing macOS launchd label remain compatible.
 
 Library sweeps use `AUTO_ENABLED`, `AUTO_WINDOW_START`, `AUTO_WINDOW_END`, and `WATCH_INTERVAL`. `IDLE_SHUTDOWN_MINUTES=15` enables idle shutdown; set it to `0` for a continuously running service.
+
+#### qBittorrent completion trigger
+
+The worker can watch qBittorrent and start a subtitle job the moment a torrent finishes downloading, without waiting for the auto sweep window. Enable it in the environment file:
+
+```dotenv
+QBT_ENABLED=1
+QBT_URL=http://127.0.0.1:8585
+QBT_API_KEY=qbt_your_api_key
+QBT_CATEGORIES=movies,tv shows
+QBT_POLL_INTERVAL=30
+```
+
+The worker polls `QBT_URL` every `QBT_POLL_INTERVAL` seconds using the `X-API-Key` header. When a torrent with `progress 1.0` in one of `QBT_CATEGORIES` appears, it refreshes the matching Jellyfin library, waits for the new item to be indexed, and enqueues an `audit` job for it in the first accepted language. Each torrent fires once; seen hashes are recorded under `SYNC_CACHE/qbt-seen.json`. A season pack enqueues one job per episode found under the download folder.
+
+The mapping from download folder to Jellyfin library is derived at startup from `GET /Library/VirtualFolders`, so the qBittorrent category save path must fall inside a Jellyfin library location. These jobs are automatic: quiet on success, retried on failure, and claimed even when `AUTO_ENABLED=0`.
 
 #### Configuring Target and Accepted Languages
 

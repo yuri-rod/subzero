@@ -311,6 +311,10 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
                               translate_from=cfg.translate_from,
                               excluded_paths=cfg.excluded_paths,sync_flow=service.sync_flow)
         start_runner(app, store, service, watcher, cfg, jellyfin, notifier)
+        if cfg.qbt_enabled:
+            from .qbt_watch import QBitWatcher
+            app.state.qbt_watcher = QBitWatcher(cfg, jellyfin, store)
+            app.state.qbt_watcher.start()
     return app
 
 
@@ -338,6 +342,9 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
             today_str = now_dt.strftime("%Y-%m-%d")
 
             allow_auto = cfg.auto_enabled and in_window(current_hour)
+            # o gatilho do qBittorrent enfileira jobs de origem automatica fora da
+            # janela; eles precisam ser pegos mesmo com o AUTO_ENABLED desligado
+            claim_auto = allow_auto or cfg.qbt_enabled
 
             if allow_auto and watcher and last_sweep_day != today_str and current_hour == cfg.auto_window_start:
                 last_sweep_day = today_str
@@ -353,7 +360,7 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
                         pass
 
             try:
-                job = runner.run_once(allow_auto=allow_auto)
+                job = runner.run_once(allow_auto=claim_auto)
             except Exception:
                 app.state.stop.wait(5)
                 continue
@@ -401,3 +408,6 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
     @app.on_event("shutdown")
     def stop() -> None:
         app.state.stop.set()
+        qbt_watcher = getattr(app.state, "qbt_watcher", None)
+        if qbt_watcher is not None:
+            qbt_watcher.stop()

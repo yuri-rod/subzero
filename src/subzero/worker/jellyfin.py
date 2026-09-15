@@ -171,6 +171,37 @@ class JellyfinClient:
                    params={"metadataRefreshMode": "ValidationOnly", "imageRefreshMode": "None",
                            "replaceAllMetadata": "false", "replaceAllImages": "false"})
 
+    def refresh_library(self, library_id: str) -> None:
+        self._call("POST", f"/Items/{library_id}/Refresh",
+                   params={"metadataRefreshMode": "ValidationOnly", "imageRefreshMode": "None",
+                           "replaceAllMetadata": "false", "replaceAllImages": "false"})
+
+    def library_map(self) -> dict[str, str]:
+        """Mapa de localizacao de biblioteca -> ItemId, para achar a biblioteca certa
+        a partir do caminho de download do qBittorrent."""
+        try:
+            folders = self._call("GET", "/Library/VirtualFolders").json()
+        except JellyfinError:
+            return {}
+        mapping: dict[str, str] = {}
+        for folder in folders:
+            item_id = folder.get("ItemId")
+            if not item_id:
+                continue
+            for location in folder.get("Locations") or []:
+                mapping[os.path.normpath(str(location)).lower()] = item_id
+        return mapping
+
+    def find_items_under(self, root_path: str) -> list[dict]:
+        """Itens de video cujo caminho fica sob a pasta (ou arquivo) baixada."""
+        root = os.path.normpath(root_path).lower()
+        found: list[dict] = []
+        for item in self.all_items():
+            path = os.path.normpath(item.get("Path") or "").lower()
+            if path == root or path.startswith(root + os.sep):
+                found.append(item)
+        return found
+
     def recent(self, limit: int = 50) -> list[dict]:
         params = {"sortBy": "DateCreated", "sortOrder": "Descending", "limit": limit,
                   "recursive": "true", "includeItemTypes": "Movie,Episode",

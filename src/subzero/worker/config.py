@@ -64,6 +64,12 @@ class Config:
     sync_cache: str = str(Path.home()/'.cache/subzero')
     sync_audit_only: bool = False
     idle_shutdown_minutes: int = 15
+    qbt_url: str = 'http://127.0.0.1:8585'
+    qbt_api_key: str = field(default='', repr=False)
+    qbt_enabled: bool = False
+    qbt_poll_interval: int = 30
+    qbt_categories: list[str] = field(default_factory=lambda: ['movies', 'tv shows'])
+    qbt_state_path: str = ''
 
     def __post_init__(self):
         if self.translation_provider not in ('ollama', 'libretranslate', 'deepl-free', 'applefm'):
@@ -72,6 +78,8 @@ class Config:
             raise ValueError('TRANSLATION_FALLBACK must be libretranslate, applefm or empty')
         if bool(self.ocr_rescue_model) != bool(self.ocr_rescue_model_digest):
             raise ValueError('OCR rescue requires both a model and its digest')
+        if self.qbt_enabled and not self.qbt_api_key:
+            raise ValueError('QBT_ENABLED requires QBT_API_KEY')
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None) -> "Config":
@@ -80,6 +88,7 @@ class Config:
         if missing:
             raise ValueError(f"faltando no .env: {', '.join(missing)}")
         langs = [l.strip() for l in env.get("AUTO_LANGS", "pt-BR").split(",") if l.strip()]
+        sync_cache = env.get('SYNC_CACHE', str(Path.home() / '.cache/subzero'))
         return cls(
             jellyfin_url=env["JELLYFIN_URL"].rstrip("/"),
             jellyfin_key=env["JELLYFIN_API_KEY"],
@@ -121,9 +130,15 @@ class Config:
             excluded_paths=[p.strip() for p in env.get("EXCLUDE_PATHS", "").split(",") if p.strip()],
             asr_compat=env.get("ASR_COMPAT", "0") in ("1", "true", "yes"),
             asr_max_mb=int(env.get("ASR_MAX_MB", "1024")),
-            sync_cache=env.get('SYNC_CACHE',str(Path.home()/'.cache/subzero')),
+            sync_cache=sync_cache,
             sync_audit_only=env.get('SYNC_AUDIT_ONLY','0') in ('1','true','yes'),
             idle_shutdown_minutes=int(env.get("IDLE_SHUTDOWN_MINUTES", "15")),
+            qbt_url=env.get('QBT_URL', 'http://127.0.0.1:8585').rstrip('/'),
+            qbt_api_key=env.get('QBT_API_KEY', '').strip(),
+            qbt_enabled=env.get('QBT_ENABLED', '0') not in ('0', 'false', 'no'),
+            qbt_poll_interval=int(env.get('QBT_POLL_INTERVAL', '30')),
+            qbt_categories=[c.strip() for c in env.get('QBT_CATEGORIES', 'movies,tv shows').split(',') if c.strip()],
+            qbt_state_path=env.get('QBT_STATE_PATH', '').strip() or str(Path(sync_cache) / 'qbt-seen.json'),
         )
 
 
