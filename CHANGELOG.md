@@ -5,6 +5,12 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-09-14
+
+### Fixed
+
+- Let the qBittorrent trigger pick up completed torrents with no category. Uncategorized downloads now pass through and are resolved by their save path against the Jellyfin libraries, instead of being silently dropped by the category filter.
+
 ## [1.16.0] - 2026-09-14
 
 ### Added
