@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-09-14
+
+### Fixed
+
+- Let the qBittorrent trigger pick up completed torrents with no category. Uncategorized downloads now pass through and are resolved by their save path against the Jellyfin libraries, instead of being silently dropped by the category filter.
+
 ## [1.16.0] - 2026-09-14
 
 ### Added

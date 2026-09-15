@@ -52,11 +52,12 @@ def test_completed_filters_progress_and_category():
         make_torrent(hash="2" * 40, progress=0.5, category="movies"),
         make_torrent(hash="3" * 40, progress=1.0, category="games"),
         make_torrent(hash="4" * 40, progress=1.0, category="tv shows"),
+        make_torrent(hash="5" * 40, progress=1.0, category=""),
     ]
     http = FakeHTTP([FakeResponse(200, torrents)])
     client = QBitTorrentClient("http://x", "key", http=http)
     completed = client.completed({"movies", "tv shows"})
-    assert {t["hash"] for t in completed} == {"1" * 40, "4" * 40}
+    assert {t["hash"] for t in completed} == {"1" * 40, "4" * 40, "5" * 40}
 
 
 def test_seen_store_roundtrip(tmp_path):

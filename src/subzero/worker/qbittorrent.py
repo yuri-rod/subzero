@@ -37,13 +37,19 @@ class QBitTorrentClient:
         return payload if isinstance(payload, list) else []
 
     def completed(self, categories) -> list[dict]:
-        """Torrents fully downloaded and seeding, restricted to the wanted categories."""
+        """Torrents fully downloaded and seeding.
+
+        Uncategorized torrents pass through; a known category that is not wanted
+        (games, prowlarr) is dropped. The watcher then resolves the save path
+        against the Jellyfin libraries, so an unfiled torrent still only fires
+        when it landed somewhere the worker manages.
+        """
         wanted = set(categories)
         return [
             torrent for torrent in self.torrents()
             if torrent.get("hash")
             and float(torrent.get("progress", 0)) >= 1.0
-            and (torrent.get("category") or "") in wanted
+            and (not torrent.get("category") or torrent["category"] in wanted)
         ]
 
 
