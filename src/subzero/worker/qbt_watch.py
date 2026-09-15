@@ -38,9 +38,14 @@ class QBitWatcher:
             info_hash = torrent.get("hash")
             if not info_hash or info_hash in self.seen:
                 continue
+            items = self._items_for(torrent)
+            if not items:
+                # Jellyfin ainda nao indexou; deixa sem marcar para a proxima
+                # passada tentar de novo, em vez de perder o gatilho para sempre
+                continue
             self.seen.add(info_hash)
             changed = True
-            for item in self._items_for(torrent):
+            for item in items:
                 if self._already_enqueued(item["Id"]):
                     continue
                 enqueued.append(self.store.enqueue(item["Id"], "audit", self.target_lang, origin="auto"))

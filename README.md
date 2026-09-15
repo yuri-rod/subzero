@@ -11,7 +11,7 @@
 
 Subtitle cleanup, timing verification, translation, and burned-in caption recovery.
 
-[![Version](https://img.shields.io/badge/version-1.16.1-blue.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.16.2-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Core dependencies: Zero](https://img.shields.io/badge/core_dependencies-zero-brightgreen.svg)](pyproject.toml)

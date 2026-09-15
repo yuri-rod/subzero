@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subzero-cli"
-version = "1.16.1"
+version = "1.16.2"
 description = "Universal subtitle & audio AI toolkit: clean SDH, speech gap analysis with Apple Vision OCR caption recovery, auto-sync, local LLM translation, container extraction, format conversion, and automated media server daemon"
 readme = "README.md"
 license = "MIT"

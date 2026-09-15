@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.2] - 2026-09-14
+
+### Fixed
+
+- Only record a qBittorrent torrent as processed once its Jellyfin item is found and enqueued. A download that finished before Jellyfin had indexed it was being marked seen and dropped forever; it now stays pending and retries on the next poll.
+
 ## [1.16.1] - 2026-09-14
 
 ### Fixed

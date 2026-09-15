@@ -95,6 +95,18 @@ def test_tick_skips_without_matching_library():
     jellyfin.refresh_library.assert_not_called()
 
 
+def test_tick_does_not_mark_seen_when_item_not_indexed(monkeypatch):
+    monkeypatch.setattr(qbt_watch, "SETTLE_SECONDS", 0.1)
+    monkeypatch.setattr(qbt_watch, "SETTLE_POLL_SECONDS", 0.01)
+    torrent = make_torrent()
+    seen = FakeSeen()
+    watcher, jellyfin, store = make_watcher(completed=[torrent], items=[], seen=seen)
+
+    assert watcher.tick() == []
+    assert seen.added == []
+    store.enqueue.assert_not_called()
+
+
 def test_tick_does_not_reenqueue_active_item():
     torrent = make_torrent()
     watcher, jellyfin, store = make_watcher(
