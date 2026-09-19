@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 from collections import Counter
 from contextlib import nullcontext
@@ -38,6 +39,41 @@ OCR_SOURCE_VERSION = 17
 
 def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def embedded_track_score(stream, target_lang: str) -> int:
+    title = (getattr(stream, 'title', '') or '').lower()
+    codec = (getattr(stream, 'codec', '') or '').lower()
+    score = 100
+    if 'forced' in title:
+        return -100
+    if codec in ('hdmv_pgs_subtitle', 'dvd_subtitle', 'pgs', 'dvdsub', 'pgssub', 'xsub'):
+        return -100
+    if same_language(target_lang, 'pt-BR'):
+        if any(w in title for w in ('brazil', 'brasil', 'pob', 'pt-br', 'pt_br')):
+            score += 50
+        elif any(w in title for w in ('european', 'portugal', 'pt-pt', 'pt_pt')):
+            score -= 40
+    if any(w in title for w in ('sdh', 'cc')):
+        score -= 20
+    if codec in ('subrip', 'srt'):
+        score += 10
+    elif codec in ('ass', 'ssa', 'webvtt', 'mov_text'):
+        score += 5
+    return score
+
+
+def is_embedded_match(stream, target_lang: str) -> bool:
+    if getattr(stream, 'external', False):
+        return False
+    lang = getattr(stream, 'lang', '') or getattr(stream, 'language', '') or ''
+    title = (getattr(stream, 'title', '') or '').lower()
+    if lang and same_language(lang, target_lang):
+        return True
+    if not lang or lang.lower() in ('und', 'unknown'):
+        if same_language(target_lang, 'pt-BR'):
+            return any(w in title for w in ('portuguese', 'português', 'portugues', 'brasileiro', 'brazilian'))
+    return False
 
 
 def read_gap_source(path):
@@ -265,6 +301,43 @@ class SyncFlow:
             progress(phase,percent)
         return getattr(self,kind)(media,job,key,reference,guarded_progress)
 
+    def embedded_candidates(self, media, target_lang: str):
+        candidates = []
+        embedded = getattr(media, 'embedded', []) or []
+        for s in embedded:
+            if is_embedded_match(s, target_lang):
+                candidates.append(s)
+        if not candidates and hasattr(media, 'path') and Path(media.path).exists():
+            try:
+                from subzero.extract import list_subtitle_streams
+                for s in list_subtitle_streams(media.path):
+                    if not getattr(s, 'is_text', True):
+                        continue
+                    if is_embedded_match(s, target_lang):
+                        candidates.append(s)
+            except Exception:
+                pass
+        return sorted(candidates, key=lambda s: embedded_track_score(s, target_lang), reverse=True)
+
+    def extract_embedded_text(self, video_path: str, stream) -> str:
+        if isinstance(stream, int):
+            stream_arg = f'0:{stream}'
+        elif getattr(stream, 'sub_index', None) is not None and stream.sub_index >= 0:
+            stream_arg = f'0:s:{stream.sub_index}'
+        elif getattr(stream, 'index', None) is not None:
+            stream_arg = f'0:{stream.index}'
+        else:
+            return ''
+        cmd = ['ffmpeg', '-v', 'error', '-nostdin', '-i', str(video_path),
+               '-map', stream_arg, '-vn', '-an', '-c:s', 'srt', '-f', 'srt', 'pipe:1']
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return ''
+        if proc.returncode != 0:
+            return ''
+        return proc.stdout.decode('utf-8', errors='replace')
+
     def audit(self, media, job, key, reference, progress):
         path = self.installed(media,job.target_lang)
         if path.exists():
@@ -297,6 +370,17 @@ class SyncFlow:
                     shutil.copy2(path,quarantine/f'{job.target_lang}-{digest(text)}.srt')
                     path.unlink()
                 self.service.jellyfin.refresh(media.item_id)
+        for stream in self.embedded_candidates(media, job.target_lang):
+            self.active(job)
+            raw = self.extract_embedded_text(media.path, stream)
+            if not raw or not raw.strip():
+                continue
+            cleaned = sanitize_to_excellence(raw, job.target_lang, self.accepted_langs)
+            report = verify_text(cleaned, reference)
+            guard = check_excellence_guards(cleaned, job.target_lang)
+            if report.status == 'pass' and guard.ok:
+                return self.install(media, job, key, cleaned, report)
+            self.stage(key, job.target_lang, cleaned)
         if self.cfg.sync_audit_only:
             return self.review(media,job,key,'Audit complete; automatic replacement is disabled')
         self.jobs.advance(job.id,'refetch','Procurando outra legenda da mesma edicao')
