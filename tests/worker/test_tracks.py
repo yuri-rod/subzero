@@ -612,6 +612,7 @@ def test_mlx_speech_chunks_split_at_thirty_seconds(monkeypatch):
 def test_mlx_refuses_audio_without_speech(monkeypatch):
     from subzero.worker import mlx_asr
 
+    pytest.importorskip('mlx_whisper')
     monkeypatch.setattr(mlx_asr, "speech_chunks", lambda audio_path: [])
     with pytest.raises(RuntimeError, match="no speech"):
         mlx_asr.MlxModel("snapshot").transcribe("audio.wav", vad_filter=True)
