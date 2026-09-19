@@ -197,17 +197,6 @@ class JobStore:
             db.execute("UPDATE jobs SET state = 'queued', phase = '', percent = 0, updated = ?"
                        " WHERE state = 'running'", (time.time(),))
 
-    def downloads_today(self) -> int:
-        start = time.time() - (time.time() % 86400)
-        with self._db() as db:
-            row = db.execute("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'opensubtitles'"
-                             " AND state = 'done' AND updated >= ?", (start,)).fetchone()
-            extra = 0
-            if db.execute("SELECT 1 FROM sqlite_master WHERE name='subtitle_attempts'").fetchone():
-                extra = db.execute('SELECT COUNT(*) FROM subtitle_attempts WHERE created>=?',
-                                   (start,)).fetchone()[0]
-        return int(row["n"])+extra
-
 
 Handler = Callable[[Job, Callable[[str, int], None]], str | None]
 

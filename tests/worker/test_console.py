@@ -28,7 +28,7 @@ def test_console_status(monkeypatch, capsys):
 
 def test_console_jobs(monkeypatch, capsys):
     data = {"jobs": [{"id": "abc12345def", "kind": "repair", "targetLang": "pt-BR", "state": "running",
-                      "percent": 50, "phase": "scanning"}], "downloadsToday": 3, "budget": 15}
+                      "percent": 50, "phase": "scanning"}]}
     console = make_console(monkeypatch, {("/jobs?limit=5", "GET"): (200, data)})
     console.cmd_jobs(["5"])
     out = capsys.readouterr().out

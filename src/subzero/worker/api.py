@@ -207,9 +207,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
 
     @app.get("/jobs", dependencies=guard)
     def list_jobs(limit: int = 50) -> dict:
-        return {"jobs": [job_json(j) for j in store.recent(limit)],
-                "downloadsToday": store.downloads_today(),
-                "budget": cfg.daily_download_budget}
+        return {"jobs": [job_json(j) for j in store.recent(limit)]}
 
     @app.get('/sync/audits', dependencies=guard)
     def sync_audits() -> dict:
@@ -261,7 +259,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         w = watcher
         if w is None:
             w = Watcher(jellyfin, store, opensubs, cfg.state_path, cfg.auto_langs,
-                        cfg.daily_download_budget, fallback_langs=cfg.fallback_langs,
+                        fallback_langs=cfg.fallback_langs,
                         translate_from=cfg.translate_from,
                         excluded_paths=cfg.excluded_paths,sync_flow=service.sync_flow)
         enqueued = w.sweep()
@@ -307,7 +305,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     if runner:
         if watcher is None and cfg.auto_enabled:
             watcher = Watcher(jellyfin, store, opensubs, cfg.state_path, cfg.auto_langs,
-                              cfg.daily_download_budget, fallback_langs=cfg.fallback_langs,
+                              fallback_langs=cfg.fallback_langs,
                               translate_from=cfg.translate_from,
                               excluded_paths=cfg.excluded_paths,sync_flow=service.sync_flow)
         start_runner(app, store, service, watcher, cfg, jellyfin, notifier)
@@ -354,8 +352,7 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
                     pass
                 else:
                     try:
-                        notifier.sweep(enqueued, store.downloads_today(),
-                                       cfg.daily_download_budget)
+                        notifier.sweep(enqueued)
                     except Exception:
                         pass
 

@@ -41,7 +41,6 @@ class Config:
     ocr_enabled: bool = field(default_factory=lambda: sys.platform == 'darwin')
     ocr_rescue_model: str = ""
     ocr_rescue_model_digest: str = ""
-    daily_download_budget: int = 15
     auto_langs: list[str] = field(default_factory=lambda: ["pt-BR"])
     accepted_langs: list[str] = field(default_factory=list)
     auto_enabled: bool = True
@@ -115,7 +114,6 @@ class Config:
             ocr_enabled=env.get('OCR_ENABLED', '1' if sys.platform == 'darwin' else '0').lower() not in ('0', 'false', 'no'),
             ocr_rescue_model=env.get('OCR_RESCUE_MODEL', '').strip(),
             ocr_rescue_model_digest=env.get('OCR_RESCUE_MODEL_DIGEST', '').strip(),
-            daily_download_budget=int(env.get("DAILY_DOWNLOAD_BUDGET", "15")),
             auto_langs=langs,
             accepted_langs=[l.strip() for l in env.get("ACCEPTED_LANGS", "").split(",") if l.strip()],
             auto_enabled=env.get("AUTO_ENABLED", "1") not in ("0", "false", "no"),

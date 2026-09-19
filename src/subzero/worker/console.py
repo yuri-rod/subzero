@@ -91,7 +91,7 @@ class Console:
             print(f"  failed: {self._detail(body)}")
             return
         jobs = body.get("jobs", [])
-        print(f"  {len(jobs)} jobs (downloads today {body.get('downloadsToday', 0)}/{body.get('budget', 0)})")
+        print(f"  {len(jobs)} jobs")
         for j in jobs:
             phase = f" {j.get('phase')}" if j.get("phase") else ""
             print(f"    {j['id'][:8]}  {self._print_state(j.get('state', ''))}"

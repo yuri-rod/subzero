@@ -64,7 +64,7 @@ class Notifier:
         except Exception:
             pass
 
-    def sweep(self, enqueued, downloads_today: int = 0, budget: int = 0) -> None:
+    def sweep(self, enqueued) -> None:
         jobs = list(enqueued)
         if not self.enabled or not jobs:
             return
@@ -72,7 +72,7 @@ class Notifier:
         for job in jobs:
             kinds[job.kind] = kinds.get(job.kind, 0) + 1
         mix = ", ".join(f"{n} {kind}" for kind, n in sorted(kinds.items()))
-        body = f"Enqueued {len(jobs)} jobs (downloads today {downloads_today}/{budget}): {mix}"
+        body = f"Enqueued {len(jobs)} jobs: {mix}"
         try:
             self.http.request("POST", f"{self.url}/{self.topic}", content=body.encode("utf-8"),
                               headers={"Title": "Auto sweep", "Priority": "2", "Tags": "radar"})

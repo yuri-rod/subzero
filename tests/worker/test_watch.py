@@ -47,18 +47,18 @@ def planner(by_lang=None, **kw):
 
 
 def test_nothing_to_do_when_the_sidecar_is_there():
-    assert planner().plan(media(sidecars=["pt-BR"]), "pt-BR", 10) == []
+    assert planner().plan(media(sidecars=["pt-BR"]), "pt-BR") == []
 
 
 def test_nothing_to_do_when_the_target_is_embedded():
-    assert planner().plan(media(embedded=[sub(2, "por")]), "pt-BR", 10) == []
+    assert planner().plan(media(embedded=[sub(2, "por")]), "pt-BR") == []
 
 
 def test_a_ready_made_translation_beats_extracting_the_embedded_track():
     """A ordem que importa: legenda escrita por gente ganha da traducao automatica."""
     w = planner({"pt-BR": [offer(11)]})
 
-    plan = w.plan(media(embedded=[sub(3, "eng")]), "pt-BR", 10)
+    plan = w.plan(media(embedded=[sub(3, "eng")]), "pt-BR")
 
     assert plan == [("opensubtitles", "pt-BR", "11")]
 
@@ -66,7 +66,7 @@ def test_a_ready_made_translation_beats_extracting_the_embedded_track():
 def test_english_is_downloaded_to_be_translated_when_there_is_no_portuguese():
     w = planner({"en": [offer(22)]})
 
-    plan = w.plan(media(), "pt-BR", 10)
+    plan = w.plan(media(), "pt-BR")
 
     assert plan == [("opensubtitles", "en", "22"), ("translate", "pt-BR", "en")]
     assert w.opensubs.asked[:2] == ["pt-BR", "en"]
@@ -75,7 +75,7 @@ def test_english_is_downloaded_to_be_translated_when_there_is_no_portuguese():
 def test_pt_pt_comes_after_english_and_needs_no_translation():
     w = planner({"pt-PT": [offer(33)]})
 
-    plan = w.plan(media(), "pt-BR", 10)
+    plan = w.plan(media(), "pt-BR")
 
     assert plan == [("opensubtitles", "pt-BR", "33")]
     assert w.opensubs.asked == ["pt-BR", "en", "pt-PT"]
@@ -84,22 +84,13 @@ def test_pt_pt_comes_after_english_and_needs_no_translation():
 def test_the_embedded_track_is_the_next_resort():
     w = planner({})
 
-    plan = w.plan(media(embedded=[sub(3, "eng")]), "pt-BR", 10)
+    plan = w.plan(media(embedded=[sub(3, "eng")]), "pt-BR")
 
     assert plan == [("embedded", "en", "3"), ("translate", "pt-BR", "en")]
 
 
 def test_whisper_is_the_last_resort():
-    assert planner({}).plan(media(), "pt-BR", 10) == [("whisper", "pt-BR", None)]
-
-
-def test_without_budget_it_never_asks_opensubtitles():
-    w = planner({"pt-BR": [offer(11)]})
-
-    plan = w.plan(media(embedded=[sub(3, "eng")]), "pt-BR", 0)
-
-    assert w.opensubs.asked == []
-    assert plan == [("embedded", "en", "3"), ("translate", "pt-BR", "en")]
+    assert planner({}).plan(media(), "pt-BR") == [("whisper", "pt-BR", None)]
 
 
 def test_embedded_steps_skips_extraction_when_the_sidecar_already_exists():
@@ -140,7 +131,7 @@ def store(tmp_path):
 def watcher(store, tmp_path, items, media_map, opensubs=None):
     return Watcher(jellyfin=FakeJellyfin(items, media_map), store=store,
                    opensubs=opensubs or FakeOpenSubs(),
-                   state_path=str(tmp_path / "watch.json"), langs=["pt-BR"], budget=15)
+                   state_path=str(tmp_path / "watch.json"), langs=["pt-BR"])
 
 
 def test_tick_enqueues_for_new_items_only(store, tmp_path):
@@ -188,21 +179,6 @@ def test_quota_error_falls_back_to_whisper(store, tmp_path):
     w = watcher(store, tmp_path, items, {"abc": media()}, opensubs=FakeOpenSubs(raises=QuotaExceeded(0)))
 
     assert [j.kind for j in w.tick()] == ["whisper"]
-
-
-def test_budget_counts_the_downloads_already_done_today(store, tmp_path):
-    items = [{"Id": "abc", "DateCreated": "2026-08-19T10:00:00Z"}]
-    for _ in range(15):
-        job = store.enqueue("x", "opensubtitles", "pt-BR", origin="auto")
-        store.start(job.id)
-        store.finish(job.id, "x.srt")
-    opensubs = FakeOpenSubs([Candidate(1, "r", "pt-br", 1, False, False, False)])
-    w = watcher(store, tmp_path, items, {"abc": media()}, opensubs=opensubs)
-
-    jobs = w.tick()
-
-    assert [j.kind for j in jobs] == ["whisper"]
-    assert opensubs.searches == 0
 
 
 class OneCandidate:
@@ -469,9 +445,6 @@ class FakeStore:
         self.calls.append((kind, target, source))
         return type("J", (), {"kind": kind, "target_lang": target, "source_id": source})()
 
-    def downloads_today(self):
-        return 0
-
 
 
 
@@ -529,15 +502,12 @@ def test_sweep_queues_all_missing_items(tmp_path):
         def active(self):
             return []
 
-        def downloads_today(self):
-            return 0
-
         def enqueue(self, item_id, kind, target, source, origin="manual"):
             self.calls.append((item_id, kind, target, source, origin))
             return type("J", (), {"id": "j1", "item_id": item_id})()
 
     w = Watcher(Jelly(), Store(), None, str(tmp_path / "s.json"), ["pt-BR"])
-    w.plan = lambda media, lang, budget: [("whisper", "pt-BR", None)]
+    w.plan = lambda media, lang: [("whisper", "pt-BR", None)]
 
     jobs = w.sweep()
 
@@ -636,7 +606,7 @@ def test_pick_candidate_skips_a_known_broken_file(tmp_path):
 
     jobs = JobStore(str(tmp_path / "jobs.db"))
     state = SyncStore(jobs)
-    state.reserve("v", "pt-BR", 1, "job", 10)
+    state.reserve("v", "pt-BR", 1, "job")
     state.update("v", "pt-BR", 1, status="broken")
     osubs = OneCandidate([offer(1), offer(2)])
     w = Watcher(None, jobs, osubs, "s.json", ["pt-BR"])

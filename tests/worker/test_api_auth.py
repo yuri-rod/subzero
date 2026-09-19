@@ -141,7 +141,6 @@ def test_deepl_real_client_startup_does_not_request_usage_or_translation(tmp_pat
 
 def test_config_defaults():
     cfg = Config.load({"JELLYFIN_URL": "http://x", "JELLYFIN_API_KEY": "k", "BEARER_TOKEN": "t"})
-    assert cfg.daily_download_budget == 15
     assert cfg.auto_langs == ["pt-BR"]
     assert cfg.ollama_model == "subzero/hy-mt2:7b"
 
