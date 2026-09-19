@@ -248,8 +248,10 @@ class OpenSubtitles:
             params["query"] = query
         if moviehash:
             params["moviehash"] = moviehash
-            # Include the filename with the hash to improve subtitle matching.
-            if filename and not query:
+            # Include the filename with hash-only searches. Adding it to a title or
+            # episode query can filter out valid matches.
+            if (filename and not query and season is None
+                    and not any((imdb_id, tmdb_id, parent_imdb_id, parent_tmdb_id))):
                 params["query"] = filename
         if langs:
             params["languages"] = ",".join(l.lower() for l in langs)
