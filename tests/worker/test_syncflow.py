@@ -1872,4 +1872,59 @@ def test_source_sidecar_skips_sdh_only_file(setup):
     assert flow.source_sidecar(media,flow.reference_builder()) is None
 
 
+def test_audit_installs_embedded_subtitle_when_sidecar_missing(setup):
+    flow,jobs,provider,media=setup
+    from subzero.worker.jellyfin import EmbeddedSub
+    media.embedded = [
+        EmbeddedSub(index=28, lang='por', codec='subrip', title='Brazilian', external=False, sub_index=0)
+    ]
+    flow.extract_embedded_text = lambda path, stream: dialogue()
+    job = run(flow, jobs, 'audit')
+    assert job.state == 'done'
+    installed = Path(media.path).with_suffix('.pt-BR.srt')
+    assert installed.exists()
+    assert flow.current(media, 'pt-BR')
+
+
+def test_audit_prefers_brazilian_over_european_for_pt_br(setup):
+    flow,jobs,provider,media=setup
+    from subzero.worker.jellyfin import EmbeddedSub
+    media.embedded = [
+        EmbeddedSub(index=30, lang='por', codec='subrip', title='European', external=False, sub_index=1),
+        EmbeddedSub(index=28, lang='por', codec='subrip', title='Brazilian', external=False, sub_index=0),
+    ]
+    candidates = flow.embedded_candidates(media, 'pt-BR')
+    assert candidates[0].title == 'Brazilian'
+
+
+def test_audit_cleans_sdh_from_embedded_subtitle(setup):
+    flow,jobs,provider,media=setup
+    from subzero.worker.jellyfin import EmbeddedSub
+    media.embedded = [
+        EmbeddedSub(index=29, lang='por', codec='subrip', title='Brazilian (SDH)', external=False, sub_index=0)
+    ]
+    sdh_text = dialogue().replace('Test dialogue', '[APLAUSOS] Test dialogue')
+    flow.extract_embedded_text = lambda path, stream: sdh_text
+    job = run(flow, jobs, 'audit')
+    assert job.state == 'done'
+    installed = Path(media.path).with_suffix('.pt-BR.srt')
+    assert installed.exists()
+    assert '[APLAUSOS]' not in installed.read_text()
+
+
+def test_audit_falls_back_to_embedded_when_sidecar_rejected(setup):
+    flow,jobs,provider,media=setup
+    from subzero.worker.jellyfin import EmbeddedSub
+    bad_sidecar = Path(media.path).with_suffix('.pt-BR.srt')
+    bad_sidecar.write_text(dialogue(15))
+    media.embedded = [
+        EmbeddedSub(index=28, lang='por', codec='subrip', title='Brazilian', external=False, sub_index=0)
+    ]
+    flow.extract_embedded_text = lambda path, stream: dialogue()
+    job = run(flow, jobs, 'audit')
+    assert job.state == 'done'
+    assert flow.current(media, 'pt-BR')
+
+
+
 
