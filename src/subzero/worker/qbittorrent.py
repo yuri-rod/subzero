@@ -79,7 +79,8 @@ class SeenStore:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
-            os.fchmod(descriptor, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 json.dump(sorted(self._seen), output, separators=(",", ":"))
                 output.write("\n")
