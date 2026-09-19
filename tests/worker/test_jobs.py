@@ -135,14 +135,6 @@ def test_handler_progress_reaches_the_store(store):
     assert store.get(job.id).result_path == "out.srt"
 
 
-def test_counts_downloads_of_the_day(store):
-    store.enqueue("a", "opensubtitles", "pt-BR")
-    job = store.enqueue("b", "opensubtitles", "pt-BR")
-    store.start(job.id)
-    store.finish(job.id, "b.srt")
-    assert store.downloads_today() == 1
-
-
 def test_manual_job_fails_immediately_even_when_retryable(store):
     job = store.enqueue("item1", "whisper", "pt-BR")
     store.start(job.id)

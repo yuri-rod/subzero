@@ -415,8 +415,7 @@ class SyncFlow:
                 break
             if candidate.file_id in seen:
                 continue
-            if not self.state.reserve(key,job.target_lang,candidate.file_id,job.id,
-                                      self.cfg.daily_download_budget):
+            if not self.state.reserve(key,job.target_lang,candidate.file_id,job.id):
                 break
             tried += 1
             seen.add(candidate.file_id)

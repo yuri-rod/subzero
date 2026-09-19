@@ -211,7 +211,7 @@ def created_at(value: str | None) -> datetime | None:
 
 class Watcher:
     def __init__(self, jellyfin, store: JobStore, opensubs, state_path: str,
-                 langs: list[str], budget: int = 15, fallback_langs: list[str] | None = None,
+                 langs: list[str], fallback_langs: list[str] | None = None,
                  translate_from: list[str] | None = None,
                  excluded_paths: list[str] | None = None, sync_flow=None):
         self.jellyfin = jellyfin
@@ -219,7 +219,6 @@ class Watcher:
         self.opensubs = opensubs
         self.state_path = Path(state_path)
         self.langs = langs
-        self.budget = budget
         # Try accepted language variants before transcription.
         self.fallback_langs = fallback_langs or []
         # Source languages worth downloading for translation.
@@ -255,8 +254,7 @@ class Watcher:
                 self.save_marker(item["DateCreated"])
                 continue
             for lang in self.langs:
-                budget_left = max(0, self.budget - self.store.downloads_today())
-                for kind, target, source in self.plan(media, lang, budget_left):
+                for kind, target, source in self.plan(media, lang):
                     enqueued.append(self.store.enqueue(media.item_id, kind, target, source,
                                                        origin="auto"))
             self.save_marker(item["DateCreated"])
@@ -277,8 +275,7 @@ class Watcher:
             for lang in self.langs:
                 if self.sync_flow is None and has_language(media, lang):
                     continue
-                budget_left = max(0, self.budget - self.store.downloads_today())
-                for kind, target, source in self.plan(media, lang, budget_left):
+                for kind, target, source in self.plan(media, lang):
                     if (media.item_id, kind, target) in active_keys:
                         continue
                     job = self.store.enqueue(media.item_id, kind, target, source, origin="auto")
@@ -286,7 +283,7 @@ class Watcher:
                     enqueued.append(job)
         return enqueued
 
-    def plan(self, media, target: str, budget_left: int) -> list[Step]:
+    def plan(self, media, target: str) -> list[Step]:
         """Plan an audit when timing verification is configured.
 
         Otherwise, try target-language downloads, translatable source downloads,
@@ -300,22 +297,21 @@ class Watcher:
         if has_language(media, target):
             return []
 
-        if budget_left > 0:
-            found = self.pick_candidate(media, target)
+        found = self.pick_candidate(media, target)
+        if found:
+            return [("opensubtitles", target, found)]
+
+        for source_lang in self.translate_from:
+            found = self.pick_candidate(media, source_lang)
             if found:
+                return [("opensubtitles", source_lang, found),
+                        ("translate", target, source_lang)]
+
+        for other in self.fallback_langs:
+            found = self.pick_candidate(media, other)
+            if found:
+                # Install an accepted variant under the target tag without translation.
                 return [("opensubtitles", target, found)]
-
-            for source_lang in self.translate_from:
-                found = self.pick_candidate(media, source_lang)
-                if found:
-                    return [("opensubtitles", source_lang, found),
-                            ("translate", target, source_lang)]
-
-            for other in self.fallback_langs:
-                found = self.pick_candidate(media, other)
-                if found:
-                    # Install an accepted variant under the target tag without translation.
-                    return [("opensubtitles", target, found)]
 
         return embedded_steps(media, target) or [("whisper", target, None)]
 

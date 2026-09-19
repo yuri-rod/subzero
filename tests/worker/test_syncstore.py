@@ -4,15 +4,15 @@ from subzero.worker.jobs import JobStore
 from subzero.worker.syncstore import SyncStore
 
 
-def test_failed_download_reservations_count_and_survive_restart(tmp_path):
+def test_failed_download_reservations_survive_restart(tmp_path):
     jobs=JobStore(str(tmp_path/'jobs.db'))
     state=SyncStore(jobs)
-    assert state.reserve('video','pt-BR',17,'job',1)
+    assert state.reserve('video','pt-BR',17,'job')
     state.update('video','pt-BR',17,status='rejected')
     restarted=SyncStore(jobs)
-    assert not restarted.reserve('video','pt-BR',17,'job2',1)
-    assert not restarted.reserve('other','pt-BR',18,'job2',1)
-    assert restarted.downloads_today() == 1
+    assert not restarted.reserve('video','pt-BR',17,'job2')
+    assert restarted.reserve('other','pt-BR',18,'job2')
+    assert len(restarted.attempts('video','pt-BR')) == 1
 
 
 def test_audit_invalidates_on_subtitle_digest_change(tmp_path):
@@ -33,11 +33,11 @@ def test_broken_file_ids_lists_only_broken_status(tmp_path):
     from subzero.worker.syncstore import broken_file_ids
     jobs=JobStore(str(tmp_path/'jobs.db'))
     state=SyncStore(jobs)
-    state.reserve('v','pt-BR',1,'job',10)
+    state.reserve('v','pt-BR',1,'job')
     state.update('v','pt-BR',1,status='broken')
-    state.reserve('v','pt-BR',2,'job',10)
+    state.reserve('v','pt-BR',2,'job')
     state.update('v','pt-BR',2,status='reject')
-    state.reserve('w','pt-BR',3,'job',10)
+    state.reserve('w','pt-BR',3,'job')
 
     assert broken_file_ids(jobs,'pt-BR') == {1}
     assert broken_file_ids(jobs,'en') == set()

@@ -104,14 +104,13 @@ def test_rebuild_done_uses_a_past_verb():
 def test_sweep_posts_a_low_priority_summary():
     http = FakeHTTP()
     Notifier("https://ntfy.sh", "yuri-topic", http=http).sweep(
-        [job(kind="opensubtitles"), job(kind="translate"), job(kind="translate")],
-        downloads_today=12, budget=15)
+        [job(kind="opensubtitles"), job(kind="translate"), job(kind="translate")])
 
     _, url, kwargs = http.calls[0]
     assert url == "https://ntfy.sh/yuri-topic"
     assert kwargs["headers"]["Title"] == "Auto sweep"
     assert kwargs["headers"]["Priority"] == "2"
-    assert b"Enqueued 3 jobs (downloads today 12/15)" in kwargs["content"]
+    assert b"Enqueued 3 jobs" in kwargs["content"]
     assert b"1 opensubtitles, 2 translate" in kwargs["content"]
 
 

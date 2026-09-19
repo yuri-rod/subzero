@@ -19,22 +19,9 @@ class SyncStore:
                 );
             ''')
 
-    def downloads_today(self, db=None):
-        if db is None:
-            with self.jobs._db() as conn:
-                return self.downloads_today(conn)
-        start = time.time()//86400*86400
-        return db.execute('SELECT COUNT(*) FROM subtitle_attempts WHERE created>=?',
-                          (start,)).fetchone()[0]
-
-    def reserve(self, video, lang, file_id, job_id, budget):
+    def reserve(self, video, lang, file_id, job_id):
         with self.jobs._db() as db:
             db.execute('BEGIN IMMEDIATE')
-            legacy = db.execute("SELECT COUNT(*) FROM jobs WHERE kind='opensubtitles'"
-                                " AND state='done' AND updated>=?",
-                                (time.time()//86400*86400,)).fetchone()[0]
-            if self.downloads_today(db)+legacy >= budget:
-                return False
             cursor = db.execute('INSERT OR IGNORE INTO subtitle_attempts'
                                 '(video,lang,file_id,job_id,created) VALUES (?,?,?,?,?)',
                                 (video,lang,file_id,job_id,time.time()))

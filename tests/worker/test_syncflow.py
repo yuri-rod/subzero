@@ -34,7 +34,7 @@ def setup(tmp_path):
     provider=SimpleNamespace(search=lambda **_:candidates,download=lambda _:dialogue(8))
     service=Service(jf,provider,None,None)
     jobs=JobStore(str(tmp_path/'jobs.db'))
-    cfg=SimpleNamespace(sync_cache=str(tmp_path/'cache'),daily_download_budget=10,
+    cfg=SimpleNamespace(sync_cache=str(tmp_path/'cache'),
                         excluded_paths=[],sync_audit_only=False)
     ref={'speech':spans(dialogue()),'spans':spans(dialogue()),'text':dialogue(),'language':'eng','duration':940}
     flow=SyncFlow(jobs,service,cfg,reference_builder=lambda *args:ref)
@@ -47,20 +47,25 @@ def run(flow,jobs,kind):
     return jobs.get(job.id)
 
 
+def attempts(flow):
+    with flow.state.jobs._db() as db:
+        return db.execute('SELECT COUNT(*) FROM subtitle_attempts').fetchone()[0]
+
+
 def test_refetch_tries_distinct_candidates_and_only_installs_verified(setup):
     flow,jobs,provider,media=setup
     provider.download=lambda fid:dialogue() if fid==3 else dialogue(8)
     job=run(flow,jobs,'refetch')
     assert job.state=='done'
     assert Path(job.result_path).read_text()==dialogue()
-    assert flow.state.downloads_today()==3
+    assert attempts(flow)==3
 
 
 def test_refetch_stops_at_three_then_resyncs(setup):
     flow,jobs,provider,media=setup
     job=run(flow,jobs,'refetch')
     assert job.kind=='resync' and job.state=='queued'
-    assert flow.state.downloads_today()==3
+    assert attempts(flow)==3
     Runner(jobs,{'resync':flow.run}).run_once()
     assert jobs.get(job.id).state=='done'
 
@@ -131,7 +136,7 @@ def test_wrong_movie_candidate_is_not_downloaded(setup):
     for c in provider.search():
         c.imdb_id='456'
     job=run(flow,jobs,'refetch')
-    assert flow.state.downloads_today()==0
+    assert attempts(flow)==0
     assert job.kind=='resync'
 
 
@@ -345,7 +350,7 @@ def test_broken_file_is_never_downloaded_again(setup):
     from subzero.reference import fingerprint
     flow,jobs,provider,media=setup
     key=fingerprint(str(media.path))
-    flow.state.reserve(key,'pt-BR',1,'old',10)
+    flow.state.reserve(key,'pt-BR',1,'old')
     flow.state.update(key,'pt-BR',1,status='broken')
     asked=[]
     real=provider.download
@@ -374,7 +379,7 @@ def test_frame_rate_mismatch_skips_every_candidate(setup):
     bad=Media('id','movie',str(media.path),'mkv',940,'eng','src',imdb_id='tt123',fps=25.0)
     flow.service.jellyfin=SimpleNamespace(media=lambda _:bad,refresh=lambda _:None)
     job=run(flow,jobs,'refetch')
-    assert flow.state.downloads_today()==0
+    assert attempts(flow)==0
     assert job.kind=='resync'
 
 
@@ -385,7 +390,7 @@ def test_exhausted_quota_skips_downloads_and_resyncs(setup):
     provider.download=lambda fid:asked.append(fid) or dialogue(8)
     job=run(flow,jobs,'refetch')
     assert asked==[]
-    assert flow.state.downloads_today()==0
+    assert attempts(flow)==0
     assert job.kind=='resync'
 
 

@@ -113,8 +113,6 @@ def test_run_worker_cmd_jobs(monkeypatch, capsys):
         "jobs": [
             {"id": "abc12345def", "kind": "repair", "targetLang": "pt-BR", "state": "running", "percent": 50, "phase": "scanning"}
         ],
-        "downloadsToday": 3,
-        "budget": 15,
     }
 
     def fake_request(path, method="GET", token="", port=8787):
@@ -127,7 +125,7 @@ def test_run_worker_cmd_jobs(monkeypatch, capsys):
     assert calls[0][1] == "GET"
     assert calls[0][3] == 8787
     out = capsys.readouterr().out
-    assert "1 jobs (downloads today: 3/15)" in out
+    assert "1 jobs" in out
     assert "abc12345 repair     pt-BR  running   50% [scanning]" in out
 
     monkeypatch.setattr(worker_main, "_request", lambda *a, **kw: (500, "server error"))
