@@ -3,12 +3,16 @@
 Runs from a LaunchAgent after the OpenSubtitles daily quota resets. Queues
 opensubtitles jobs straight into the worker database, waits for the runner to
 drain them, then checks each new sidecar against the spoken dialogue and
-resyncs the ones that came from a different release.
+resyncs the ones that came from a different release. With --retire the agent
+boots itself out and deletes its plist once nothing is missing anymore.
 """
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import shlex
+import subprocess
 import time
 
 from subzero.worker.config import Config, read_env_file
@@ -20,6 +24,8 @@ from subzero.worker.watch import Watcher, has_language
 REPO = Path(__file__).resolve().parent.parent
 REFERENCE_CACHE = Path.home() / '.cache/subzero/references'
 BACKUP_DIR = Path.home() / '.cache/subzero/backups/refill'
+LAUNCH_LABEL = 'com.yuri.subzero-refill'
+LAUNCH_PLIST = Path.home() / 'Library/LaunchAgents' / f'{LAUNCH_LABEL}.plist'
 
 
 def parse_args(argv=None):
@@ -28,8 +34,19 @@ def parse_args(argv=None):
     parser.add_argument('--lang', default='pt-BR')
     parser.add_argument('--limit', type=int, default=20, help='downloads per run')
     parser.add_argument('--wait', type=int, default=3600, help='seconds to wait for the runner')
+    parser.add_argument('--retire', action='store_true',
+                        help='boot the LaunchAgent out and delete it when nothing is missing')
     parser.add_argument('--dry-run', action='store_true')
     return parser.parse_args(argv)
+
+
+def retire_agent():
+    """Remove the agent from a detached shell so this run can exit first."""
+    print(f'nothing left to refill; retiring {LAUNCH_LABEL}')
+    command = f'sleep 1; /bin/launchctl bootout gui/{os.getuid()}/{LAUNCH_LABEL} 2>/dev/null;'
+    command += f' rm -f {shlex.quote(str(LAUNCH_PLIST))}'
+    subprocess.Popen(['/bin/sh', '-c', command], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def missing_media(jelly, series, lang):
@@ -87,6 +104,8 @@ def main(argv=None):
     missing = missing_media(jelly, args.series, args.lang)
     if not missing:
         print('nothing missing')
+        if args.retire:
+            retire_agent()
         return 0
     if account.remaining <= 0 and not args.dry_run:
         print(f'{len(missing)} items missing but the quota is exhausted; the next run picks them up')
