@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-09-19
+
+### Added
+
+- Add `scripts/refill.py`, a refill pass that pulls the missing subtitles of a series from OpenSubtitles, waits for the worker runner to drain the jobs, then VAD-checks every new sidecar and resyncs the ones that came from a different release. Run with `--retire` it boots its own LaunchAgent out and deletes the plist once nothing is missing.
+
+### Changed
+
+- The OpenSubtitles account quota is now the only download limit. The per-worker `DAILY_DOWNLOAD_BUDGET` counter is gone, along with the `downloadsToday`/`budget` fields in `subzero worker jobs` and in the worker API, and the sweep notification no longer reports it.
+
+### Fixed
+
+- Match series episodes by season and number instead of the OpenSubtitles air year, which rejected every episode that aired in a later calendar year than the series folder.
+- Stop sending the release filename as a text query together with `moviehash` and episode ids. The combination returned zero rows for episodes that had subtitles available.
+
 ## [1.16.2] - 2026-09-14
 
 ### Fixed
