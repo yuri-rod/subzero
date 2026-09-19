@@ -57,6 +57,28 @@ def test_search_sends_the_language_list_and_hash():
     assert params["query"] == "filme"
 
 
+def test_search_drops_the_filename_when_ids_and_hash_are_present():
+    """Hash mais nome do arquivo como texto zera a busca de um episodio valido."""
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": []})})
+    OpenSubtitles("k", http=http).search(moviehash="abc", filename="Ghosts.US.S01E11.mkv",
+                                         langs=["pt-BR"], season=1, episode=11,
+                                         parent_imdb_id="tt11379026")
+
+    params = dict(http.calls[0][2])
+    assert params["moviehash"] == "abc"
+    assert params["season_number"] == "1"
+    assert params["episode_number"] == "11"
+    assert "query" not in params
+
+
+def test_search_uses_the_filename_when_nothing_else_identifies_it():
+    http = FakeHTTP({("GET", "https://api.opensubtitles.com/api/v1/subtitles"): (200, {"data": []})})
+    OpenSubtitles("k", http=http).search(moviehash="abc", filename="Filme.2026.mkv", langs=["pt-BR"])
+
+    params = dict(http.calls[0][2])
+    assert params["query"] == "filme.2026.mkv"
+
+
 def test_download_follows_the_link():
     http = FakeHTTP({
         ("POST", "https://api.opensubtitles.com/api/v1/download"):

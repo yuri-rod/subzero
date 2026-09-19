@@ -260,8 +260,11 @@ class OpenSubtitles:
             params["query"] = query
         if moviehash:
             params["moviehash"] = moviehash
-            # a doc recomenda mandar o nome do arquivo junto do hash: melhora o casamento
-            if filename and not query:
+            # a doc recomenda mandar o nome do arquivo junto do hash: melhora o casamento.
+            # com id ou SxxExx na mao o nome nao entra, que o servidor cruza hash com o
+            # texto e devolve zero mesmo quando existe legenda do episodio
+            if (filename and not query and season is None
+                    and not any((imdb_id, tmdb_id, parent_imdb_id, parent_tmdb_id))):
                 params["query"] = filename
         if langs:
             params["languages"] = ",".join(l.lower() for l in langs)

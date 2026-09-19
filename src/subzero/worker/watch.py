@@ -186,15 +186,17 @@ def same_title(media, candidate) -> bool:
     have_kind = (getattr(candidate, "feature_type", "") or "").lower()
     if want_kind and have_kind and have_kind != want_kind:
         return False
-    ours_year = release_year(getattr(media, "path", "") or "") or release_year(getattr(media, "name", ""))
-    theirs_year = getattr(candidate, "year", None) or release_year(candidate.release)
-    if ours_year and theirs_year and ours_year != theirs_year:
-        return False
-    if getattr(media, "kind", "") == "episode":
+    if want_kind == "episode":
+        # o year do feature_details e a data de exibicao do episodio, que nao bate
+        # com o ano da serie no caminho; identidade de episodio e temporada/numero
         want_s, want_e = getattr(media, "season", None), getattr(media, "episode", None)
         if candidate.season is not None and candidate.episode is not None:
             return (int(candidate.season), int(candidate.episode)) == (want_s, want_e)
     else:
+        ours_year = release_year(getattr(media, "path", "") or "") or release_year(getattr(media, "name", ""))
+        theirs_year = getattr(candidate, "year", None) or release_year(candidate.release)
+        if ours_year and theirs_year and ours_year != theirs_year:
+            return False
         for ours, theirs in ((getattr(media, "imdb_id", ""), candidate.imdb_id),
                              (getattr(media, "tmdb_id", ""), candidate.tmdb_id)):
             if ours and theirs and str(ours).lstrip("t") == str(theirs).lstrip("t"):

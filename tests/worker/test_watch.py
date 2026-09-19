@@ -342,6 +342,15 @@ def test_same_title_matches_an_episode_by_season_and_number():
     assert not same_title(episode_media(), full_candidate(1, season=47, episode=2))
 
 
+def test_same_title_ignores_the_episode_air_year():
+    """O year do episodio e o ano de exibicao, nao o da serie no caminho."""
+    from subzero.worker.watch import same_title
+
+    media = episode_media(path="F:\\SERIES\\Ghosts (US) (2021)\\Ghosts.US.S01E11.mkv")
+
+    assert same_title(media, full_candidate(1, season=47, episode=1, year=2022))
+
+
 def test_same_title_matches_a_movie_by_id():
     from subzero.worker.watch import same_title
 
