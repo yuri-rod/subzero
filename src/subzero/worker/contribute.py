@@ -74,8 +74,7 @@ def candidates(items, mine, bare_lang):
                     continue
                 tag = sub.stem[len(video.stem):].lstrip(".")
                 if same_language(tag, "pt-BR") or (not tag and same_language(bare_lang, "pt-BR")):
-                    is_mine = True if mine is None else (sub.name in mine)
-                    if is_mine:
+                    if mine is None or sub.name in mine:
                         yield Candidate(video, sub, "por", True, it["Id"])
                 elif same_language(tag, "en"):
                     if sub.stat().st_size > 1000:
@@ -138,7 +137,7 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
-    cfg = Config.load({**read_env_file(pathlib.Path(args.env))})
+    cfg = Config.load(read_env_file(pathlib.Path(args.env)))
     jf = JellyfinClient(cfg.jellyfin_url, cfg.jellyfin_key, bare_lang=cfg.bare_lang)
     client = OpenSubtitles(cfg.opensubtitles_key, username=cfg.opensubtitles_user,
                            password=cfg.opensubtitles_password)
@@ -151,10 +150,10 @@ def main(argv=None) -> int:
     tally = {"sent": 0, "duplicate": 0, "no_imdb": 0, "failed": 0}
     # uma volta so na biblioteca: procurar por caminho dentro do laco seria O(n2)
     try:
-        for cand in _send_loop(client, jf, args, cfg, db, mine, tally, sent_before):
-            pass
+        _send_loop(client, jf, args, cfg, db, mine, tally, sent_before)
     finally:
         client.logout()
+        db.close()
     print(json.dumps(tally))
     return 1 if tally["failed"] else 0
 

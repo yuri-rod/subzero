@@ -85,6 +85,15 @@ def job_json(job: Job) -> dict:
             "attempts": job.attempts, "created": job.created, "updated": job.updated}
 
 
+def _terminate(app: FastAPI) -> None:
+    time.sleep(0.5)
+    server = getattr(app.state, "server", None)
+    if server is not None:
+        server.should_exit = True
+    elif not os.environ.get("PYTEST_CURRENT_TEST"):
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
 def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, watcher=None,
               notifier=None) -> FastAPI:
     app = FastAPI(title="Subzero worker", version=__version__)
@@ -292,14 +301,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
 
     @app.post("/shutdown", dependencies=guard)
     def shutdown() -> dict:
-        def _terminate():
-            time.sleep(0.5)
-            server = getattr(app.state, "server", None)
-            if server is not None:
-                server.should_exit = True
-            elif not os.environ.get("PYTEST_CURRENT_TEST"):
-                os.kill(os.getpid(), signal.SIGTERM)
-        threading.Thread(target=_terminate, name="shutdown-trigger", daemon=True).start()
+        threading.Thread(target=_terminate, args=(app,), name="shutdown-trigger", daemon=True).start()
         return {"status": "shutting_down"}
 
     if runner:
@@ -386,14 +388,7 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
                     outside_win = not in_window(current_hour)
                     sweep_done = in_window(current_hour) and (last_sweep_day == today_str or not watcher)
                     if (outside_win or sweep_done) and (now - latest_act >= idle_limit):
-                        def _auto_term():
-                            time.sleep(0.5)
-                            server = getattr(app.state, "server", None)
-                            if server is not None:
-                                server.should_exit = True
-                            elif not os.environ.get("PYTEST_CURRENT_TEST"):
-                                os.kill(os.getpid(), signal.SIGTERM)
-                        threading.Thread(target=_auto_term, name="idle-shutdown", daemon=True).start()
+                        threading.Thread(target=_terminate, args=(app,), name="idle-shutdown", daemon=True).start()
                         break
             if not job:
                 app.state.stop.wait(2)
