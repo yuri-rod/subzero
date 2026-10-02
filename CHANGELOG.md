@@ -5,6 +5,18 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [1.17.1] - 02/10/2026
+
+### Fixed
+
+- Complete contribution batches without raising `TypeError` after uploads or dry runs, and close the contribution ledger when the run ends.
+- Keep the qBittorrent seen ledger saving on Windows.
+
+### Changed
+
+- Simplify subtitle timestamp conversion, encoding fallback, and worker shutdown while preserving their behavior.
+- Remove unused legacy worker import shims and skip the optional MLX speech test when its backend is not installed.
+
 ## [1.17.0] - 2026-09-19
 
 ### Added

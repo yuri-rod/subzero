@@ -57,6 +57,16 @@ class TestTimestamps:
         assert to_srt_time("0:00:01.00") == "00:00:01,000"
         assert to_ass_time("00:00:01,500") == "0:00:01.50"
 
+    @pytest.mark.parametrize("stamp,expected", [
+        ("02:03", "00:02:03,000"),
+        ("1:02:03.1", "01:02:03,100"),
+        ("1:02:03.01", "01:02:03,010"),
+        ("1:02:03,01", "01:02:03,010"),
+        ("1:02:03.001", "01:02:03,001"),
+    ])
+    def test_fractional_precision(self, stamp, expected):
+        assert to_srt_time(stamp) == expected
+
     def test_bad_timestamp(self):
         with pytest.raises(ValueError):
             to_srt_time("not-a-time")
@@ -123,6 +133,19 @@ class TestConvert:
         res = convert_file(src, "vtt", dry=True)
         assert not (tmp_path / "a.vtt").exists()
         assert res.cues == 2
+
+    @pytest.mark.parametrize("encoding,expected", [
+        ("utf-8", "Olá."),
+        ("utf-8-sig", "Olá."),
+        ("cp1252", "Olá."),
+        ("latin-1", "Legacy \x81."),
+    ])
+    def test_convert_file_preserves_legacy_encodings(self, tmp_path, encoding, expected):
+        src = tmp_path / "a.srt"
+        src.write_bytes(f"1\n00:00:01,000 --> 00:00:02,000\n{expected}\n".encode(encoding))
+        result = convert_file(src, "vtt")
+        assert expected in result.text
+        assert parse_vtt(result.text)[0].text == expected
 
     def test_empty_raises(self):
         with pytest.raises(ValueError, match="no subtitle"):
