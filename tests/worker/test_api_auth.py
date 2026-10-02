@@ -1,11 +1,15 @@
 import sys
-from types import ModuleType
+from threading import Event
+from types import ModuleType, SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from subzero.worker import api
 from subzero.worker.api import create_app
 from subzero.worker.config import Config
+from subzero.worker.jobs import JobStore
 
 
 @pytest.fixture
@@ -160,3 +164,39 @@ def test_shutdown_endpoint(client):
     import time
     time.sleep(0.6)
     assert mock_server.should_exit is True
+
+
+def test_idle_runner_requests_the_same_graceful_shutdown(tmp_path, monkeypatch):
+    cfg = Config("http://jf", "key", "token", auto_enabled=False, idle_shutdown_minutes=1)
+    app = FastAPI()
+    app.state.stop = Event()
+    app.state.last_activity = 0
+    app.state.server = SimpleNamespace(should_exit=False)
+    clock = iter([0, 61])
+    monkeypatch.setattr(api, "time", SimpleNamespace(time=lambda: next(clock), sleep=lambda _: None))
+
+    def inline_thread(target, args=(), **kwargs):
+        return SimpleNamespace(start=lambda: target(*args))
+
+    monkeypatch.setattr(api, "threading", SimpleNamespace(Thread=inline_thread))
+    store = JobStore(str(tmp_path / "jobs.db"))
+    service = SimpleNamespace(run=lambda *_: pytest.fail("Idle worker must not run a job"))
+
+    api.start_runner(app, store, service, None, cfg, None, None)
+
+    assert app.state.server.should_exit is True
+
+
+@pytest.mark.parametrize("under_pytest", [False, True])
+def test_shutdown_without_a_server_preserves_the_signal_guard(monkeypatch, under_pytest):
+    calls = []
+    monkeypatch.setattr(api.time, "sleep", lambda _: None)
+    monkeypatch.setattr(api.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+    if under_pytest:
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "shutdown test")
+    else:
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    api._terminate(FastAPI())
+
+    assert calls == ([] if under_pytest else [(api.os.getpid(), api.signal.SIGTERM)])

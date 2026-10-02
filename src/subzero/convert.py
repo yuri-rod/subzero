@@ -80,14 +80,7 @@ def to_srt_time(value: str) -> str:
     hours = int(m.group(1) or 0)
     minutes = int(m.group(2))
     seconds = int(m.group(3))
-    sep, frac = m.group(4), m.group(5)
-    if not frac:
-        ms = "000"
-    elif sep == "." and len(frac) == 2:
-        # ASS centiseconds
-        ms = f"{int(frac):02d}0"
-    else:
-        ms = (frac + "000")[:3]
+    ms = (m.group(5) or "").ljust(3, "0")
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms}"
 
 
@@ -269,23 +262,19 @@ def convert_file(
     """Convert a subtitle file. Writes next to the source unless *output* is set."""
     path = Path(path)
     raw_bytes = path.read_bytes()
-    text = None
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+    for enc in ("utf-8", "cp1252", "latin-1"):
         try:
             text = raw_bytes.decode(enc)
             break
         except UnicodeDecodeError:
             continue
-    if text is None:
-        raise UnicodeDecodeError("subzero", raw_bytes, 0, 1, "no supported encoding")
     src = (source or source_fmt or detect_format(path, text)).lower()
     target = target.lower().lstrip(".")
     result = convert_text(text, target, source=src)
     if output is not None:
         out = Path(output)
     else:
-        ext = "ssa" if target == "ssa" else target
-        out = path.with_suffix(f".{ext}")
+        out = path.with_suffix(f".{target}")
     result.path = str(out)
     if not dry:
         out.parent.mkdir(parents=True, exist_ok=True)
