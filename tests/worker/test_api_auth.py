@@ -154,15 +154,22 @@ def test_config_demands_the_essentials():
         Config.load({"JELLYFIN_URL": "http://x"})
 
 
-def test_shutdown_endpoint(client):
+def test_shutdown_endpoint(client, monkeypatch):
+    completed = Event()
+    terminate = api._terminate
+
+    def notify_completion(app):
+        terminate(app)
+        completed.set()
+
+    monkeypatch.setattr(api, "_terminate", notify_completion)
     mock_server = type("MockServer", (), {"should_exit": False})()
     client.app.state.server = mock_server
     assert client.post("/shutdown").status_code == 401
     r = client.post("/shutdown", headers={"Authorization": "Bearer segredo"})
     assert r.status_code == 200
     assert r.json() == {"status": "shutting_down"}
-    import time
-    time.sleep(0.6)
+    assert completed.wait(5)
     assert mock_server.should_exit is True
 
 
