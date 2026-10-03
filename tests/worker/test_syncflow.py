@@ -1399,6 +1399,49 @@ def test_repair_resumes_translation_after_later_block_failure(repair_flow, monke
     assert flow.service.ollama.releases == 2
 
 
+def test_translate_cues_resumes_from_block_cache(setup, monkeypatch):
+    from subzero.worker import tracks
+
+    monkeypatch.setattr(tracks, "BLOCK", 2)
+    flow, jobs, provider, media = setup
+    flow.service.ollama = Translator()
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(4)]
+    job = jobs.enqueue('id', 'translate', 'pt-BR')
+    jobs.start(job.id)
+
+    first = flow.translate_cues(cues, 'pt-BR', lambda *args: None,
+                                source_lang='en', job=job, key='k')
+    assert len(flow.service.ollama.source_languages) == 2
+    assert list((flow.cache / 'translations').rglob('*.json'))
+
+    flow.service.ollama.source_languages.clear()
+    second = flow.translate_cues(cues, 'pt-BR', lambda *args: None,
+                                 source_lang='en', job=job, key='k')
+    assert flow.service.ollama.source_languages == []
+    assert [(c.start, c.end, c.text) for c in second] == [
+        (c.start, c.end, c.text) for c in first]
+
+
+def test_translate_cues_ignores_cache_after_source_change(setup, monkeypatch):
+    from subzero.worker import tracks
+
+    monkeypatch.setattr(tracks, "BLOCK", 2)
+    flow, jobs, provider, media = setup
+    flow.service.ollama = Translator()
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(4)]
+    job = jobs.enqueue('id', 'translate', 'pt-BR')
+    jobs.start(job.id)
+
+    flow.translate_cues(cues, 'pt-BR', lambda *args: None,
+                        source_lang='en', job=job, key='k')
+    assert len(flow.service.ollama.source_languages) == 2
+
+    changed = [Cue(i, i, i + 1, f"changed {i}") for i in range(4)]
+    flow.translate_cues(changed, 'pt-BR', lambda *args: None,
+                        source_lang='en', job=job, key='k')
+    assert len(flow.service.ollama.source_languages) == 4
+
+
 def test_repair_admits_whole_episode_before_any_translation(repair_flow):
     from subzero.worker.deepl import DeepLQuotaExceeded
 

@@ -554,6 +554,14 @@ Inspect `GET /jobs/{id}` for progress and the final `outcome`, or use
 `DELETE /jobs/{id}` to cancel. A job that needs review reports
 `outcome: "needs_review"`; the compatibility `state` field reports `failed`.
 
+When the embedded track is already trusted text, `kind: "translate"` with
+`sourceId: "embedded:N"` (the Jellyfin stream index from `GET /media/{id}`)
+skips the reference build, caption recovery, and audit ladder: it extracts the
+track, translates it, and delivers the sidecar. Use the lean lane for speed on
+clean releases; use `embedded_translate` when the source needs verification
+against the audio. A `translate` job from a sidecar uses the sidecar tag as
+`sourceId` instead (for example, `"en"`).
+
 Complete English and regenerated target subtitles are retained under
 `SYNC_CACHE/candidates`. English OCR results are cached under
 `SYNC_CACHE/ocr-sources`, keyed by video fingerprint, source content, and OCR

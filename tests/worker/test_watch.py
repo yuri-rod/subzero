@@ -463,6 +463,18 @@ def test_excluded_does_not_match_a_lookalike_prefix():
     assert excluded("F:\\FILMES\\x.mkv", ["F:\\FILMES"])
 
 
+def test_transcode_tmp_matches_transcode_leftovers():
+    from types import SimpleNamespace
+
+    from subzero.worker.watch import is_transcode_tmp
+
+    assert is_transcode_tmp(SimpleNamespace(path="/m/_transcoding_abc123.tmp", name="junk"))
+    assert is_transcode_tmp(SimpleNamespace(path="/m/Filme.mkv", name="_transcoding_abc"))
+    assert is_transcode_tmp(SimpleNamespace(path="/m/partial.tmp", name="partial"))
+    assert not is_transcode_tmp(SimpleNamespace(path="/m/Filme.mkv", name="Filme"))
+    assert not is_transcode_tmp(SimpleNamespace(path="", name=""))
+
+
 def test_excluded_is_false_without_any_rule():
     from subzero.worker.watch import excluded
 
