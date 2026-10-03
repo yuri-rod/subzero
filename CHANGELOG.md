@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-10-03
+
 ### Added
 
 - `OLLAMA_JOBS` runs independent subtitle blocks through generic Ollama models in parallel (default 1, serial as before). Context-chained native models always stay serial. Pool threads reuse the outer compute phase instead of churning the managed Ollama service.
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The worker Ollama translation default is now `qwen3.5:9b-mlx`, served by the Ollama 0.40 MLX engine. The previous default (`subzero/hy-mt2:7b`) no longer exists locally, so any `TRANSLATION_PROVIDER=ollama` setup was failing every translation call. The live provider (`libretranslate`) is unchanged.
+- Removed the unused `strict` flag from worker translation and the matching call sites.
 
 ### Fixed
 
