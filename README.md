@@ -402,7 +402,7 @@ The worker accepts these Ollama controls:
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Translation server endpoint. |
-| `OLLAMA_MODEL` | `subzero/hy-mt2:7b` | Corrected local Hy-MT2 7B Q6_K package. |
+| `OLLAMA_MODEL` | `qwen3.5:9b-mlx` | Qwen 9B MLX package served by Ollama 0.40 (requires the MLX engine). |
 | `OLLAMA_KEEP_ALIVE` | `2m` | Retain the model between subtitle batches. |
 | `OLLAMA_NUM_CTX` | `4096` | Bound the context allocated for a batch. |
 | `OLLAMA_NUM_PREDICT` | `2048` | Bound the generated response. |
@@ -414,7 +414,7 @@ For a 16 GB Apple Silicon machine, use CPU transcription and a bounded translati
 WHISPER_MODEL=large-v3-turbo
 WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
-OLLAMA_MODEL=subzero/hy-mt2:7b
+OLLAMA_MODEL=qwen3.5:9b-mlx
 OLLAMA_NUM_CTX=4096
 OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m

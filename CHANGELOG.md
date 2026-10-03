@@ -5,6 +5,10 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+### Changed
+
+- Change the worker Ollama default from `subzero/hy-mt2:7b` to `qwen3.5:9b-mlx`, served through the MLX engine. Explicit model and provider settings remain unchanged.
+
 ## [1.17.0] - 2026-09-19
 
 ### Added
