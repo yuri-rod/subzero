@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
@@ -15,7 +16,7 @@ from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_t
                                _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
                                _translate_lines, _translate_sentence_units, _uses_sentence_units, translation_blocks)
 
-from .deepl import DeepLPause
+from .deepl import DeepLPause, FallbackTranslator
 from .jellyfin import Media
 from .asr_process import transcribe_in_process
 from .srt import Cue, dump
@@ -27,7 +28,7 @@ Progress = Callable[[str, int], None]
 def split_path(video_path: str) -> tuple[str, str, str]:
     sep = "\\" if "\\" in video_path else "/"
     folder, _, name = video_path.rpartition(sep)
-    stem, _, ext = name.rpartition(".")
+    stem, _, _ = name.rpartition(".")
     return folder, (stem or name), sep
 
 
@@ -339,9 +340,19 @@ def _stuck_in_a_loop(cues: list[Cue]) -> bool:
 
 class Ollama:
     KEEP_ALIVE = "2m"
+    provider = "ollama"
+    needs_local_compute = True
+
+    @property
+    def uses_sentence_units(self):
+        return _uses_sentence_units(self.model)
+
+    @property
+    def supports_context(self):
+        return _is_native_translation(self.model) and not _is_translategemma(self.model)
 
     def __init__(self, url: str, model: str, http=None, keep_alive: str = KEEP_ALIVE,
-                 num_ctx: int = 4096, num_predict: int = 2048):
+                 num_ctx: int = 4096, num_predict: int = 2048, jobs: int = 1):
         self.url = url.rstrip("/")
         self.model = model
         self.keep_alive = keep_alive
@@ -349,6 +360,7 @@ class Ollama:
             raise ValueError("Ollama context and output limits must be positive")
         self.num_ctx = num_ctx
         self.num_predict = num_predict
+        self.jobs = max(1, jobs)
         if http is None:
             import httpx
             http = httpx.Client(timeout=600)
@@ -432,22 +444,115 @@ class Ollama:
 
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-              strict: bool = False, source_lang: str | None = None, *, context=None, admit=True) -> list[Cue]:
+              source_lang: str | None = None, *, context=None, admit=True,
+              cache=None, heartbeat=None) -> list[Cue]:
     if admit and hasattr(ollama, 'check_quota'):
         ollama.check_quota(ollama.count_episode(cues))
     phase = (compute_phase('ollama', ollama_url=getattr(ollama, 'url', None))
              if getattr(ollama, 'needs_local_compute', True) else nullcontext())
     with phase:
-        return _translate(cues, target_lang, ollama, progress, strict, source_lang, context=context)
+        return _translate(cues, target_lang, ollama, progress, source_lang, context=context,
+                          cache=cache, heartbeat=heartbeat)
+
+
+class _DirectOllama:
+    """Translate blocks without re-entering compute ownership.
+
+    The caller holds the outer compute phase for the whole batch; per-block
+    phases from pool threads would serialize on the ownership lock and churn
+    the managed Ollama service instead of translating in parallel.
+    """
+
+    def __init__(self, client: Ollama):
+        self.__dict__['_client'] = client
+
+    def translate_block(self, cues, target_lang, source_lang=None, *, context=None):
+        return self._client._translate_block(cues, target_lang, source_lang, context=context)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+def _block_name(starts, n):
+    return f'{starts[n]:06d}'
+
+
+def _translate_parallel(target_lang: str, ollama: Ollama, progress: Progress,
+                        source_lang: str | None, context, blocks: list, jobs: int,
+                        cache=None, heartbeat=None, starts=None, resolved=None) -> list[Cue]:
+    total = len(blocks)
+    client = _DirectOllama(ollama)
+    options = {'context': context} if context is not None else {}
+    resolved = resolved or {}
+
+    def run(block):
+        return _translate_lines(block, target_lang, client, source_lang=source_lang, **options)
+
+    missing = [n for n in range(total) if n not in resolved]
+    fresh: dict[int, list[Cue]] = {}
+    with ThreadPoolExecutor(max_workers=min(jobs, len(missing)), thread_name_prefix='ollama-block') as pool:
+        futures = [(n, pool.submit(run, blocks[n])) for n in missing]
+        finished = len(resolved)
+        for n, future in futures:
+            try:
+                lines = future.result()
+            except DeepLPause:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            except RuntimeError as err:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise RuntimeError(f'Falha no bloco {n + 1}: {err}') from None
+            got = [Cue(cue.index, cue.start, cue.end, text)
+                   for cue, text in zip(blocks[n], lines)]
+            if cache is not None:
+                if not cache.valid(blocks[n], got):
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise RuntimeError(f'Falha no bloco {n + 1}: translation failed validation')
+                cache.write(_block_name(starts, n), dump(blocks[n]), dump(got),
+                            heartbeat=heartbeat)
+            fresh[n] = got
+            finished += 1
+            progress(f"traduzindo bloco {finished}/{total}", int(finished / total * 100))
+    done: list[Cue] = []
+    for n in range(total):
+        done.extend(resolved[n] if n in resolved else fresh[n])
+    return done
 
 
 def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-               strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
+               source_lang: str | None = None, *, context=None,
+               cache=None, heartbeat=None) -> list[Cue]:
     done: list[Cue] = []
     model = getattr(ollama, 'model', '')
     blocks = list(translation_blocks(cues, BLOCK, model,
                                     use_sentence_units=getattr(ollama, 'uses_sentence_units', None)))
+    chained = getattr(ollama, 'supports_context',
+                      _is_native_translation(model) and not _is_translategemma(model))
+    inner = ollama.active if isinstance(ollama, FallbackTranslator) else ollama
+    jobs = getattr(inner, 'jobs', 1) if isinstance(inner, Ollama) else 1
+    use_cache = cache is not None and not chained and len(blocks) > 0
+    starts, resolved = [], {}
+    if use_cache:
+        pos = 0
+        for n, block in enumerate(blocks):
+            if heartbeat is not None:
+                heartbeat()
+            starts.append(pos)
+            hit = cache.read(block, _block_name(starts, n))
+            if hit is not None:
+                resolved[n] = hit
+            pos += len(block)
+        if len(resolved) == len(blocks):
+            progress(f"traduzindo bloco {len(blocks)}/{len(blocks)}", 100)
+            return [cue for n in range(len(blocks)) for cue in resolved[n]]
+    if jobs > 1 and not chained and len(blocks) - len(resolved) > 1:
+        return _translate_parallel(target_lang, inner, progress, source_lang, context, blocks,
+                                   jobs, cache if use_cache else None, heartbeat, starts, resolved)
     for n, block in enumerate(blocks, start=1):
+        if (n - 1) in resolved:
+            done.extend(resolved[n - 1])
+            progress(f"traduzindo bloco {n}/{len(blocks)}", int(n / len(blocks) * 100))
+            continue
         try:
             options = {'context': context} if context is not None else {}
             if getattr(ollama, 'supports_context', _is_native_translation(model) and not _is_translategemma(model)):
@@ -457,8 +562,12 @@ def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Prog
             raise
         except RuntimeError as err:
             raise RuntimeError(f'Falha no bloco {n}: {err}') from None
-        for cue, text in zip(block, lines):
-            done.append(Cue(cue.index, cue.start, cue.end, text))
+        got = [Cue(cue.index, cue.start, cue.end, text) for cue, text in zip(block, lines)]
+        if use_cache:
+            if not cache.valid(block, got):
+                raise RuntimeError(f'Falha no bloco {n}: translation failed validation')
+            cache.write(_block_name(starts, n - 1), dump(block), dump(got), heartbeat=heartbeat)
+        done.extend(got)
         progress(f"traduzindo bloco {n}/{len(blocks)}", int(n / len(blocks) * 100))
     return done
 

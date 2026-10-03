@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from subzero.worker.deepl import FallbackTranslator
 from subzero.worker.jellyfin import Media
 from subzero.worker.srt import Cue, parse
+from subzero.worker.translate_cache import BlockCache
 from subzero.worker.tracks import (ModelHolder, Ollama, audio_start_offset, deliver, extract_audio, extract_embedded,
                               last_lines, run_ffmpeg, shift, sidecar_path, transcribe,
                               translate)
@@ -223,6 +225,211 @@ def test_translate_stops_at_the_first_unrecoverable_block():
     with pytest.raises(RuntimeError, match="preserv"):
         translate(cues, "pt-BR", fake, progress=lambda p, n: None)
     assert fake.blocks == 6
+
+
+def test_translate_parallel_uses_several_threads_and_keeps_order(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+    seen = []
+    lock = threading.Lock()
+    phases = []
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            with lock:
+                seen.append(threading.current_thread().name)
+            time.sleep(0.2)
+            numbered = [ln.split(". ", 1)[1] for ln in kwargs["json"]["prompt"].splitlines()
+                        if ln[:2].rstrip(".").isdigit() and ". " in ln[:4]]
+            reply = "\n".join(f"{i}. TRADUZIDA {text}" for i, text in enumerate(numbered, 1))
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": reply, "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(6)]
+    client = Ollama("http://localhost", "gemma3:12b", http=HTTP(), jobs=2)
+    out = translate(cues, "pt-BR", client, progress=lambda p, n: phases.append((p, n)),
+                    source_lang="en")
+
+    assert [c.text for c in out] == [f"TRADUZIDA line {i}" for i in range(6)]
+    assert len(set(seen)) > 1
+    assert [n for _, n in phases] == [33, 66, 100]
+
+
+def test_translate_parallel_reports_the_failing_block_number(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "", "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(4)]
+    client = Ollama("http://localhost", "gemma3:12b", http=HTTP(), jobs=2)
+    with pytest.raises(RuntimeError, match="Falha no bloco 1"):
+        translate(cues, "pt-BR", client, progress=lambda p, n: None, source_lang="en")
+
+
+def test_translate_parallel_stays_serial_for_chained_context(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 1)
+    seen = []
+    lock = threading.Lock()
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            with lock:
+                seen.append(threading.current_thread().name)
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "O baú.", "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(20, 30, 31, "The chest."), Cue(21, 32, 33, "Open it.")]
+    client = Ollama("http://localhost", "kaelri/hy-mt2:7b", http=HTTP(), jobs=4)
+    translate(cues, "pt-BR", client, lambda *args: None, source_lang="en")
+
+    assert set(seen) == {threading.current_thread().name}
+
+
+class StubFallback:
+    provider = "libretranslate"
+    model = "stub"
+    needs_local_compute = False
+    uses_sentence_units = True
+    supports_context = False
+
+    def __init__(self):
+        self.blocks = 0
+
+    def ensure_available(self):
+        pass
+
+    def release(self):
+        pass
+
+    def translate_block(self, cues, target_lang, source_lang=None, *, context=None):
+        self.blocks += 1
+        return [f"FB {cue.text}" for cue in cues]
+
+
+def test_fallback_routes_to_secondary_when_ollama_is_down():
+    class HTTP:
+        def request(self, *args, **kwargs):
+            raise OSError("connection refused")
+
+    primary = Ollama("http://localhost", "gemma3:12b", http=HTTP())
+    client = FallbackTranslator(primary=primary, fallback=StubFallback())
+    client.ensure_available()
+    assert client.active is not primary
+    assert client.provider == "libretranslate"
+
+    cues = [Cue(1, 0, 1, "hello"), Cue(2, 1, 2, "world")]
+    out = translate(cues, "pt-BR", client, progress=lambda p, n: None, source_lang="en")
+    assert [c.text for c in out] == ["FB hello", "FB world"]
+
+
+def test_fallback_keeps_parallel_ollama_blocks_parallel(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+    seen = []
+    lock = threading.Lock()
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            with lock:
+                seen.append(threading.current_thread().name)
+            if url.endswith("/api/show"):
+                return type("R", (), {"status_code": 200,
+                                      "json": lambda self: {}})()
+            time.sleep(0.2)
+            numbered = [ln.split(". ", 1)[1] for ln in kwargs["json"]["prompt"].splitlines()
+                        if ln[:2].rstrip(".").isdigit() and ". " in ln[:4]]
+            reply = "\n".join(f"{i}. TRADUZIDA {text}" for i, text in enumerate(numbered, 1))
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": reply, "done": True,
+                                                        "done_reason": "stop"}})()
+
+    primary = Ollama("http://localhost", "gemma3:12b", http=HTTP(), jobs=2)
+    fallback = StubFallback()
+    client = FallbackTranslator(primary=primary, fallback=fallback)
+    client.ensure_available()
+    assert client.active is primary
+
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(6)]
+    out = translate(cues, "pt-BR", client, progress=lambda p, n: None, source_lang="en")
+    assert [c.text for c in out] == [f"TRADUZIDA line {i}" for i in range(6)]
+    assert len(set(seen)) > 1
+    assert fallback.blocks == 0
+
+
+def _echo_http(calls):
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            calls.append(kwargs["json"]["prompt"])
+            numbered = [ln.split(". ", 1)[1] for ln in kwargs["json"]["prompt"].splitlines()
+                        if ln[:2].rstrip(".").isdigit() and ". " in ln[:4]]
+            reply = "\n".join(f"{i}. TRADUZIDA {text}" for i, text in enumerate(numbered, 1))
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": reply, "done": True,
+                                                        "done_reason": "stop"}})()
+    return HTTP()
+
+
+def test_translate_cache_reuses_blocks_on_second_run(monkeypatch, tmp_path):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+    calls = []
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(6)]
+    client = Ollama("http://localhost", "gemma3:12b", http=_echo_http(calls))
+    cache = BlockCache(tmp_path, lambda source, translated: True)
+
+    first = translate(cues, "pt-BR", client, progress=lambda p, n: None,
+                      source_lang="en", cache=cache)
+    assert len(calls) == 3
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == [
+        "000000.json", "000002.json", "000004.json"]
+
+    calls.clear()
+    second = translate(cues, "pt-BR", client, progress=lambda p, n: None,
+                       source_lang="en", cache=cache)
+    assert calls == []
+    assert [c.text for c in second] == [c.text for c in first]
+
+
+def test_translate_cache_retranslates_a_corrupt_entry(monkeypatch, tmp_path):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+    calls = []
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(4)]
+    client = Ollama("http://localhost", "gemma3:12b", http=_echo_http(calls))
+    cache = BlockCache(tmp_path, lambda source, translated: True)
+
+    translate(cues, "pt-BR", client, progress=lambda p, n: None,
+              source_lang="en", cache=cache)
+    assert len(calls) == 2
+    (tmp_path / "000000.json").write_text("not json", encoding="utf-8")
+
+    calls.clear()
+    out = translate(cues, "pt-BR", client, progress=lambda p, n: None,
+                    source_lang="en", cache=cache)
+    assert len(calls) == 1
+    assert [c.text for c in out] == [f"TRADUZIDA line {i}" for i in range(4)]
+
+
+def test_translate_cache_stays_off_for_chained_context(monkeypatch, tmp_path):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 1)
+    calls = []
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            calls.append(1)
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "O baú.", "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(20, 30, 31, "The chest."), Cue(21, 32, 33, "Open it.")]
+    client = Ollama("http://localhost", "kaelri/hy-mt2:7b", http=HTTP())
+    cache = BlockCache(tmp_path, lambda source, translated: True)
+    translate(cues, "pt-BR", client, lambda *args: None, source_lang="en", cache=cache)
+    translate(cues, "pt-BR", client, lambda *args: None, source_lang="en", cache=cache)
+    assert len(calls) == 4
+    assert list(tmp_path.glob("*.json")) == []
 
 
 def test_ollama_prompt_numbers_the_lines():
@@ -713,7 +920,7 @@ def test_failed_audio_extraction_removes_partial_wav(tmp_path, monkeypatch):
 def test_strict_translation_never_keeps_untranslated_fallback_lines():
     cues=[Cue(1,0,1,'hello'),Cue(2,1,2,'world')]
     with pytest.raises(RuntimeError,match='bloco'):
-        translate(cues,'pt-BR',FakeOllama([[]] * 6),lambda *args:None,strict=True)
+        translate(cues,'pt-BR',FakeOllama([[]] * 6),lambda *args:None)
 
 
 def test_numbered_translation_rejects_reordered_or_duplicate_lines():
@@ -823,7 +1030,7 @@ def test_worker_translategemma_receives_source_language_through_translation():
 
     cues = [Cue(7, 1, 2, "Hello")]
     client = Ollama("http://localhost", "translategemma:4b", http=HTTP())
-    translated = translate(cues, "pt-BR", client, lambda *args:None, strict=True, source_lang="eng")
+    translated = translate(cues, "pt-BR", client, lambda *args:None, source_lang="eng")
     assert [(c.index, c.start, c.end, c.text) for c in translated] == [(7, 1, 2, "Ola")]
     assert "English (en) to Brazilian Portuguese (pt-BR)" in sent["prompt"]
 

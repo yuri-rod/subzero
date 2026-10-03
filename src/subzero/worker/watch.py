@@ -47,6 +47,17 @@ def excluded(path: str, prefixes) -> bool:
                for pref in prefixes)
 
 
+def is_transcode_tmp(media) -> bool:
+    """Transcode leftovers and temp files scanned as library items. They are
+    not real media: automatic entry points must never queue work for them.
+    Manual jobs by id still go through, so an operator can override."""
+    path = (getattr(media, "path", "") or "").lower()
+    name = (getattr(media, "name", "") or "").lower()
+    if "_transcoding_" in path or "_transcoding_" in name:
+        return True
+    return path.endswith((".tmp", ".temp"))
+
+
 def embedded_steps(media, target_lang: str) -> list[Step]:
     """Extrai a trilha de dentro do arquivo e traduz. So vale como plano B: uma
     legenda escrita por gente ganha de uma traducao automatica da faixa embutida."""
@@ -260,7 +271,7 @@ class Watcher:
                 media = self.jellyfin.media(item["Id"])
             except Exception:
                 continue
-            if excluded(media.path, self.excluded_paths):
+            if excluded(media.path, self.excluded_paths) or is_transcode_tmp(media):
                 self.save_marker(item["DateCreated"])
                 continue
             for lang in self.langs:
@@ -280,7 +291,7 @@ class Watcher:
                 media = self.jellyfin.media(item["Id"])
             except Exception:
                 continue
-            if excluded(media.path, self.excluded_paths):
+            if excluded(media.path, self.excluded_paths) or is_transcode_tmp(media):
                 continue
             for lang in self.langs:
                 if self.sync_flow is None and has_language(media, lang):

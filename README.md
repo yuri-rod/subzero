@@ -402,9 +402,11 @@ The worker accepts these Ollama controls:
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Translation server endpoint. |
-| `OLLAMA_MODEL` | `subzero/hy-mt2:7b` | Corrected local Hy-MT2 7B Q6_K package. |
+| `OLLAMA_MODEL` | `qwen3.5:9b-mlx` | Qwen 9B MLX package served by Ollama 0.40 (requires the MLX engine). |
 | `OLLAMA_KEEP_ALIVE` | `2m` | Retain the model between subtitle batches. |
 | `OLLAMA_NUM_CTX` | `4096` | Bound the context allocated for a batch. |
+| `OLLAMA_JOBS` | `1` | Parallel subtitle blocks per batch. Applies to generic Ollama models only; context-chained native models stay serial. Match the server `OLLAMA_NUM_PARALLEL`. |
+| `TRANSLATION_FALLBACK` | _(empty)_ | With `libretranslate`, whole jobs route to the Argos engine when Ollama is down or the model is missing. The switch happens once at admission, never silently mid-batch. |
 | `OLLAMA_NUM_PREDICT` | `2048` | Bound the generated response. |
 | `OCR_ENABLED` | `1` on macOS, `0` elsewhere | Recover burned-in captions before translating verified English sources. |
 
@@ -414,7 +416,7 @@ For a 16 GB Apple Silicon machine, use CPU transcription and a bounded translati
 WHISPER_MODEL=large-v3-turbo
 WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
-OLLAMA_MODEL=subzero/hy-mt2:7b
+OLLAMA_MODEL=qwen3.5:9b-mlx
 OLLAMA_NUM_CTX=4096
 OLLAMA_NUM_PREDICT=2048
 OLLAMA_KEEP_ALIVE=2m
@@ -552,6 +554,14 @@ For example, send this body to `POST /jobs` with the worker bearer token:
 Inspect `GET /jobs/{id}` for progress and the final `outcome`, or use
 `DELETE /jobs/{id}` to cancel. A job that needs review reports
 `outcome: "needs_review"`; the compatibility `state` field reports `failed`.
+
+When the embedded track is already trusted text, `kind: "translate"` with
+`sourceId: "embedded:N"` (the Jellyfin stream index from `GET /media/{id}`)
+skips the reference build, caption recovery, and audit ladder: it extracts the
+track, translates it, and delivers the sidecar. Use the lean lane for speed on
+clean releases; use `embedded_translate` when the source needs verification
+against the audio. A `translate` job from a sidecar uses the sidecar tag as
+`sourceId` instead (for example, `"en"`).
 
 Complete English and regenerated target subtitles are retained under
 `SYNC_CACHE/candidates`. English OCR results are cached under
