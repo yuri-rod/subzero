@@ -5,6 +5,8 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-10-03
+
 ### Added
 
 - `OLLAMA_JOBS` runs independent subtitle blocks through generic Ollama models in parallel (default 1, serial as before). Context-chained native models always stay serial. Pool threads reuse the outer compute phase instead of churning the managed Ollama service.
@@ -15,6 +17,7 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 ### Changed
 
 - Change the worker Ollama default from `subzero/hy-mt2:7b` to `qwen3.5:9b-mlx`, served through the MLX engine. Explicit model and provider settings remain unchanged.
+- Removed the unused `strict` flag from worker translation and the matching call sites.
 
 ### Fixed
 
