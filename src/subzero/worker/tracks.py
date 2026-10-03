@@ -28,7 +28,7 @@ Progress = Callable[[str, int], None]
 def split_path(video_path: str) -> tuple[str, str, str]:
     sep = "\\" if "\\" in video_path else "/"
     folder, _, name = video_path.rpartition(sep)
-    stem, _, ext = name.rpartition(".")
+    stem, _, _ = name.rpartition(".")
     return folder, (stem or name), sep
 
 
@@ -444,14 +444,14 @@ class Ollama:
 
 
 def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-              strict: bool = False, source_lang: str | None = None, *, context=None, admit=True,
+              source_lang: str | None = None, *, context=None, admit=True,
               cache=None, heartbeat=None) -> list[Cue]:
     if admit and hasattr(ollama, 'check_quota'):
         ollama.check_quota(ollama.count_episode(cues))
     phase = (compute_phase('ollama', ollama_url=getattr(ollama, 'url', None))
              if getattr(ollama, 'needs_local_compute', True) else nullcontext())
     with phase:
-        return _translate(cues, target_lang, ollama, progress, strict, source_lang, context=context,
+        return _translate(cues, target_lang, ollama, progress, source_lang, context=context,
                           cache=cache, heartbeat=heartbeat)
 
 
@@ -520,7 +520,7 @@ def _translate_parallel(target_lang: str, ollama: Ollama, progress: Progress,
 
 
 def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
-               strict: bool = False, source_lang: str | None = None, *, context=None,
+               source_lang: str | None = None, *, context=None,
                cache=None, heartbeat=None) -> list[Cue]:
     done: list[Cue] = []
     model = getattr(ollama, 'model', '')
@@ -538,7 +538,7 @@ def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Prog
             if heartbeat is not None:
                 heartbeat()
             starts.append(pos)
-            hit = cache.read(block, f'{pos:06d}')
+            hit = cache.read(block, _block_name(starts, n))
             if hit is not None:
                 resolved[n] = hit
             pos += len(block)

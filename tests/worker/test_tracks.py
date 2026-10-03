@@ -920,7 +920,7 @@ def test_failed_audio_extraction_removes_partial_wav(tmp_path, monkeypatch):
 def test_strict_translation_never_keeps_untranslated_fallback_lines():
     cues=[Cue(1,0,1,'hello'),Cue(2,1,2,'world')]
     with pytest.raises(RuntimeError,match='bloco'):
-        translate(cues,'pt-BR',FakeOllama([[]] * 6),lambda *args:None,strict=True)
+        translate(cues,'pt-BR',FakeOllama([[]] * 6),lambda *args:None)
 
 
 def test_numbered_translation_rejects_reordered_or_duplicate_lines():
@@ -1030,7 +1030,7 @@ def test_worker_translategemma_receives_source_language_through_translation():
 
     cues = [Cue(7, 1, 2, "Hello")]
     client = Ollama("http://localhost", "translategemma:4b", http=HTTP())
-    translated = translate(cues, "pt-BR", client, lambda *args:None, strict=True, source_lang="eng")
+    translated = translate(cues, "pt-BR", client, lambda *args:None, source_lang="eng")
     assert [(c.index, c.start, c.end, c.text) for c in translated] == [(7, 1, 2, "Ola")]
     assert "English (en) to Brazilian Portuguese (pt-BR)" in sent["prompt"]
 

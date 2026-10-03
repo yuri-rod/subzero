@@ -528,7 +528,7 @@ class SyncFlow:
         try:
             if job is None or key is None:
                 return translate(cues, lang, self.service.ollama, progress,
-                                 strict=True, source_lang=source_lang)
+                                 source_lang=source_lang)
             return self._translate_cues_cached(job, key, cues, lang, progress, source_lang)
         finally:
             self.service.ollama.release()
@@ -559,9 +559,8 @@ class SyncFlow:
         folder.mkdir(parents=True, exist_ok=True)
         cache = BlockCache(folder, lambda source, translated: valid_cached_block(
             source, translated, lang, self.accepted_langs))
-        return translate(cues, lang, ollama, progress, strict=True,
-                         source_lang=source_lang, cache=cache,
-                         heartbeat=lambda: self.active(job))
+        return translate(cues, lang, ollama, progress, source_lang=source_lang,
+                         cache=cache, heartbeat=lambda: self.active(job))
 
     def ocr_source(self, media, job, key, reference, source, progress):
         baseline = verify_text(source, reference)
@@ -713,7 +712,7 @@ class SyncFlow:
                     if use_context:
                         options['context'] = _previous_context(cues[:start], {'title': title})
                     translated = translate(block, job.target_lang, ollama,
-                                           lambda *_: self.active(job), strict=True, source_lang='en', admit=False, **options)
+                                           lambda *_: self.active(job), source_lang='en', admit=False, **options)
                     self.active(job)
                     if not valid_block(block, translated):
                         raise RuntimeError(f'Translation block at cue {start + 1} is incomplete or untranslated')
