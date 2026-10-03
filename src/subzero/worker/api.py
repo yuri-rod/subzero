@@ -129,7 +129,8 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
             translator = FallbackTranslator(primary=deepl_client, fallback=fallback)
     else:
         translator = Ollama(cfg.ollama_url, cfg.ollama_model, keep_alive=cfg.ollama_keep_alive,
-                            num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict)
+                            num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict,
+                            jobs=cfg.ollama_jobs)
     service = Service(jellyfin=jellyfin, opensubs=opensubs,
                       holder=ModelHolder(cfg.whisper_model, cfg.whisper_device,
                                          cfg.whisper_compute_type or None),

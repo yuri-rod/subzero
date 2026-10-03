@@ -225,6 +225,69 @@ def test_translate_stops_at_the_first_unrecoverable_block():
     assert fake.blocks == 6
 
 
+def test_translate_parallel_uses_several_threads_and_keeps_order(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+    seen = []
+    lock = threading.Lock()
+    phases = []
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            with lock:
+                seen.append(threading.current_thread().name)
+            time.sleep(0.2)
+            numbered = [ln.split(". ", 1)[1] for ln in kwargs["json"]["prompt"].splitlines()
+                        if ln[:2].rstrip(".").isdigit() and ". " in ln[:4]]
+            reply = "\n".join(f"{i}. TRADUZIDA {text}" for i, text in enumerate(numbered, 1))
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": reply, "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(6)]
+    client = Ollama("http://localhost", "gemma3:12b", http=HTTP(), jobs=2)
+    out = translate(cues, "pt-BR", client, progress=lambda p, n: phases.append((p, n)),
+                    source_lang="en")
+
+    assert [c.text for c in out] == [f"TRADUZIDA line {i}" for i in range(6)]
+    assert len(set(seen)) > 1
+    assert [n for _, n in phases] == [33, 66, 100]
+
+
+def test_translate_parallel_reports_the_failing_block_number(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
+
+    class HTTP:
+        def request(self, *args, **kwargs):
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "", "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(i, i, i + 1, f"line {i}") for i in range(4)]
+    client = Ollama("http://localhost", "gemma3:12b", http=HTTP(), jobs=2)
+    with pytest.raises(RuntimeError, match="Falha no bloco 1"):
+        translate(cues, "pt-BR", client, progress=lambda p, n: None, source_lang="en")
+
+
+def test_translate_parallel_stays_serial_for_chained_context(monkeypatch):
+    monkeypatch.setattr("subzero.worker.tracks.BLOCK", 1)
+    seen = []
+    lock = threading.Lock()
+
+    class HTTP:
+        def request(self, method, url, **kwargs):
+            with lock:
+                seen.append(threading.current_thread().name)
+            return type("R", (), {"status_code": 200,
+                                  "json": lambda self: {"response": "O baú.", "done": True,
+                                                        "done_reason": "stop"}})()
+
+    cues = [Cue(20, 30, 31, "The chest."), Cue(21, 32, 33, "Open it.")]
+    client = Ollama("http://localhost", "kaelri/hy-mt2:7b", http=HTTP(), jobs=4)
+    translate(cues, "pt-BR", client, lambda *args: None, source_lang="en")
+
+    assert set(seen) == {threading.current_thread().name}
+
+
 def test_ollama_prompt_numbers_the_lines():
     sent = {}
 

@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
@@ -341,7 +342,7 @@ class Ollama:
     KEEP_ALIVE = "2m"
 
     def __init__(self, url: str, model: str, http=None, keep_alive: str = KEEP_ALIVE,
-                 num_ctx: int = 4096, num_predict: int = 2048):
+                 num_ctx: int = 4096, num_predict: int = 2048, jobs: int = 1):
         self.url = url.rstrip("/")
         self.model = model
         self.keep_alive = keep_alive
@@ -349,6 +350,7 @@ class Ollama:
             raise ValueError("Ollama context and output limits must be positive")
         self.num_ctx = num_ctx
         self.num_predict = num_predict
+        self.jobs = max(1, jobs)
         if http is None:
             import httpx
             http = httpx.Client(timeout=600)
@@ -441,12 +443,64 @@ def translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progr
         return _translate(cues, target_lang, ollama, progress, strict, source_lang, context=context)
 
 
+class _DirectOllama:
+    """Translate blocks without re-entering compute ownership.
+
+    The caller holds the outer compute phase for the whole batch; per-block
+    phases from pool threads would serialize on the ownership lock and churn
+    the managed Ollama service instead of translating in parallel.
+    """
+
+    def __init__(self, client: Ollama):
+        self.__dict__['_client'] = client
+
+    def translate_block(self, cues, target_lang, source_lang=None, *, context=None):
+        return self._client._translate_block(cues, target_lang, source_lang, context=context)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
+def _translate_parallel(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
+                        source_lang: str | None, context, blocks: list, jobs: int) -> list[Cue]:
+    total = len(blocks)
+    client = _DirectOllama(ollama)
+    options = {'context': context} if context is not None else {}
+
+    def run(block):
+        return _translate_lines(block, target_lang, client, source_lang=source_lang, **options)
+
+    results: list[list[str]] = []
+    with ThreadPoolExecutor(max_workers=min(jobs, total), thread_name_prefix='ollama-block') as pool:
+        futures = [pool.submit(run, block) for block in blocks]
+        for n, future in enumerate(futures, start=1):
+            try:
+                results.append(future.result())
+            except DeepLPause:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            except RuntimeError as err:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise RuntimeError(f'Falha no bloco {n}: {err}') from None
+            progress(f"traduzindo bloco {n}/{total}", int(n / total * 100))
+    done: list[Cue] = []
+    for block, lines in zip(blocks, results):
+        for cue, text in zip(block, lines):
+            done.append(Cue(cue.index, cue.start, cue.end, text))
+    return done
+
+
 def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Progress,
                strict: bool = False, source_lang: str | None = None, *, context=None) -> list[Cue]:
     done: list[Cue] = []
     model = getattr(ollama, 'model', '')
     blocks = list(translation_blocks(cues, BLOCK, model,
                                     use_sentence_units=getattr(ollama, 'uses_sentence_units', None)))
+    chained = getattr(ollama, 'supports_context',
+                      _is_native_translation(model) and not _is_translategemma(model))
+    jobs = getattr(ollama, 'jobs', 1) if isinstance(ollama, Ollama) else 1
+    if jobs > 1 and not chained and len(blocks) > 1:
+        return _translate_parallel(cues, target_lang, ollama, progress, source_lang, context, blocks, jobs)
     for n, block in enumerate(blocks, start=1):
         try:
             options = {'context': context} if context is not None else {}

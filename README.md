@@ -405,6 +405,7 @@ The worker accepts these Ollama controls:
 | `OLLAMA_MODEL` | `qwen3.5:9b-mlx` | Qwen 9B MLX package served by Ollama 0.40 (requires the MLX engine). |
 | `OLLAMA_KEEP_ALIVE` | `2m` | Retain the model between subtitle batches. |
 | `OLLAMA_NUM_CTX` | `4096` | Bound the context allocated for a batch. |
+| `OLLAMA_JOBS` | `1` | Parallel subtitle blocks per batch. Applies to generic Ollama models only; context-chained native models stay serial. Match the server `OLLAMA_NUM_PARALLEL`. |
 | `OLLAMA_NUM_PREDICT` | `2048` | Bound the generated response. |
 | `OCR_ENABLED` | `1` on macOS, `0` elsewhere | Recover burned-in captions before translating verified English sources. |
 

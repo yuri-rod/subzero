@@ -31,6 +31,7 @@ class Config:
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3.5:9b-mlx"
     ollama_keep_alive: str = "2m"
+    ollama_jobs: int = 1
     ollama_num_ctx: int = 4096
     ollama_num_predict: int = 2048
     translation_provider: str = 'ollama'
@@ -104,6 +105,7 @@ class Config:
             ollama_url=env.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),
             ollama_model=env.get("OLLAMA_MODEL", "qwen3.5:9b-mlx"),
             ollama_keep_alive=env.get("OLLAMA_KEEP_ALIVE", "2m"),
+            ollama_jobs=max(1, int(env.get("OLLAMA_JOBS", "1"))),
             ollama_num_ctx=int(env.get("OLLAMA_NUM_CTX", "4096")),
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
             translation_provider=env.get('TRANSLATION_PROVIDER', 'ollama').strip().lower(),
