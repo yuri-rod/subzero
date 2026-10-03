@@ -10,10 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `OLLAMA_JOBS` runs independent subtitle blocks through generic Ollama models in parallel (default 1, serial as before). Context-chained native models always stay serial. Pool threads reuse the outer compute phase instead of churning the managed Ollama service.
+- `TRANSLATION_FALLBACK=libretranslate` now also guards `TRANSLATION_PROVIDER=ollama`: when Ollama is down or the model is missing at admission, the whole job routes to LibreTranslate instead of failing every block. Parallel block translation keeps working through the fallback wrapper while Ollama serves.
+- Generic worker translation resumes from per-block caches under `SYNC_CACHE/translations`, like repair already did. An interrupted `embedded_translate` or `rebuild` reuses verified blocks instead of starting over. Context-chained native models still translate straight through.
+- The lean `translate` lane (`sourceId: "embedded:N"`) is documented: extract, translate, deliver with no reference build, caption recovery, or audit ladder.
 
 ### Changed
 
 - The worker Ollama translation default is now `qwen3.5:9b-mlx`, served by the Ollama 0.40 MLX engine. The previous default (`subzero/hy-mt2:7b`) no longer exists locally, so any `TRANSLATION_PROVIDER=ollama` setup was failing every translation call. The live provider (`libretranslate`) is unchanged.
+
+### Fixed
+
+- `scripts/refill.py` no longer aborts the whole run on one unreadable item or corrupt video: media listing and sync verification each continue past per-file failures.
+- Transcode leftovers (`_transcoding_*`) and temp files are skipped by refill, library sweeps, watch ticks, and coverage, so they can no longer burn OpenSubtitles quota.
+- Fixed a broken `subzero.srt` import in the fallback quota path that crashed quota-less primaries such as Ollama.
 
 ## [1.17.0] - 2026-09-19
 

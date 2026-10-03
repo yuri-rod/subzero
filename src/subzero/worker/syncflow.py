@@ -30,7 +30,8 @@ from .opensubs import OpenSubtitlesError
 from .service import same_language
 from .srt import Cue, dump, parse, strip_hearing_impaired
 from .syncstore import SyncStore, broken_file_ids
-from .tracks import audio_start_offset, extract_audio, shift, sidecar_path, transcribe, translate
+from .tracks import BLOCK, audio_start_offset, extract_audio, shift, sidecar_path, transcribe, translate
+from .translate_cache import BlockCache, read_cached_block, read_gap_source, write_cached_block
 from .watch import EDITIONS, excluded, promoted, release_score, same_title, sync_compatible, title_query, tokens
 
 
@@ -39,6 +40,21 @@ OCR_SOURCE_VERSION = 17
 
 def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def valid_cached_block(source, translated, target_lang, accepted_langs):
+    """A cached translation is usable only when timing, count, and language
+    checks all pass, exactly as for a freshly translated block."""
+    if len(translated) != len(source):
+        return False
+    if any((a.start, a.end) != (b.start, b.end) or not b.text.strip()
+           for a, b in zip(source, translated)):
+        return False
+    text = sanitize_to_excellence(dump(strip_hearing_impaired(translated)),
+                                  target_lang, accepted_langs)
+    if [(c.start, c.end) for c in parse(text)] != [(c.start, c.end) for c in source]:
+        return False
+    return check_language_completeness(text, target_lang)[0]
 
 
 def embedded_track_score(stream, target_lang: str) -> int:
@@ -74,21 +90,6 @@ def is_embedded_match(stream, target_lang: str) -> bool:
         if same_language(target_lang, 'pt-BR'):
             return any(w in title for w in ('portuguese', 'português', 'portugues', 'brasileiro', 'brazilian'))
     return False
-
-
-def read_gap_source(path):
-    before = path.lstat()
-    if not stat.S_ISREG(before.st_mode) or before.st_size > 2_000_000:
-        raise RuntimeError('Gap recovery requires a regular subtitle file under 2 MB')
-    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
-    with os.fdopen(os.open(path, flags), 'rb') as handle:
-        info = os.fstat(handle.fileno())
-        if not os.path.samestat(before, info) or info.st_size > 2_000_000:
-            raise RuntimeError('Subtitle changed before gap recovery')
-        raw = handle.read(2_000_001)
-    if len(raw) > 2_000_000:
-        raise RuntimeError('Subtitle grew beyond the gap recovery limit')
-    return raw.decode('utf-8-sig')
 
 
 def validate_ocr_source(source, complete, reference, *, all_captions=False):
@@ -522,12 +523,45 @@ class SyncFlow:
             if self.service.ollama is not None:
                 self.service.ollama.release()
 
-    def translate_cues(self, cues, lang, progress, source_lang=None):
+    def translate_cues(self, cues, lang, progress, source_lang=None, *, job=None, key=None):
         self.translation_ready()
         try:
-            return translate(cues,lang,self.service.ollama,progress,strict=True,source_lang=source_lang)
+            if job is None or key is None:
+                return translate(cues, lang, self.service.ollama, progress,
+                                 strict=True, source_lang=source_lang)
+            return self._translate_cues_cached(job, key, cues, lang, progress, source_lang)
         finally:
             self.service.ollama.release()
+
+    def _translate_cues_cached(self, job, key, cues, lang, progress, source_lang):
+        ollama = self.service.ollama
+        if hasattr(ollama, 'check_quota'):
+            # Admit before snapshotting the provider: quota routing can
+            # switch the translator, and the cache folder must name the
+            # provider that actually translates.
+            ollama.check_quota(ollama.count_episode(cues))
+        model = getattr(ollama, 'model', getattr(self.cfg, 'ollama_model', ''))
+        settings = {
+            'resume': 'generic-v1',
+            'provider': getattr(ollama, 'provider', 'ollama'),
+            'provider_options': getattr(ollama, 'cache_settings', {}),
+            'source': digest(dump(cues)), 'target_lang': lang,
+            'source_lang': source_lang or '',
+            'model': model, 'prompt_version': TRANSLATION_PROMPT_VERSION,
+            'block_size': BLOCK,
+        }
+        if getattr(ollama, 'needs_local_compute', True):
+            settings.update(
+                url=getattr(ollama, 'url', getattr(self.cfg, 'ollama_url', '')),
+                num_ctx=getattr(ollama, 'num_ctx', getattr(self.cfg, 'ollama_num_ctx', 4096)),
+                num_predict=getattr(ollama, 'num_predict', getattr(self.cfg, 'ollama_num_predict', 2048)))
+        folder = self.cache / 'translations' / key / digest(json.dumps(settings, sort_keys=True))
+        folder.mkdir(parents=True, exist_ok=True)
+        cache = BlockCache(folder, lambda source, translated: valid_cached_block(
+            source, translated, lang, self.accepted_langs))
+        return translate(cues, lang, ollama, progress, strict=True,
+                         source_lang=source_lang, cache=cache,
+                         heartbeat=lambda: self.active(job))
 
     def ocr_source(self, media, job, key, reference, source, progress):
         baseline = verify_text(source, reference)
@@ -632,34 +666,16 @@ class SyncFlow:
         completed = []
 
         def valid_block(source, translated):
-            if len(translated) != len(source):
-                return False
-            if any((a.start, a.end) != (b.start, b.end) or not b.text.strip()
-                   for a, b in zip(source, translated)):
-                return False
-            text = sanitize_to_excellence(dump(strip_hearing_impaired(translated)),
-                                          job.target_lang, self.accepted_langs)
-            if [(c.start, c.end) for c in parse(text)] != [(c.start, c.end) for c in source]:
-                return False
-            return check_language_completeness(text, job.target_lang)[0]
+            return valid_cached_block(source, translated, job.target_lang, self.accepted_langs)
 
         def cached_block(block, start):
-            source = dump(block)
-            cache = folder / f'{start:06d}.json'
-            translated = None
-            if cache.exists():
-                try:
-                    cached = json.loads(read_gap_source(cache))
-                    text = cached.get('text') if isinstance(cached, dict) else None
-                    if (isinstance(text, str) and cached.get('source') == source
-                            and cached.get('digest') == digest(text)):
-                        candidate = parse(text)
-                        if valid_block(block, candidate):
-                            translated = [Cue(a.index, b.start, b.end, b.text)
-                                          for a, b in zip(block, candidate)]
-                except (ValueError, UnicodeError):
-                    pass
-            return translated
+            candidate = read_cached_block(folder, block, f'{start:06d}')
+            if candidate is None:
+                return None
+            if valid_block(block, candidate):
+                return [Cue(a.index, b.start, b.end, b.text)
+                        for a, b in zip(block, candidate)]
+            return None
 
         blocks = list(translation_blocks(cues, settings['block_size'], settings['model'],
                                          use_sentence_units=getattr(ollama, 'uses_sentence_units', None)))
@@ -692,7 +708,6 @@ class SyncFlow:
                 self.active(job)
                 start = len(completed)
                 source = dump(block)
-                cache = folder / f'{start:06d}.json'
                 if translated is None:
                     options = {}
                     if use_context:
@@ -703,20 +718,8 @@ class SyncFlow:
                     if not valid_block(block, translated):
                         raise RuntimeError(f'Translation block at cue {start + 1} is incomplete or untranslated')
                     text = dump(translated)
-                    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder,
-                                                     suffix='.tmp', delete=False) as handle:
-                        tmp = Path(handle.name)
-                        try:
-                            json.dump({'source': source, 'text': text, 'digest': digest(text)},
-                                      handle, ensure_ascii=False)
-                            handle.flush()
-                            os.fsync(handle.fileno())
-                            handle.close()
-                            self.active(job)
-                            os.replace(tmp, cache)
-                        finally:
-                            handle.close()
-                            tmp.unlink(missing_ok=True)
+                    write_cached_block(folder, f'{start:06d}', source, text,
+                                         heartbeat=lambda: self.active(job))
                 completed.extend(translated)
                 progress(f'traduzindo legendas {len(completed)}/{len(cues)}',
                          30 + int(65 * len(completed) / len(cues)))
@@ -906,7 +909,8 @@ class SyncFlow:
         cues = strip_hearing_impaired(parse(text))
         if not same_language(lang,job.target_lang):
             try:
-                cues = self.translate_cues(cues,job.target_lang,progress,source_lang=lang)
+                cues = self.translate_cues(cues, job.target_lang, progress, source_lang=lang,
+                                                 job=job, key=key)
             except DeepLPause:
                 raise
             except RuntimeError as err:
@@ -996,7 +1000,8 @@ class SyncFlow:
             if same_language(media.audio_lang or 'und', 'en'):
                 raise RuntimeError('English audio was not transcribed as English; caption recovery cannot proceed')
         if not same_language(detected,job.target_lang):
-            cues = self.translate_cues(cues,job.target_lang,progress,source_lang=detected)
+            cues = self.translate_cues(cues, job.target_lang, progress, source_lang=detected,
+                                                 job=job, key=key)
         raw = dump(cues)
         text = sanitize_to_excellence(raw, job.target_lang, self.accepted_langs)
         report = verify_text(text,reference,phase=45)

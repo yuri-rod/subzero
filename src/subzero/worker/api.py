@@ -22,7 +22,7 @@ from .opensubs import OpenSubtitles, OpenSubtitlesError
 from .service import Service
 from .srt import dump
 from .tracks import ModelHolder, Ollama, transcribe
-from .watch import Watcher, excluded, has_language
+from .watch import Watcher, excluded, has_language, is_transcode_tmp
 
 
 class JobRequest(BaseModel):
@@ -131,6 +131,12 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         translator = Ollama(cfg.ollama_url, cfg.ollama_model, keep_alive=cfg.ollama_keep_alive,
                             num_ctx=cfg.ollama_num_ctx, num_predict=cfg.ollama_num_predict,
                             jobs=cfg.ollama_jobs)
+        if cfg.translation_fallback == 'libretranslate':
+            from .deepl import FallbackTranslator
+            from .libretranslate import LibreTranslate
+            translator = FallbackTranslator(
+                primary=translator,
+                fallback=LibreTranslate(cfg.libretranslate_runtime))
     service = Service(jellyfin=jellyfin, opensubs=opensubs,
                       holder=ModelHolder(cfg.whisper_model, cfg.whisper_device,
                                          cfg.whisper_compute_type or None),
@@ -249,7 +255,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
                 media = jellyfin.media(it["Id"])
             except JellyfinError:
                 continue
-            if excluded(media.path, cfg.excluded_paths):
+            if excluded(media.path, cfg.excluded_paths) or is_transcode_tmp(media):
                 continue
             if not has_language(media, lang):
                 missing.append({"itemId": it["Id"], "name": it.get("Name") or media.name})
