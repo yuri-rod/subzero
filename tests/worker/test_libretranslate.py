@@ -59,7 +59,7 @@ def test_multiline_sdh_does_not_take_an_anchor_from_short_provider_output(tmp_pa
               Cue(1543, 3487.851, 3489.452, 'Go.')]
     eligible = [cue for cue in source if strip_hearing_impaired([cue])]
 
-    translated = translate(eligible, 'pt-BR', client, lambda *_: None, strict=True, source_lang='en')
+    translated = translate(eligible, 'pt-BR', client, lambda *_: None, source_lang='en')
 
     assert translated == [Cue(1543, 3487.851, 3489.452, 'Vá.')]
     assert requests == [{'action': 'translate', 'texts': ['Go.']}]
