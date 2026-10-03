@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The worker Ollama translation default is now `qwen3.5:9b-mlx`, served by the Ollama 0.40 MLX engine. The previous default (`subzero/hy-mt2:7b`) no longer exists locally, so any `TRANSLATION_PROVIDER=ollama` setup was failing every translation call. The live provider (`libretranslate`) is unchanged.
+
 ## [1.17.0] - 2026-09-19
 
 ### Added
