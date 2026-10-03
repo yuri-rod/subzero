@@ -332,6 +332,13 @@ class FallbackTranslator:
         self._lock = threading.RLock()
 
     @property
+    def active(self):
+        """The provider currently serving blocks. Snapshot it before a batch:
+        nothing re-routes mid-batch, so the snapshot stays valid until release."""
+        with self._lock:
+            return self._current
+
+    @property
     def provider(self):
         with self._lock:
             return self._current.provider
@@ -369,7 +376,7 @@ class FallbackTranslator:
     def count_episode(self, cues):
         if hasattr(self.primary, 'count_episode'):
             return self.primary.count_episode(cues)
-        from ..srt import dump
+        from .srt import dump
         return len(dump(cues))
 
     def ensure_available(self):
@@ -388,6 +395,10 @@ class FallbackTranslator:
 
     def check_quota(self, required):
         with self._lock:
+            if not hasattr(self.primary, 'check_quota'):
+                active = self._current
+                return {'provider': getattr(active, 'provider', 'primary'),
+                        'fallback': active is not self.primary, 'required': required}
             try:
                 snapshot = self.primary.check_quota(required)
                 self._current = self.primary

@@ -19,7 +19,7 @@ from subzero.worker.config import Config, read_env_file
 from subzero.worker.jellyfin import JellyfinClient
 from subzero.worker.jobs import JobStore
 from subzero.worker.opensubs import OpenSubtitles
-from subzero.worker.watch import Watcher, has_language
+from subzero.worker.watch import Watcher, has_language, is_transcode_tmp
 
 REPO = Path(__file__).resolve().parent.parent
 REFERENCE_CACHE = Path.home() / '.cache/subzero/references'
@@ -54,10 +54,16 @@ def missing_media(jelly, series, lang):
     for item in jelly.all_items():
         if series and item.get('SeriesName') != series:
             continue
-        media = jelly.media(item['Id'])
-        if has_language(media, lang):
+        try:
+            media = jelly.media(item['Id'])
+            if is_transcode_tmp(media):
+                continue
+            if has_language(media, lang):
+                continue
+            found.append(media)
+        except Exception as err:
+            print(f'{item.get("Name", item["Id"])}: cannot read media: {err}')
             continue
-        found.append(media)
     return found
 
 
@@ -75,8 +81,12 @@ def check_sync(results):
     from subzero.sync import auto_sync_file
 
     for media, sub in results:
-        report = verify_text(sub.read_text(encoding='utf-8-sig'),
-                             build_reference(media.path, REFERENCE_CACHE))
+        try:
+            report = verify_text(sub.read_text(encoding='utf-8-sig'),
+                                 build_reference(media.path, REFERENCE_CACHE))
+        except Exception as err:
+            print(f'{sub.name}: verify failed: {err}')
+            continue
         if report.status == 'pass':
             print(f'{sub.name}: in sync')
             continue
@@ -86,8 +96,12 @@ def check_sync(results):
         except Exception as err:
             print(f'{sub.name}: sync failed: {err}')
             continue
-        again = verify_text(sub.read_text(encoding='utf-8-sig'),
-                            build_reference(media.path, REFERENCE_CACHE))
+        try:
+            again = verify_text(sub.read_text(encoding='utf-8-sig'),
+                                build_reference(media.path, REFERENCE_CACHE))
+        except Exception as err:
+            print(f'{sub.name}: re-verify failed: {err}')
+            continue
         print(f'{sub.name}: {result.method} -> {again.status}')
 
 
