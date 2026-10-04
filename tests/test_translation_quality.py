@@ -8,6 +8,7 @@ from subzero.translation_quality import (
     Verdict,
     check_translation,
     deterministic_hits,
+    deterministic_verdict,
     judge_pairs,
     parse_judgments,
     sample_indexes,
@@ -230,6 +231,22 @@ def test_deterministic_rejection_names_suspect_causes(monkeypatch):
     assert not verdict.ok
     assert verdict.score == 5.0
     assert "deterministic" in verdict.reason
+    assert "length ratio" in verdict.reason
+
+
+def test_deterministic_verdict_passes_clean_translation():
+    verdict = deterministic_verdict(
+        ["Are you sure about this?"], ["Você tem certeza disso?"]
+    )
+    assert verdict.ok
+    assert verdict.score is None
+
+
+def test_deterministic_verdict_rejects_many_suspects():
+    sources = ["Are you absolutely sure about this decision right now?"] * 6
+    verdict = deterministic_verdict(sources, ["Sim."] * 6)
+    assert not verdict.ok
+    assert "6 deterministic suspect cues" in verdict.reason
     assert "length ratio" in verdict.reason
 
 

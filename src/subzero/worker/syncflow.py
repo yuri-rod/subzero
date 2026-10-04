@@ -13,7 +13,7 @@ from pathlib import Path
 
 from subzero.caption_quality import validate_caption_readings
 from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
-from subzero.compute import compute_phase
+from subzero.compute import ComputeShutdownError, compute_phase
 from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
@@ -22,7 +22,7 @@ from subzero.timing import Report, correction
 from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_CUES,
                                TRANSLATION_CONTEXT_CHARS, _is_native_translation,
                                _is_translategemma, _previous_context, translation_blocks)
-from subzero.translation_quality import check_translation
+from subzero.translation_quality import check_translation, deterministic_verdict
 
 from .deepl import DeepLPause
 from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
@@ -529,9 +529,16 @@ class SyncFlow:
             return
         if not same_language(lang, 'pt'):
             return
-        with compute_phase('ollama', ollama_url=getattr(self.cfg, 'ollama_url', None)):
-            verdict = check_translation([c.text for c in cues], [c.text for c in translated],
-                                        url=self.cfg.ollama_url, model=self.cfg.ollama_model)
+        sources = [c.text for c in cues]
+        targets = [c.text for c in translated]
+        try:
+            with compute_phase('ollama', ollama_url=getattr(self.cfg, 'ollama_url', None)):
+                verdict = check_translation(sources, targets,
+                                            url=self.cfg.ollama_url, model=self.cfg.ollama_model)
+        except ComputeShutdownError:
+            raise
+        except (RuntimeError, OSError):
+            verdict = deterministic_verdict(sources, targets)
         if not verdict.ok:
             raise RuntimeError(f'Translation quality gate: {verdict.reason}')
 
