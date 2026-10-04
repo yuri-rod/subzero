@@ -22,6 +22,7 @@ from subzero.timing import Report, correction
 from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_CUES,
                                TRANSLATION_CONTEXT_CHARS, _is_native_translation,
                                _is_translategemma, _previous_context, translation_blocks)
+from subzero.translation_quality import check_translation
 
 from .deepl import DeepLPause
 from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
@@ -523,13 +524,26 @@ class SyncFlow:
             if self.service.ollama is not None:
                 self.service.ollama.release()
 
+    def semantic_gate(self, cues, translated, lang):
+        if not getattr(self.cfg, 'semantic_qa', False):
+            return
+        if same_language(lang, 'en'):
+            return
+        verdict = check_translation([c.text for c in cues], [c.text for c in translated],
+                                    url=self.cfg.ollama_url, model=self.cfg.ollama_model)
+        if not verdict.ok:
+            raise RuntimeError(f'Translation quality gate: {verdict.reason}')
+
     def translate_cues(self, cues, lang, progress, source_lang=None, *, job=None, key=None):
         self.translation_ready()
         try:
             if job is None or key is None:
-                return translate(cues, lang, self.service.ollama, progress,
+                done = translate(cues, lang, self.service.ollama, progress,
                                  source_lang=source_lang)
-            return self._translate_cues_cached(job, key, cues, lang, progress, source_lang)
+            else:
+                done = self._translate_cues_cached(job, key, cues, lang, progress, source_lang)
+            self.semantic_gate(cues, done, lang)
+            return done
         finally:
             self.service.ollama.release()
 
@@ -738,6 +752,7 @@ class SyncFlow:
         if not same_language(job.target_lang, 'en'):
             translated = self.repair_translation(job, key, cues, progress,
                                                  title=media.series_name or media.name)
+            self.semantic_gate(cues, translated, job.target_lang)
         self.active(job)
         if [(c.start, c.end) for c in translated] != [(c.start, c.end) for c in cues]:
             raise RuntimeError('Translation changed source cue timing or count')
