@@ -36,9 +36,33 @@ The core uses the Python standard library. Timing analysis and the worker have o
 
 See [TODO.md](TODO.md) for known issues and remaining validation.
 
+## Worker architecture and recovery
+
+The worker exposes an authenticated HTTP API for queue inspection and control. Jobs and retry state live in SQLite; processing is handled by a single runner, with progress and outcomes available through the API and CLI.
+
+```text
+Jellyfin / operator
+        |
+        v
+authenticated worker API ---> SQLite job queue ---> worker runner
+                                     ^                    |
+                                     |                    v
+                               restart recovery <--- media / subtitle handlers
+```
+
+The queue records job state and progress. If the worker stops while a job is running, startup returns that job to the queue. Retryable failures on automatic jobs are retried up to five times with exponential backoff, capped at 30 minutes. Manual jobs fail for operator review. A job paused by a quota limit holds later work until the limit is resolved and that job is resumed.
+
+Reproduce failure and restart recovery without Jellyfin or a translation service by running the isolated queue tests:
+
+```console
+PYTHONPATH=src python -m pytest tests/worker/test_jobs.py -k 'auto_job_requeues or interrupted_jobs or quota_pause_holds_queue'
+```
+
+With `pytest` and `httpx` installed, these tests use a temporary SQLite database to simulate automatic retry, restart recovery, and resuming quota-paused work without external services.
+
 ---
 
-### Before and After Subzero
+## Before and After Subzero
 
 ```srt
 1
