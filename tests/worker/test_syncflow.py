@@ -1974,5 +1974,68 @@ def test_audit_falls_back_to_embedded_when_sidecar_rejected(setup):
     assert flow.current(media, 'pt-BR')
 
 
+def test_semantic_gate_blocks_bad_translation(setup, monkeypatch):
+    from subzero.worker import syncflow
+    from subzero.translation_quality import Verdict
+    flow,jobs,provider,media=setup
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='qwen3.5:9b-mlx'
+    monkeypatch.setattr(syncflow,'check_translation',
+                        lambda *a,**k:Verdict(False,'score 2.0/5 over 40 cues, 3 critical',2.0,()))
+    with pytest.raises(RuntimeError,match='quality gate'):
+        flow.semantic_gate(parse(dialogue()),parse(dialogue()),'pt-BR')
+
+
+def test_semantic_gate_skips_without_flag_or_for_english(setup, monkeypatch):
+    from subzero.worker import syncflow
+    flow,jobs,provider,media=setup
+    def boom(*a,**k):
+        raise AssertionError('judge must not run')
+    monkeypatch.setattr(syncflow,'check_translation',boom)
+    flow.semantic_gate(parse(dialogue()),parse(dialogue()),'pt-BR')
+    flow.cfg.semantic_qa=True
+    flow.semantic_gate(parse(dialogue()),parse(dialogue()),'en')
+
+
+def test_translate_cues_runs_semantic_gate(setup, monkeypatch):
+    from subzero.worker import syncflow
+    from subzero.translation_quality import Verdict
+    flow,jobs,provider,media=setup
+    flow.service.ollama=Translator()
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='qwen3.5:9b-mlx'
+    calls=[]
+    def fake_check(sources,translated,**kwargs):
+        calls.append((sources,translated,kwargs))
+        return Verdict(True,'score 5.0/5 over 40 cues',5.0,())
+    monkeypatch.setattr(syncflow,'check_translation',fake_check)
+    cues=parse(dialogue())
+    done=flow.translate_cues(cues,'pt-BR',lambda *args:None,source_lang='en')
+    assert [c.text for c in done]==['Fala traduzida']*len(cues)
+    assert len(calls)==1
+    assert calls[0][0]==['Test dialogue']*len(cues)
+    assert calls[0][1]==['Fala traduzida']*len(cues)
+
+
+def test_regenerate_runs_semantic_gate(setup, monkeypatch):
+    from subzero.worker import syncflow
+    from subzero.translation_quality import Verdict
+    flow,jobs,provider,media=setup
+    flow.service.ollama=Translator()
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='qwen3.5:9b-mlx'
+    calls=[]
+    monkeypatch.setattr(syncflow,'check_translation',
+                        lambda s,t,**k:calls.append((s,t)) or Verdict(True,'ok',5.0,()))
+    flow.ocr_source=lambda *a,**k:dialogue()
+    flow.repair_translation=lambda job,key,cues,prog,**k:cues
+    job=jobs.enqueue('id','repair','pt-BR');jobs.start(job.id)
+    flow.generate_from_english(media,job,'k',flow.reference_builder(),dialogue(),lambda *a:None)
+    assert len(calls)==1
+
+
 
 
