@@ -7,7 +7,7 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ### Added
 
-- Semantic translation QA gate (`SEMANTIC_QA`, default on). After translation in verified worker workflows, deterministic tripwires (extreme length ratio, mistranslated `immunity idol`/`tribal council` terms, repeated translations for distinct dialogue) plus a local Ollama judge over a sample of up to 40 cues score meaning preservation; jobs under 3.5/5, with 2+ critical defects, or with 5+ suspect cues go to review with cue-level reasons. Judge outages degrade to deterministic-only instead of failing the job.
+- Semantic translation QA gate (`SEMANTIC_QA`, default on). After Portuguese translation in verified worker workflows, deterministic tripwires (extreme length ratio, mistranslated `immunity idol`/`tribal council` terms, repeated translations for distinct dialogue) plus a local Ollama judge over a sample of up to 40 cues score meaning preservation; jobs under 3.5/5, with 2+ critical defects, or with 5+ suspect cues go to review with cue-level reasons. The judge runs inside the Ollama compute phase; judge outages degrade to deterministic-only instead of failing the job.
 
 ## [1.18.0] - 2026-10-03
 

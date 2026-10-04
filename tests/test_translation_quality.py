@@ -196,6 +196,43 @@ def test_parse_judgments_rejects_garbage(body):
         parse_judgments([4, 9], body)
 
 
+def test_flags_second_game_term_when_first_is_correct():
+    hits = deterministic_hits(
+        ["He hid the immunity idol before tribal council."],
+        ["Ele escondeu o ídolo de imunidade antes da reunião."],
+    )
+    assert 0 in hits
+    assert any("tribal council" in reason for reason in hits[0])
+
+
+def test_truncated_judge_response_degrades_to_deterministic(monkeypatch):
+    import http.client
+
+    def truncated(_request, timeout=None):
+        raise http.client.IncompleteRead(partial=b'{"resp', expected=100)
+
+    monkeypatch.setattr("subzero.translation_quality.urllib.request.urlopen", truncated)
+    verdict = check_translation(
+        ["Are you sure about this?"], ["Você tem certeza disso?"],
+        url="http://127.0.0.1:11434", model="m",
+    )
+    assert verdict.ok
+    assert verdict.score is None
+
+
+def test_deterministic_rejection_names_suspect_causes(monkeypatch):
+    monkeypatch.setattr("subzero.translation_quality.judge_pairs", good_judge)
+    sources = ["Are you absolutely sure about this decision right now?"] * 6
+    verdict = check_translation(
+        sources, ["Sim."] * 6,
+        url="http://127.0.0.1:11434", model="m",
+    )
+    assert not verdict.ok
+    assert verdict.score == 5.0
+    assert "deterministic" in verdict.reason
+    assert "length ratio" in verdict.reason
+
+
 def test_judge_pairs_batches_twenty_per_request(monkeypatch):
     calls = []
 

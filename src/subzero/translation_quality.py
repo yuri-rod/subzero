@@ -8,6 +8,7 @@ of failing the job.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.request
@@ -60,10 +61,9 @@ def pair_hits(source: str, translated: str) -> list[str]:
     long, short = max(len(src), len(tgt)), min(len(src), len(tgt))
     if short and long / short > 3 and long - short > 20:
         hits.append("extreme length ratio")
-    match = GAME_TERMS.search(src)
-    if match:
+    low = tgt.casefold()
+    for match in GAME_TERMS.finditer(src):
         term = match.group(0).lower()
-        low = tgt.casefold()
         if "immunity" in term and "ídolo" not in low and "idolo" not in low:
             hits.append("game term 'immunity idol' mistranslated")
         if "tribal" in term and "conselho" not in low:
@@ -183,7 +183,7 @@ def _judge_batch(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read(MAX_RESPONSE_BYTES + 1)
-    except (OSError, ValueError) as err:
+    except (OSError, ValueError, http.client.HTTPException) as err:
         raise JudgeUnavailable(f"judge request failed: {err}") from None
     if len(raw) > MAX_RESPONSE_BYTES:
         raise JudgeUnavailable("judge response too large")
@@ -226,6 +226,9 @@ def check_translation(sources: list[str], translated: list[str], *, url: str, mo
     worst = tuple(sorted(judgments, key=lambda j: (j.adequacy, j.cue))[:5])
     if score < REVIEW_MEAN or len(criticals) >= REVIEW_CRITICALS or len(det) >= REVIEW_DET_HITS:
         detail = "; ".join(f"#{j.cue + 1} ({j.adequacy}/5): {j.reason}" for j in worst)
+        if len(det) >= REVIEW_DET_HITS:
+            suspects = "; ".join(f"#{n + 1}: {det[n][0]}" for n in sorted(det)[:3])
+            detail += f"; {len(det)} deterministic suspects, e.g. {suspects}"
         return Verdict(
             False,
             f"score {score:.1f}/5 over {len(judgments)} cues, {len(criticals)} critical: {detail}",
