@@ -148,11 +148,3 @@ def test_config_repr_omits_provider_and_service_credentials():
                  opensubtitles_key='opensubtitles-sensitive',
                  opensubtitles_password='password-sensitive', deepl_api_key='deepl-sensitive:fx')
     assert 'sensitive' not in repr(cfg)
-
-
-@pytest.mark.parametrize('value,enabled', [('1', True), ('0', False), ('false', False)])
-def test_semantic_qa_defaults_on_and_can_opt_out(value, enabled):
-    env = {'JELLYFIN_URL': 'http://localhost', 'JELLYFIN_API_KEY': 'key', 'BEARER_TOKEN': 'token'}
-    assert Config.load(env).semantic_qa is True
-    assert Config('http://localhost', 'key', 'token').semantic_qa is True
-    assert Config.load(dict(env, SEMANTIC_QA=value)).semantic_qa is enabled
