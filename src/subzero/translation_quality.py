@@ -206,6 +206,15 @@ def judge_pairs(
     return out
 
 
+def deterministic_verdict(sources: list[str], translated: list[str]) -> Verdict:
+    """Judge-free verdict from tripwires alone, for outages and unjudgeable targets."""
+    det = deterministic_hits(sources, translated)
+    if len(det) >= REVIEW_DET_HITS:
+        detail = "; ".join(f"#{n + 1}: {det[n][0]}" for n in sorted(det)[:5])
+        return Verdict(False, f"{len(det)} deterministic suspect cues: {detail}", None, ())
+    return Verdict(True, f"{len(det)} deterministic suspect cues", None, ())
+
+
 def check_translation(sources: list[str], translated: list[str], *, url: str, model: str) -> Verdict:
     """Score a translated cue list against its source; judge outage degrades, never fails."""
     if len(sources) != len(translated):
@@ -217,10 +226,8 @@ def check_translation(sources: list[str], translated: list[str], *, url: str, mo
     try:
         judgments = judge_pairs(pairs, url=url, model=model)
     except JudgeUnavailable as err:
-        if len(det) >= REVIEW_DET_HITS:
-            detail = "; ".join(f"#{n + 1}: {det[n][0]}" for n in sorted(det)[:5])
-            return Verdict(False, f"judge unavailable ({err}); {len(det)} suspect cues: {detail}", None, ())
-        return Verdict(True, f"judge unavailable ({err}); {len(det)} suspect cues", None, ())
+        fallen = deterministic_verdict(sources, translated)
+        return Verdict(fallen.ok, f"judge unavailable ({err}); {fallen.reason}", None, fallen.worst)
     score = sum(j.adequacy for j in judgments) / len(judgments)
     criticals = [j for j in judgments if j.critical]
     worst = tuple(sorted(judgments, key=lambda j: (j.adequacy, j.cue))[:5])

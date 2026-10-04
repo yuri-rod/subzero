@@ -2028,6 +2028,63 @@ def test_semantic_gate_judges_inside_compute_phase(setup, monkeypatch):
     assert phases==[('ollama','http://127.0.0.1:11434')]
 
 
+def test_semantic_gate_degrades_when_compute_phase_fails_to_start(setup, monkeypatch):
+    from contextlib import contextmanager
+    from subzero.worker import syncflow
+    flow,jobs,provider,media=setup
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='m'
+    @contextmanager
+    def dead_phase(kind, **kwargs):
+        raise RuntimeError('readiness failed')
+        yield True
+    def boom(*a,**k):
+        raise AssertionError('judge must not run')
+    monkeypatch.setattr(syncflow,'compute_phase',dead_phase)
+    monkeypatch.setattr(syncflow,'check_translation',boom)
+    flow.semantic_gate(parse(dialogue()),parse(dialogue()),'pt-BR')
+
+
+def test_semantic_gate_phase_failure_still_rejects_suspects(setup, monkeypatch):
+    from contextlib import contextmanager
+    from subzero.worker import syncflow
+    flow,jobs,provider,media=setup
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='m'
+    @contextmanager
+    def dead_phase(kind, **kwargs):
+        raise RuntimeError('readiness failed')
+        yield True
+    monkeypatch.setattr(syncflow,'compute_phase',dead_phase)
+    def cues_text(lines):
+        return "\n".join(
+            f"{n}\n00:00:{n:02d},000 --> 00:00:{n:02d},500\n{text}\n"
+            for n, text in enumerate(lines, 1))
+    sources = parse(cues_text(["Are you absolutely sure about this decision right now?"] * 6))
+    translated = parse(cues_text(["Sim."] * 6))
+    with pytest.raises(RuntimeError, match='quality gate'):
+        flow.semantic_gate(sources, translated, 'pt-BR')
+
+
+def test_semantic_gate_propagates_compute_shutdown_error(setup, monkeypatch):
+    from contextlib import contextmanager
+    from subzero.compute import ComputeShutdownError
+    from subzero.worker import syncflow
+    flow,jobs,provider,media=setup
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='m'
+    @contextmanager
+    def poisoned_phase(kind, **kwargs):
+        raise ComputeShutdownError('Compute remains blocked after an unverified shutdown')
+        yield True
+    monkeypatch.setattr(syncflow,'compute_phase',poisoned_phase)
+    with pytest.raises(ComputeShutdownError):
+        flow.semantic_gate(parse(dialogue()),parse(dialogue()),'pt-BR')
+
+
 def test_translate_cues_runs_semantic_gate(setup, monkeypatch):
     from subzero.worker import syncflow
     from subzero.translation_quality import Verdict
