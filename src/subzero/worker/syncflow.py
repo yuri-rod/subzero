@@ -527,10 +527,11 @@ class SyncFlow:
     def semantic_gate(self, cues, translated, lang):
         if not getattr(self.cfg, 'semantic_qa', False):
             return
-        if same_language(lang, 'en'):
+        if not same_language(lang, 'pt'):
             return
-        verdict = check_translation([c.text for c in cues], [c.text for c in translated],
-                                    url=self.cfg.ollama_url, model=self.cfg.ollama_model)
+        with compute_phase('ollama', ollama_url=getattr(self.cfg, 'ollama_url', None)):
+            verdict = check_translation([c.text for c in cues], [c.text for c in translated],
+                                        url=self.cfg.ollama_url, model=self.cfg.ollama_model)
         if not verdict.ok:
             raise RuntimeError(f'Translation quality gate: {verdict.reason}')
 

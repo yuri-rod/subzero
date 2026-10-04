@@ -1998,6 +1998,36 @@ def test_semantic_gate_skips_without_flag_or_for_english(setup, monkeypatch):
     flow.semantic_gate(parse(dialogue()),parse(dialogue()),'en')
 
 
+def test_semantic_gate_skips_non_portuguese_targets(setup, monkeypatch):
+    from subzero.worker import syncflow
+    flow,jobs,provider,media=setup
+    flow.cfg.semantic_qa=True
+    def boom(*a,**k):
+        raise AssertionError('judge must not run')
+    monkeypatch.setattr(syncflow,'check_translation',boom)
+    flow.semantic_gate(parse(dialogue()),parse(dialogue()),'es')
+    flow.semantic_gate(parse(dialogue()),parse(dialogue()),'fr')
+
+
+def test_semantic_gate_judges_inside_compute_phase(setup, monkeypatch):
+    from contextlib import contextmanager
+    from subzero.worker import syncflow
+    from subzero.translation_quality import Verdict
+    flow,jobs,provider,media=setup
+    flow.cfg.semantic_qa=True
+    flow.cfg.ollama_url='http://127.0.0.1:11434'
+    flow.cfg.ollama_model='m'
+    phases=[]
+    @contextmanager
+    def fake_phase(kind, **kwargs):
+        phases.append((kind,kwargs.get('ollama_url')))
+        yield True
+    monkeypatch.setattr(syncflow,'compute_phase',fake_phase)
+    monkeypatch.setattr(syncflow,'check_translation',lambda *a,**k:Verdict(True,'ok',5.0,()))
+    flow.semantic_gate(parse(dialogue()),parse(dialogue()),'pt-BR')
+    assert phases==[('ollama','http://127.0.0.1:11434')]
+
+
 def test_translate_cues_runs_semantic_gate(setup, monkeypatch):
     from subzero.worker import syncflow
     from subzero.translation_quality import Verdict
