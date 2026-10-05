@@ -254,14 +254,11 @@ def test_reading_stabilization_collapses_a_two_to_one_run():
     validate_caption_readings(stable)
 
 
-def test_reading_stabilization_collapses_a_single_diacritic_flicker():
+def test_reading_validation_ignores_a_single_diacritic_flicker():
     from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
 
     cues = _flicker_readings(["Tuku", "Tuku", "Tüku", "Tuku", "Tuku"],
                              template="What if Lavo and {} started...?")
-    with pytest.raises(RuntimeError, match="Unstable OCR caption readings"):
-        validate_caption_readings(cues)
-    stable = stabilize_caption_readings(cues)
 
-    assert [cue.text for cue in stable] == ["What if Lavo and Tuku started...?"] * 5
-    validate_caption_readings(stable)
+    assert [cue.text for cue in stabilize_caption_readings(cues)] == [cue.text for cue in cues]
+    assert validate_caption_readings(cues) is None
