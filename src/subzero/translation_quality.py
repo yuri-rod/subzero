@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import unicodedata
 import urllib.request
 from dataclasses import dataclass
 
@@ -50,6 +51,15 @@ def _plain(text: str) -> str:
     return re.sub(r"\s+", " ", _TAG.sub("", text or "")).strip()
 
 
+def _mostly_cjk(text: str) -> bool:
+    """Count letters only so punctuation and Latin names do not decide the script."""
+    letters = [char for char in text if char.isalpha()]
+    cjk = sum(any(script in unicodedata.name(char, "")
+                  for script in ("CJK", "HIRAGANA", "KATAKANA", "HANGUL"))
+              for char in letters)
+    return cjk > len(letters) / 2
+
+
 def pair_hits(source: str, translated: str) -> list[str]:
     """Deterministic tripwires for one source/translation pair."""
     src, tgt = _plain(source), _plain(translated)
@@ -60,7 +70,10 @@ def pair_hits(source: str, translated: str) -> list[str]:
     hits = []
     long, short = max(len(src), len(tgt)), min(len(src), len(tgt))
     if short and long / short > 3 and long - short > 20:
-        hits.append("extreme length ratio")
+        # Compact CJK scripts naturally expand into Portuguese. Keep truncation
+        # checks and ratios between comparable scripts unchanged.
+        if not (len(tgt) > len(src) and _mostly_cjk(src) and not _mostly_cjk(tgt)):
+            hits.append("extreme length ratio")
     low = tgt.casefold()
     for match in GAME_TERMS.finditer(src):
         term = match.group(0).lower()
