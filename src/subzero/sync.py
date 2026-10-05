@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 import shutil
 from dataclasses import dataclass
-from typing import Tuple
 
 from .extract import require_ffmpeg, ToolError
 from .shift import shift_file, shift_timestamps
