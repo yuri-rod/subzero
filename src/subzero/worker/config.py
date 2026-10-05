@@ -36,6 +36,7 @@ class Config:
     ollama_num_predict: int = 2048
     translation_provider: str = 'ollama'
     translation_fallback: str = ""
+    semantic_qa: bool = True
     applefm_url: str = 'http://127.0.0.1:1976'
     deepl_api_key: str = field(default='', repr=False)
     libretranslate_runtime: str = str(Path.home() / '.local/share/subzero/libretranslate')
@@ -110,6 +111,7 @@ class Config:
             ollama_num_predict=int(env.get("OLLAMA_NUM_PREDICT", "2048")),
             translation_provider=env.get('TRANSLATION_PROVIDER', 'ollama').strip().lower(),
             translation_fallback=env.get('TRANSLATION_FALLBACK', env.get('TRANSLATION_FALLBACK_PROVIDER', '')).strip().lower(),
+            semantic_qa=env.get('SEMANTIC_QA', '1').lower() not in ('0', 'false', 'no'),
             applefm_url=env.get('APPLEFM_URL', 'http://127.0.0.1:1976').rstrip('/'),
             deepl_api_key=env.get('DEEPL_API_KEY', '').strip(),
             libretranslate_runtime=env.get('LIBRETRANSLATE_RUNTIME', str(Path.home() / '.local/share/subzero/libretranslate')),
