@@ -31,6 +31,47 @@ def test_ignores_normal_length_ratio():
     assert hits == {}
 
 
+@pytest.mark.parametrize("source, translated", [
+    ("絶対に許さない。", "Eu nunca vou perdoar você por isso."),
+    ("我绝不会原谅你。", "Eu nunca vou perdoar você por isso."),
+    ("絕不原諒你。", "Eu nunca vou perdoar você por isso."),
+    ("절대 용서 안 해.", "Eu nunca vou perdoar você por isso."),
+    ("ヤメテ。", "Por favor, pare de fazer isso agora!"),
+    ("ﾔﾒﾃ｡", "Por favor, pare de fazer isso agora!"),
+    ("NASAに行きたい。", "Eu quero ir para a agência espacial NASA."),
+    ("<i>絶対に許さない。</i>", "<i>Eu nunca vou perdoar você por isso.</i>"),
+])
+def test_ignores_cjk_to_portuguese_expansion(source, translated):
+    assert deterministic_hits([source], [translated]) == {}
+
+
+def test_cjk_expansion_passes_gate_with_good_judge_or_outage(monkeypatch):
+    sources = ["絶対に許さない。"] * 5
+    translated = ["Eu nunca vou perdoar você por isso."] * 5
+    assert deterministic_verdict(sources, translated).ok
+    monkeypatch.setattr("subzero.translation_quality.judge_pairs", good_judge)
+    assert check_translation(sources, translated, url="http://127.0.0.1:11434", model="m").ok
+
+    def down(_pairs, **_kwargs):
+        raise JudgeUnavailable("ollama is down")
+
+    monkeypatch.setattr("subzero.translation_quality.judge_pairs", down)
+    verdict = check_translation(sources, translated, url="http://127.0.0.1:11434", model="m")
+    assert verdict.ok
+    assert verdict.score is None
+
+
+@pytest.mark.parametrize("source, translated, reason", [
+    ("明日の朝までにこの仕事を全部終わらせなければならない。", "Sim.", "extreme length ratio"),
+    ("絶対に許さない。", "", "empty translation"),
+    ("Hi, 李.", "Oi, Li. Que bom encontrar você por aqui hoje!", "extreme length ratio"),
+    ("Hi!", "Olá! Que bom encontrar você por aqui hoje!", "extreme length ratio"),
+    ("行け。", "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほ", "extreme length ratio"),
+])
+def test_script_exception_preserves_other_length_and_empty_checks(source, translated, reason):
+    assert reason in deterministic_hits([source], [translated])[0]
+
+
 def test_ignores_short_cues_and_flags_empty_translation():
     assert deterministic_hits(["Yes!"], ["Sim, é isso mesmo!"]) == {}
     hits = deterministic_hits(["Where are we going tonight?"], [""])
