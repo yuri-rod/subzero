@@ -11,7 +11,7 @@ from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 
-from subzero.caption_quality import validate_caption_readings
+from subzero.caption_quality import stabilize_caption_readings, validate_caption_readings
 from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
 from subzero.compute import ComputeShutdownError, compute_phase
 from subzero.convert import parse_srt, dump_srt
@@ -122,7 +122,7 @@ def validate_ocr_source(source, complete, reference, *, all_captions=False):
         additions.append(cue)
     if any(anchors.values()):
         raise RuntimeError('Caption recovery changed or removed an original English cue')
-    validate_caption_readings(parse_srt(dump(additions)))
+    validate_caption_readings(stabilize_caption_readings(parse_srt(dump(additions))))
     return Report('pass', f'Original audio-aligned cues preserved; {len(additions)} frame-timed OCR captions added',
                   anchor_report.windows)
 
