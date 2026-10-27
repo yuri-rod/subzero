@@ -1,5 +1,7 @@
 include CHANGELOG.md
 include TODO.md
+include docs/usage.md
+include examples/dialogue.srt
 include scripts/install_libretranslate.py
 include scripts/libretranslate-runtime.json
 recursive-include tests *.py
