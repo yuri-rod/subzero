@@ -5,9 +5,23 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-10-27
+
 ### Added
 
 - Semantic translation QA gate (`SEMANTIC_QA`, default on). After Portuguese translation in verified worker workflows, deterministic tripwires (extreme length ratio, mistranslated `immunity idol`/`tribal council` terms, repeated translations for distinct dialogue) plus a local Ollama judge over a sample of up to 40 cues score meaning preservation; jobs under 3.5/5, with 2+ critical defects, or with 5+ suspect cues go to review with cue-level reasons. The judge runs inside the Ollama compute phase; judge outages degrade to deterministic-only instead of failing the job.
+
+### Fixed
+
+- Create exclusive temporary files for subtitle cleanup instead of reusing a predictable path that could overwrite another file through a symlink. Preserve file permissions and remove owned temporary files after failed replacement.
+- Reject malformed non-ASCII bearer credentials with an authentication error instead of returning a server error.
+- Collapse repeated OCR captions before worker validation, including captions that differ only in diacritics.
+- Avoid treating normal CJK translation expansion as a semantic-quality failure.
+
+### Changed
+
+- Add a reproducible subtitle-cleanup example, explain queue recovery and file-handling limits, and move detailed command reference material into `docs/usage.md`.
+- Limit CI repository permissions to read access.
 
 ## [1.18.0] - 2026-10-03
 
