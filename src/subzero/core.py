@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field, replace
 
 from .roles import words_for
@@ -398,8 +400,19 @@ def fix_file(path, opts: Options | None = None, backup_dir=None,
         if not os.path.exists(dest):
             with open(dest, "wb") as fh:
                 fh.write(open(path, "rb").read())
-    tmp = f"{path}.subzero-part"
-    with open(tmp, "w", encoding="utf-8", newline="") as fh:
-        fh.write(result.text)
-    os.replace(tmp, path)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="", delete=False,
+        dir=os.path.dirname(os.path.abspath(path)), prefix=".subzero-", suffix=".subzero-part",
+    ) as fh:
+        try:
+            fh.write(result.text)
+            fh.flush()
+            os.fsync(fh.fileno())
+            fh.close()  # Windows requires the temporary file closed before replacement.
+            shutil.copymode(path, fh.name)
+            os.replace(fh.name, path)
+        finally:
+            fh.close()
+            if os.path.exists(fh.name):
+                os.unlink(fh.name)
     return result

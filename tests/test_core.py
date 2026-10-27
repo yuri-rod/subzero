@@ -1,6 +1,6 @@
 import pytest
 
-from subzero import Options, analyze, fix_text, keep_breaks, rewrap, strip_sdh
+from subzero import Options, analyze, fix_file, fix_text, keep_breaks, rewrap, strip_sdh
 
 OPTS = Options()
 
@@ -14,6 +14,67 @@ def one(body, opts=OPTS):
     out = fix_text(cue(body), opts).text.replace("\r\n", "\n")
     parts = out.strip().split("\n", 2)
     return parts[2] if len(parts) > 2 else ""
+
+
+class TestFileReplacement:
+    def test_existing_temporary_symlink_cannot_redirect_output(self, tmp_path):
+        subtitle = tmp_path / "movie.srt"
+        subtitle.write_text(cue("[sighs] Hello."), encoding="utf-8")
+        unrelated = tmp_path / "unrelated.txt"
+        unrelated.write_text("Keep this file.", encoding="utf-8")
+        stale = tmp_path / "movie.srt.subzero-part"
+        try:
+            stale.symlink_to(unrelated)
+        except OSError:
+            pytest.skip("Creating symlinks requires platform permissions")
+
+        result = fix_file(subtitle)
+
+        assert unrelated.read_text() == "Keep this file."
+        assert stale.is_symlink()
+        assert not subtitle.is_symlink()
+        assert subtitle.read_bytes() == result.text.encode("utf-8")
+
+    def test_existing_temporary_file_is_not_overwritten(self, tmp_path):
+        subtitle = tmp_path / "movie.srt"
+        subtitle.write_text(cue("[sighs] Hello."), encoding="utf-8")
+        stale = tmp_path / "movie.srt.subzero-part"
+        stale.write_text("Another operation's output.", encoding="utf-8")
+
+        fix_file(subtitle)
+
+        assert stale.read_text() == "Another operation's output."
+
+    def test_replacement_preserves_subtitle_permissions(self, tmp_path):
+        import os
+        import stat
+
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits")
+        subtitle = tmp_path / "movie.srt"
+        subtitle.write_text(cue("[sighs] Hello."), encoding="utf-8")
+        subtitle.chmod(0o640)
+
+        fix_file(subtitle)
+
+        assert stat.S_IMODE(subtitle.stat().st_mode) == 0o640
+
+    def test_failed_replacement_preserves_source_and_removes_temporary(self, tmp_path, monkeypatch):
+        from subzero import core
+
+        subtitle = tmp_path / "movie.srt"
+        original = cue("[sighs] Hello.").encode("utf-8")
+        subtitle.write_bytes(original)
+
+        def refuse_replace(source, target):
+            raise PermissionError("Replacement denied")
+
+        monkeypatch.setattr(core.os, "replace", refuse_replace)
+        with pytest.raises(PermissionError, match="Replacement denied"):
+            fix_file(subtitle)
+
+        assert subtitle.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [subtitle]
 
 
 class TestSdhRemoval:
