@@ -168,7 +168,9 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     def require_token(request: Request) -> None:
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(token, cfg.bearer_token):
+        if scheme.lower() != "bearer" or not hmac.compare_digest(
+            token.encode("utf-8"), cfg.bearer_token.encode("utf-8")
+        ):
             raise HTTPException(status_code=401, detail="token invalido")
 
     guard = [Depends(require_token)]

@@ -48,6 +48,12 @@ def test_health_rejects_the_wrong_token(client):
     assert client.get("/health", headers={"Authorization": "Bearer errado"}).status_code == 401
 
 
+@pytest.mark.parametrize("token", [b"\xff", "invalid-\u00e9".encode("utf-8")])
+def test_health_rejects_non_ascii_tokens_without_server_error(client, token):
+    response = client.get("/health", headers={b"Authorization": b"Bearer " + token})
+    assert response.status_code == 401
+
+
 def test_health_reports_the_worker(client):
     r = client.get("/health", headers={"Authorization": "Bearer segredo"})
     assert r.status_code == 200
