@@ -5,11 +5,24 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 
 ## [Unreleased]
 
+### Fixed
+
+- Run semantic translation checks before direct translation and transcription jobs deliver Portuguese subtitles, preserving the installed file when checks reject the output.
+- Decode UTF-16 byte-order marks before trying legacy encodings, and share the same decoder across cleanup, conversion, timestamp shifting, and synchronization.
+- Reject nonfinite timestamp offsets, nonfinite or nonpositive scales, and incomplete framerate pairs before writing files. Honor `--scale 0` as invalid input instead of treating it as `1`.
+- Parse WebVTT timestamps written as `MM:SS.mmm`.
+- Create the requested `sync -o` output when the source is already aligned. Report output-write failures without falling back to container delay correction.
+
+### Changed
+
+- Run CI on pushes and pull requests for every branch.
+- Use English documentation and inline guidance, add feature-to-code references and an HTTP API reference, and correct provider fallback behavior, model defaults, and platform requirements.
+
 ## [1.19.0] - 2026-10-27
 
 ### Added
 
-- Semantic translation QA gate (`SEMANTIC_QA`, default on). After Portuguese translation in verified worker workflows, deterministic tripwires (extreme length ratio, mistranslated `immunity idol`/`tribal council` terms, repeated translations for distinct dialogue) plus a local Ollama judge over a sample of up to 40 cues score meaning preservation; jobs under 3.5/5, with 2+ critical defects, or with 5+ suspect cues go to review with cue-level reasons. The judge runs inside the Ollama compute phase; judge outages degrade to deterministic-only instead of failing the job.
+- Add `SEMANTIC_QA`, enabled by default, to verified Portuguese translation workflows. Deterministic checks flag extreme length changes, mistranslated `immunity idol` and `tribal council` terms, and repeated translations for distinct dialogue. An Ollama judge scores up to 40 cue pairs. Scores below 3.5/5, at least two critical defects, or at least five suspect cues reject the output with cue-level reasons. If the judge is unavailable, deterministic checks still run.
 
 ### Fixed
 
@@ -43,7 +56,7 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - Transcode leftovers (`_transcoding_*`) and temp files are skipped by refill, library sweeps, watch ticks, and coverage, so they can no longer burn OpenSubtitles quota.
 - Fixed a broken `subzero.srt` import in the fallback quota path that crashed quota-less primaries such as Ollama.
 
-## [1.17.1] - 02/10/2026
+## [1.17.1] - 2026-10-02
 
 ### Fixed
 

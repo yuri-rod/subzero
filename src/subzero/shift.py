@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import re
 import shutil
 from pathlib import Path
+
+from .core import read
 
 TIME = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{1,3})"
@@ -40,7 +43,7 @@ def calculate_fps_factor(from_fps: float | str, to_fps: float | str) -> float:
     """Calculate speed ratio when converting subtitle framerate (e.g. 23.976 -> 25)."""
     f1 = COMMON_FPS.get(str(from_fps).strip(), float(from_fps))
     f2 = COMMON_FPS.get(str(to_fps).strip(), float(to_fps))
-    if f1 <= 0 or f2 <= 0:
+    if not math.isfinite(f1) or not math.isfinite(f2) or f1 <= 0 or f2 <= 0:
         raise ValueError(f"Invalid frame rate: {from_fps} -> {to_fps}")
     return f1 / f2
 
@@ -54,6 +57,10 @@ def shift_timestamps(
     
     Returns (processed_text, count_of_shifted_cues).
     """
+    if not math.isfinite(delta_seconds):
+        raise ValueError("Shift seconds must be finite")
+    if not math.isfinite(scale_factor) or scale_factor <= 0:
+        raise ValueError("Scale factor must be finite and positive")
     shifted_count = 0
 
     def repl(m: re.Match) -> str:
@@ -79,10 +86,12 @@ def shift_file(
     dry: bool = False,
 ) -> tuple[Path, int]:
     """Shift and/or speed-stretch a subtitle file in place or to a target output path."""
+    if (from_fps is None) != (to_fps is None):
+        raise ValueError("Source and target frame rates must be supplied together")
     if from_fps is not None and to_fps is not None:
         scale_factor = scale_factor * calculate_fps_factor(from_fps, to_fps)
 
-    content = path.read_text(encoding="utf-8", errors="replace")
+    content, _ = read(path)
     shifted_text, count = shift_timestamps(content, delta_seconds=delta_seconds, scale_factor=scale_factor)
 
     target = Path(output) if output else path

@@ -47,7 +47,8 @@ def test_auto_sync_file_fallback_to_container_delay(monkeypatch, tmp_path):
     assert '00:00:02,500 --> 00:00:04,500' in content
 
 
-def test_auto_sync_file_speech_already_aligned(monkeypatch, tmp_path):
+@pytest.mark.parametrize("dry", [False, True])
+def test_auto_sync_file_speech_already_aligned(monkeypatch, tmp_path, dry):
     video = tmp_path / 'movie.mkv'
     video.write_bytes(b'video')
     sub = tmp_path / 'movie.srt'
@@ -58,10 +59,14 @@ def test_auto_sync_file_speech_already_aligned(monkeypatch, tmp_path):
     monkeypatch.setattr('subzero.reference.build_reference', lambda vid, cache: {})
     monkeypatch.setattr('subzero.reference.verify_text', lambda txt, ref: fake_report)
 
-    res = auto_sync_file(video, sub)
+    output = tmp_path / "synced" / "movie.srt"
+    res = auto_sync_file(video, sub, output=output, dry=dry)
     assert res.method == 'speech_aligned'
     assert res.offset == 0.0
     assert res.report['status'] == 'pass'
+    assert output.exists() is not dry
+    if not dry:
+        assert output.read_bytes() == sub.read_bytes()
 
 
 def test_auto_sync_file_speech_synced_after_correction(monkeypatch, tmp_path):
@@ -90,4 +95,27 @@ def test_auto_sync_file_speech_synced_after_correction(monkeypatch, tmp_path):
     assert res.report['status'] == 'pass'
     content = sub.read_text(encoding='utf-8')
     assert '00:00:03,000 --> 00:00:05,000' in content
+
+
+def test_sync_output_error_does_not_fall_back_to_container_delay(monkeypatch, tmp_path):
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"video")
+    subtitle = tmp_path / "movie.srt"
+    original = "1\n00:00:01,000 --> 00:00:03,000\nHello.\n"
+    subtitle.write_text(original, encoding="utf-8")
+    monkeypatch.setattr("subzero.sync.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("subzero.reference.build_reference", lambda *args: {})
+    monkeypatch.setattr("subzero.reference.verify_text", lambda *args: Report("pass", "Aligned"))
+
+    def refuse_write(*args, **kwargs):
+        raise PermissionError("Output is read-only")
+
+    def unexpected_fallback(*args):
+        pytest.fail("A failed write must not change the synchronization method")
+
+    monkeypatch.setattr(Path, "write_text", refuse_write)
+    monkeypatch.setattr("subzero.sync.probe_audio_delay", unexpected_fallback)
+    with pytest.raises(PermissionError, match="Output is read-only"):
+        auto_sync_file(video, subtitle, output=tmp_path / "synced.srt")
+    assert subtitle.read_text(encoding="utf-8") == original
 

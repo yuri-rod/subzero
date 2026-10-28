@@ -84,6 +84,12 @@ class TestParse:
         assert cues[0].text == "Hello world"
         assert cues[0].start == "00:00:01,000"
 
+    def test_convert_vtt_without_hours(self):
+        result = convert_text("WEBVTT\n\n00:01.000 --> 00:03.000 align:start\nHello.\n", "srt")
+        assert result.cues == 1
+        assert "00:00:01,000 --> 00:00:03,000" in result.text
+        assert "Hello." in result.text
+
     def test_parse_ass_strips_overrides_and_comments(self):
         cues = parse_ass(ASS)
         assert len(cues) == 2
@@ -137,6 +143,9 @@ class TestConvert:
     @pytest.mark.parametrize("encoding,expected", [
         ("utf-8", "Olá."),
         ("utf-8-sig", "Olá."),
+        ("utf-16", "Olá."),
+        ("utf-16-le", "Olá."),
+        ("utf-16-be", "Olá."),
         ("cp1252", "Olá."),
         ("latin-1", "Legacy \x81."),
     ])

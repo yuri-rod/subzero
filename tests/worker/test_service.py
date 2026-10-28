@@ -146,6 +146,43 @@ def test_translate_handler_without_a_source_fails(service):
         service.run(job("translate", target="pt-BR", source="fr"), lambda p, n: None)
 
 
+@pytest.mark.parametrize("kind", ["translate", "whisper"])
+def test_translation_quality_rejection_preserves_the_installed_subtitle(
+    service, tmp_path, monkeypatch, kind
+):
+    from types import SimpleNamespace
+
+    from subzero.translation_quality import Verdict
+    from subzero.worker.config import Config
+    from subzero.worker.jobs import JobStore
+    from subzero.worker.srt import Cue
+    from subzero.worker.syncflow import SyncFlow
+
+    source = tmp_path / "Filme.en.srt"
+    source.write_text("1\n00:00:01,000 --> 00:00:02,000\nhello\n", encoding="utf-8")
+    target = tmp_path / "Filme.pt-BR.srt"
+    target.write_text("existing subtitle", encoding="utf-8")
+    service.ollama = SimpleNamespace(ensure_available=lambda: None, release=lambda: None)
+    cfg = Config("http://jf", "key", "token", sync_cache=str(tmp_path / "cache"))
+    store = JobStore(str(tmp_path / "jobs.db"))
+    service.sync_flow = SyncFlow(store, service, cfg)
+    monkeypatch.setattr("subzero.worker.service.audio_start_offset", lambda _: 0)
+    monkeypatch.setattr("subzero.worker.service.extract_audio", lambda *args: str(tmp_path / "audio.wav"))
+    monkeypatch.setattr("subzero.worker.service.transcribe",
+                        lambda *args: ([Cue(1, 1, 2, "hello")], "en"))
+    for module in ("service", "syncflow"):
+        monkeypatch.setattr(f"subzero.worker.{module}.translate",
+                            lambda *args, **kwargs: [Cue(1, 1, 2, "ola")])
+    monkeypatch.setattr("subzero.worker.syncflow.check_translation",
+                        lambda *args, **kwargs: Verdict(False, "meaning changed"))
+
+    with pytest.raises(RuntimeError, match="Translation quality gate: meaning changed"):
+        service.run(job(kind, source="en"), lambda *args: None)
+
+    assert target.read_text(encoding="utf-8") == "existing subtitle"
+    assert service.jellyfin.refreshed == []
+
+
 def test_whisper_handler_pushes_the_cues_by_the_audio_offset(service, monkeypatch):
     from subzero.worker.srt import Cue
 

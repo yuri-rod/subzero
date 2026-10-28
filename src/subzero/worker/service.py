@@ -95,7 +95,7 @@ class Service:
 
         if not same_language(detected, job.target_lang):
             progress("traduzindo", 0)
-            cues = translate(cues, job.target_lang, self.ollama, progress, source_lang=detected)
+            cues = self.translate_cues(cues, job.target_lang, progress, source_lang=detected)
 
         progress("gravando sidecar", 95)
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
@@ -106,9 +106,14 @@ class Service:
         source_lang = (self.embedded_track(media, int(source_id.split(':', 1)[1])).lang
                        if source_id.startswith('embedded:') else source_id)
         progress("traduzindo", 0)
-        cues = translate(source, job.target_lang, self.ollama, progress, source_lang=source_lang)
+        cues = self.translate_cues(source, job.target_lang, progress, source_lang=source_lang)
         progress("gravando sidecar", 95)
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
+
+    def translate_cues(self, cues, lang, progress, source_lang=None):
+        if self.sync_flow is not None:
+            return self.sync_flow.translate_cues(cues, lang, progress, source_lang=source_lang)
+        return translate(cues, lang, self.ollama, progress, source_lang=source_lang)
 
     @staticmethod
     def embedded_track(media, index: int):

@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from .roles import words_for
 
@@ -374,8 +375,15 @@ def analyze(raw: str, opts: Options | None = None) -> Stats:
 
 def read(path) -> tuple[str, str]:
     """Read a subtitle, tolerating legacy 8-bit and unicode encodings still in the wild."""
-    data = open(path, "rb").read()
-    for enc in ("utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1", "iso-8859-1", "windows-1250"):
+    data = Path(path).read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16"), "utf-16"
+    prefix = data[:16]
+    if len(prefix) == 16 and b"\x00" * 8 in (prefix[::2], prefix[1::2]):
+        # Subtitle numbers and timecodes identify byte order even without a BOM.
+        enc = "utf-16-be" if prefix[0] == 0 else "utf-16-le"
+        return data.decode(enc), enc
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
         try:
             return data.decode(enc), ("utf-8" if "utf-8" in enc else enc)
         except UnicodeDecodeError:

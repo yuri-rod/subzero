@@ -16,6 +16,16 @@ def test_settle_must_be_non_negative():
         build_parser().parse_args(["watch", "demo.srt", "--settle", "-1"])
 
 
+def test_shift_rejects_zero_scale_without_changing_file(tmp_path):
+    from subzero.cli import main
+
+    subtitle = tmp_path / "movie.srt"
+    original = "1\n00:00:01,000 --> 00:00:02,000\nHello.\n"
+    subtitle.write_text(original, encoding="utf-8")
+    assert main(["shift", str(subtitle), "--scale", "0"]) == 1
+    assert subtitle.read_text(encoding="utf-8") == original
+
+
 def test_python_m_subzero_supports_version(capsys, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["python -m subzero", "--version"])
     with pytest.raises(SystemExit) as exc:

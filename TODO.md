@@ -14,7 +14,7 @@ Track full media runs separately from code tests. For each run, record the insta
 
 ## Verified protections to retain
 
-- [x] Provider output passes structure and target-language checks before installation. Translation does not silently switch providers on failure.
+- [x] Verified translation workflows check output structure and target language before installation. Provider changes require an explicit `TRANSLATION_FALLBACK` setting.
 - [x] Repair requires a verified English subtitle source. Embedded language metadata alone is insufficient. Rebuild supplies isolated transcription when no verified text source exists, while retaining the independent audio timing reference.
 - [x] Full-video caption recovery can preserve distinct simultaneous captions and compose translated display intervals without overlapping output cues.
 - [x] Native caption admission filters screen labels, credits and title layouts. Dense timing, protected names/numbers/negation, and positioned censorship-marker checks stop unresolved loss or flicker for review.
@@ -24,13 +24,12 @@ Track full media runs separately from code tests. For each run, record the insta
 - [x] Explicit environment-file selection fails when the file is absent or the option has no argument. Obsolete automatic configuration discovery was removed without breaking explicit compatibility paths.
 - [x] The native LibreTranslate runtime is isolated, hash-pinned and verified before use. Translation runs on CPU without network access. Installer support remains limited to the documented interpreter and platform.
 
-
 ## Provider limitations and operating rules
 
-DeepL Free is an explicit worker provider with a fixed Free endpoint and whole-episode quota admission. A quota hold must never turn into paid usage or an unconfigured change of provider. Account usage can change outside this worker, so a successful initial allowance check does not eliminate the need to handle quota exhaustion during translation.
+DeepL Free uses a fixed Free endpoint and checks the episode budget before translation. With `TRANSLATION_FALLBACK` configured, an episode that exceeds the allowance uses that provider; otherwise the queue pauses. Account usage can change outside this worker, so quota exhaustion during translation still needs a separate check. Paid usage remains disabled.
 
 LibreTranslate and the optional providers can mistranslate ambiguous terms, idioms, names or compressed dialogue, and omit details. Target-language and formatting checks do not detect every semantic error. Keep representative source/output review separate from provider availability and speed measurements, including when DeepL is selected.
 
-Optional Ollama providers remain supported. Compatibility code and examples are not evidence that a model is installed or selected. Change provider/model settings deliberately, invalidate affected caches, and test the actual worker path before removing a selected runtime.
+Before removing a selected Ollama model or runtime, update provider settings and verify the worker path. Translation settings form part of cache identity, so changed settings start separate caches.
 
 Keep discarded benchmark environments and models separate from active runtimes, proof files and resumable caches. Consolidate duplicate library copies only after verifying media health and retaining the chosen files and sidecars. Retain job IDs and backup provenance when retrying; never infer success from queue exhaustion or blindly submit the same work again.

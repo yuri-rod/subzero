@@ -1,3 +1,5 @@
+import pytest
+
 from subzero.shift import calculate_fps_factor, shift_timestamps, shift_file
 
 SAMPLE_SRT = """1
@@ -35,3 +37,35 @@ def test_shift_file_in_place(tmp_path):
     assert count == 2
     content = p.read_text(encoding="utf-8")
     assert "00:00:02,000 --> 00:00:05,000" in content
+
+
+@pytest.mark.parametrize("options", [
+    {"scale_factor": 0}, {"scale_factor": -1}, {"scale_factor": float("nan")},
+    {"scale_factor": float("inf")}, {"delta_seconds": float("nan")},
+    {"delta_seconds": float("inf")}, {"from_fps": "25"}, {"to_fps": "24"},
+    {"from_fps": "nan", "to_fps": "24"}, {"from_fps": "25", "to_fps": "inf"},
+])
+def test_invalid_shift_keeps_original(tmp_path, options):
+    subtitle = tmp_path / "movie.srt"
+    subtitle.write_text(SAMPLE_SRT, encoding="utf-8")
+    original = subtitle.read_bytes()
+    with pytest.raises(ValueError):
+        shift_file(subtitle, **options)
+    assert subtitle.read_bytes() == original
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "utf-16", "utf-16-le", "utf-16-be"])
+def test_shift_preserves_encoded_dialogue(tmp_path, encoding):
+    subtitle = tmp_path / "movie.srt"
+    subtitle.write_bytes(SAMPLE_SRT.replace("First line", "Café, please.").encode(encoding))
+    shift_file(subtitle, delta_seconds=1)
+    assert "Café, please." in subtitle.read_text(encoding="utf-8")
+    assert "00:00:02,000 --> 00:00:05,000" in subtitle.read_text(encoding="utf-8")
+
+
+def test_utf8_dialogue_with_a_nul_is_not_mistaken_for_utf16(tmp_path):
+    subtitle = tmp_path / "movie.srt"
+    subtitle.write_text(SAMPLE_SRT.replace("First line", "Hello\x00 world."), encoding="utf-8")
+    _, count = shift_file(subtitle, delta_seconds=1)
+    assert count == 2
+    assert "Hello\x00 world." in subtitle.read_text(encoding="utf-8")

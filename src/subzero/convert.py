@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .core import CUE, TIMECODE, normalise
+from .core import CUE, normalise, read
 
 FORMATS = ("srt", "vtt", "ass", "ssa")
 EXT_TO_FORMAT = {
@@ -21,8 +21,9 @@ EXT_TO_FORMAT = {
     ".ssa": "ssa",
 }
 
+_VTT_TIME = r"(?:\d{2,}:)?\d{2}:\d{2}(?:[.,]\d{1,3})?"
 _VTT_CUE = re.compile(
-    rf"((?:{TIMECODE})\s*-->\s*(?:{TIMECODE})[^\n]*)\s*\n(.*?)(?=\n\s*\n|\Z)",
+    rf"((?:{_VTT_TIME})\s*-->\s*(?:{_VTT_TIME})[^\n]*)\s*\n(.*?)(?=\n\s*\n|\Z)",
     re.S,
 )
 _ASS_DIALOGUE = re.compile(
@@ -261,13 +262,7 @@ def convert_file(
 ) -> ConvertResult:
     """Convert a subtitle file. Writes next to the source unless *output* is set."""
     path = Path(path)
-    raw_bytes = path.read_bytes()
-    for enc in ("utf-8", "cp1252", "latin-1"):
-        try:
-            text = raw_bytes.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
+    text, _ = read(path)
     src = (source or source_fmt or detect_format(path, text)).lower()
     target = target.lower().lstrip(".")
     result = convert_text(text, target, source=src)

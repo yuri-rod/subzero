@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import math
 import subprocess
 from pathlib import Path
 import shutil
-from dataclasses import dataclass
 
+from .core import read
 from .extract import require_ffmpeg, ToolError
 from .shift import shift_file, shift_timestamps
 
@@ -92,36 +91,40 @@ def auto_sync_file(
     if not sub_p.exists():
         raise FileNotFoundError(f"Subtitle file not found: {sub_p}")
 
+    content, _ = read(sub_p)
+    target = Path(output) if output else sub_p
+    result = None
     try:
         from .reference import build_reference, verify_text
         from .timing import correction
 
         cache = Path(cache_dir) if cache_dir else (Path.home() / ".cache/subzero/references")
         ref = build_reference(video_p, cache)
-        content = sub_p.read_text(encoding="utf-8", errors="replace")
         report = verify_text(content, ref)
 
         if report.status == "pass":
-            target = Path(output) if output else sub_p
-            return SyncResult(target, 0, 0.0, method="speech_aligned", report=report.json())
-
-        change = correction(report)
-        if change is not None:
-            scale, offset = change
-            shifted_text, count = shift_timestamps(content, delta_seconds=offset, scale_factor=scale)
-            repaired_report = verify_text(shifted_text, ref)
-            if repaired_report.status == "pass":
-                target = Path(output) if output else sub_p
-                if not dry:
-                    if backup_dir and target == sub_p:
-                        bdir = Path(backup_dir)
-                        bdir.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(sub_p, bdir / sub_p.name)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(shifted_text, encoding="utf-8")
-                return SyncResult(target, count, offset, method="speech_synced", report=repaired_report.json())
+            result = SyncResult(target, 0, 0.0, method="speech_aligned", report=report.json())
+        else:
+            change = correction(report)
+            if change is not None:
+                scale, offset = change
+                shifted_text, count = shift_timestamps(content, delta_seconds=offset, scale_factor=scale)
+                repaired_report = verify_text(shifted_text, ref)
+                if repaired_report.status == "pass":
+                    content = shifted_text
+                    result = SyncResult(target, count, offset, method="speech_synced", report=repaired_report.json())
     except Exception:
         pass
+
+    if result is not None:
+        if not dry and (result.method == "speech_synced" or target != sub_p):
+            if backup_dir and target == sub_p:
+                bdir = Path(backup_dir)
+                bdir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(sub_p, bdir / sub_p.name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        return result
 
     offset = probe_audio_delay(video_p)
     target, count = shift_file(

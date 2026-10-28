@@ -5,7 +5,7 @@
 - Install the development/test dependencies with `python -m pip install -e ".[dev]"`.
 - Run the full test suite with `pytest -v` (the same command used by CI).
 - Run one test with `pytest tests/test_cli.py::test_python_m_subzero_supports_version`, or a test module with `pytest tests/test_cli.py`.
-- CI tests Python 3.10 through 3.13 on Ubuntu, macOS, and Windows.
+- CI tests pushes and pull requests for every branch with Python 3.10 through 3.13 on Ubuntu, macOS, and Windows.
 - No separate build or lint command is configured in the project.
 
 ## Architecture
@@ -22,3 +22,5 @@
 - Local Ollama calls must run inside `compute_phase("ollama", ollama_url=...)`. This coordinates managed daemon lifecycle and shared compute-lock ownership across CLI, worker, OCR, and transcription paths.
 - Preserve safe output behavior in file-changing flows: retain dry-run and backup options, and use the existing temporary-file/atomic-replacement patterns when writing generated files.
 - Timing verification is evidence-based and read-only. Automatic correction is conservative and must be re-verified before accepting the corrected subtitle; container start-time skew alone is not proof of dialogue synchronization.
+- Write documentation, comments, and user-facing messages in English. Keep prose direct and conversational, with concrete behavior and runnable examples. Avoid stylistic em or en dashes, promotional claims, and filler.
+- Prefer existing helpers and the Python standard library. Fix shared causes rather than adding per-caller workarounds, and cover changed behavior with a focused check.

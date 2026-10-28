@@ -138,8 +138,8 @@ def cmd_shift(args) -> int:
         print("subzero: nothing to do", file=sys.stderr)
         return 1
     failed = shifted = total_cues = 0
-    delta = args.seconds or 0.0
-    scale = args.scale or 1.0
+    delta = args.seconds
+    scale = args.scale
     for p in files:
         out = None
         if args.output:
