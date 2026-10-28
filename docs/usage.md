@@ -284,7 +284,7 @@ The mapping from download folder to Jellyfin library is derived from `GET /Libra
 
 #### Target and accepted languages
 
-`ACCEPTED_LANGS` limits target languages in verified worker workflows. An empty value accepts all tags; language-specific content checks still apply where implemented.
+`ACCEPTED_LANGS` limits target language tags in verified worker workflows. An empty value accepts all tags. Direct `translate` and `whisper` jobs do not enforce this setting at intake; configure their target language when submitting the job.
 
 Configure `ACCEPTED_LANGS` in your `.env` file:
 
