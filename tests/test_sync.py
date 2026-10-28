@@ -52,8 +52,12 @@ def test_auto_sync_file_speech_already_aligned(monkeypatch, tmp_path, dry):
     video = tmp_path / 'movie.mkv'
     video.write_bytes(b'video')
     sub = tmp_path / 'movie.srt'
-    sub.write_text('1\n00:00:01,000 --> 00:00:03,000\nHello world\n', encoding='utf-8')
+    sub.write_bytes(b'1\r\n00:00:01,000 --> 00:00:03,000\r\nHello world\r\n')
     monkeypatch.setattr('subzero.sync.require_ffmpeg', lambda: None)
+
+    write_text = Path.write_text
+    monkeypatch.setattr(Path, "write_text",
+                        lambda path, text, **kwargs: write_text(path, text, newline="\r\n", **kwargs))
 
     fake_report = Report(status='pass', reason='Timing agrees across the dialogue span')
     monkeypatch.setattr('subzero.reference.build_reference', lambda vid, cache: {})
@@ -113,7 +117,7 @@ def test_sync_output_error_does_not_fall_back_to_container_delay(monkeypatch, tm
     def unexpected_fallback(*args):
         pytest.fail("A failed write must not change the synchronization method")
 
-    monkeypatch.setattr(Path, "write_text", refuse_write)
+    monkeypatch.setattr(Path, "write_bytes", refuse_write)
     monkeypatch.setattr("subzero.sync.probe_audio_delay", unexpected_fallback)
     with pytest.raises(PermissionError, match="Output is read-only"):
         auto_sync_file(video, subtitle, output=tmp_path / "synced.srt")

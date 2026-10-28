@@ -105,5 +105,5 @@ def shift_file(
         shutil.copy2(path, bdir / path.name)
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(shifted_text, encoding="utf-8")
+    target.write_bytes(shifted_text.encode("utf-8"))
     return target, count

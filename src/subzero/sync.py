@@ -123,7 +123,7 @@ def auto_sync_file(
                 bdir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(sub_p, bdir / sub_p.name)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_bytes(content.encode("utf-8"))
         return result
 
     offset = probe_audio_delay(video_p)

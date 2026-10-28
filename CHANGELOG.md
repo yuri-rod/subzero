@@ -12,6 +12,7 @@ Release notes follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) an
 - Reject nonfinite timestamp offsets, nonfinite or nonpositive scales, and incomplete framerate pairs before writing files. Honor `--scale 0` as invalid input instead of treating it as `1`.
 - Parse WebVTT timestamps written as `MM:SS.mmm`.
 - Create the requested `sync -o` output when the source is already aligned. Report output-write failures without falling back to container delay correction.
+- Preserve subtitle line endings when shifting or synchronizing on Windows.
 
 ### Changed
 
