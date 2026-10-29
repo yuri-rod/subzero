@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
 
-from subzero.compute import ComputeShutdownError, compute_phase
+from subzero.compute import ComputePressureError, ComputeShutdownError, compute_phase
 from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_translategemma,
                                _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
                                _translate_lines, _translate_sentence_units, _uses_sentence_units, translation_blocks)
@@ -487,7 +487,7 @@ def _translate_parallel(target_lang: str, ollama: Ollama, progress: Progress,
         for n, future in futures:
             try:
                 lines = future.result()
-            except DeepLPause:
+            except (DeepLPause, ComputePressureError, ComputeShutdownError):
                 pool.shutdown(wait=False, cancel_futures=True)
                 raise
             except RuntimeError as err:
@@ -549,7 +549,7 @@ def _translate(cues: list[Cue], target_lang: str, ollama: Ollama, progress: Prog
             if getattr(ollama, 'supports_context', _is_native_translation(model) and not _is_translategemma(model)):
                 options['context'] = _previous_context(cues[:len(done)], context)
             lines = _translate_lines(block, target_lang, ollama, source_lang=source_lang, **options)
-        except DeepLPause:
+        except (DeepLPause, ComputePressureError, ComputeShutdownError):
             raise
         except RuntimeError as err:
             raise RuntimeError(f'Falha no bloco {n}: {err}') from None

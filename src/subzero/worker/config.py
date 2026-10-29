@@ -70,10 +70,19 @@ class Config:
     qbt_poll_interval: int = 30
     qbt_categories: list[str] = field(default_factory=lambda: ['movies', 'tv shows'])
     qbt_state_path: str = ''
+    openai_base_url: str = 'https://api.openai.com/v1'
+    openai_model: str = 'gpt-4o-mini'
+    openai_api_key: str = field(default='', repr=False)
+    openai_timeout: float = 120
+    compute_min_memory_available_bytes: int | None = None
+    compute_max_swap_used_bytes: int | None = None
+    compute_min_vram_free_bytes: int | None = None
+    compute_pressure_interval: float = 5
+    compute_pressure_retry_seconds: float = 30
 
     def __post_init__(self):
-        if self.translation_provider not in ('ollama', 'libretranslate', 'deepl-free', 'applefm'):
-            raise ValueError('TRANSLATION_PROVIDER must be ollama, libretranslate, deepl-free or applefm')
+        if self.translation_provider not in ('ollama', 'openai', 'libretranslate', 'deepl-free', 'applefm'):
+            raise ValueError('TRANSLATION_PROVIDER must be ollama, openai, libretranslate, deepl-free or applefm')
         if self.translation_fallback and self.translation_fallback not in ('libretranslate', 'applefm'):
             raise ValueError('TRANSLATION_FALLBACK must be libretranslate, applefm or empty')
         if bool(self.ocr_rescue_model) != bool(self.ocr_rescue_model_digest):
@@ -140,6 +149,18 @@ class Config:
             qbt_poll_interval=int(env.get('QBT_POLL_INTERVAL', '30')),
             qbt_categories=[c.strip() for c in env.get('QBT_CATEGORIES', 'movies,tv shows').split(',') if c.strip()],
             qbt_state_path=env.get('QBT_STATE_PATH', '').strip() or str(Path(sync_cache) / 'qbt-seen.json'),
+            openai_base_url=env.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/'),
+            openai_model=env.get('OPENAI_MODEL', 'gpt-4o-mini'),
+            openai_api_key=env.get('OPENAI_API_KEY', '').strip(),
+            openai_timeout=float(env.get('OPENAI_TIMEOUT', '120')),
+            compute_min_memory_available_bytes=(int(env['COMPUTE_MIN_MEMORY_AVAILABLE_BYTES'])
+                                                if env.get('COMPUTE_MIN_MEMORY_AVAILABLE_BYTES') else None),
+            compute_max_swap_used_bytes=(int(env['COMPUTE_MAX_SWAP_USED_BYTES'])
+                                         if env.get('COMPUTE_MAX_SWAP_USED_BYTES') else None),
+            compute_min_vram_free_bytes=(int(env['COMPUTE_MIN_VRAM_FREE_BYTES'])
+                                         if env.get('COMPUTE_MIN_VRAM_FREE_BYTES') else None),
+            compute_pressure_interval=float(env.get('COMPUTE_PRESSURE_INTERVAL', '5')),
+            compute_pressure_retry_seconds=float(env.get('COMPUTE_PRESSURE_RETRY_SECONDS', '30')),
         )
 
 

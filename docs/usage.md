@@ -147,6 +147,82 @@ subzero translate episode.srt --to pt-BR --provider openai --cast "Ana:f,Rick:m"
 
 `--cast` applies to the generic translation prompts. Hy-MT2 and TranslateGemma use their native prompt formats and do not consume this option. Selecting a remote provider or Ollama URL sends subtitle text to that endpoint.
 
+### Benchmark translation (`subzero benchmark`)
+
+Run the versioned `subtitle-dialogue-v1` workload of 12 synthetic English cues
+against explicitly configured Ollama or OpenAI-compatible servers. The command
+uses the installed translation clients, performs warmups, and writes JSON plus
+a Markdown report beside it:
+
+```console
+subzero benchmark --config /absolute/path/to/benchmark.json --output /absolute/path/to/results.json
+```
+
+For example, configure a translator and an optional fixed Portuguese adequacy
+judge in `benchmark.json`:
+
+```json
+{
+  "repeats": 3,
+  "warmup": 1,
+  "batch_size": 4,
+  "sample_interval": 0.25,
+  "source_lang": "en",
+  "target_lang": "pt-BR",
+  "variants": [
+    {
+      "label": "candidate-q8",
+      "provider": "openai",
+      "url": "http://127.0.0.1:8080/v1",
+      "model": "local-translator",
+      "precision": "Q8_0",
+      "runtime": "llama.cpp",
+      "api_key_env": "BENCHMARK_API_KEY"
+    }
+  ],
+  "judge": {
+    "provider": "openai",
+    "url": "http://127.0.0.1:8081/v1",
+    "model": "fixed-judge",
+    "api_key_env": "BENCHMARK_JUDGE_KEY"
+  }
+}
+```
+
+The values shown for repeats, warmup, batch size, sampling interval and languages
+are the defaults. `variants` must contain at least one model. Each variant needs
+`provider` (`ollama` or `openai`) and `model`; `label`, `precision`, `runtime`,
+`url`, `api_key_env` and `model_file` are optional. An Ollama URL defaults to
+`http://127.0.0.1:11434`; an OpenAI-compatible URL defaults to
+`http://127.0.0.1:8080/v1`. API keys come from the named environment variable,
+defaulting to `OPENAI_API_KEY`, and are omitted from requests when empty.
+`model_file` adds a SHA-256 hash of a local weights file to the report.
+Precision and runtime are supplied labels, so match them to the server actually
+serving each model.
+
+Provision and start the selected servers before the benchmark. It runs variants
+serially and does not start external inference servers or quantize weights.
+For separate model launches on shared hardware, run one variant per report with
+the same workload, settings and fixed judge. Omit `judge` for translation and
+deterministic checks only. The judge supports Portuguese targets and can use
+either provider; the OpenAI-compatible judge requires JSON Schema structured
+output support.
+
+| Metric | Measurement |
+| --- | --- |
+| p50 and p95 latency | Complete workload translation time, including client retries and failed attempts. Warmup and judge execution are excluded. |
+| Cues per second | Successfully translated cues divided by total measured translation time. |
+| Tokens per second | Provider-reported completion tokens divided by translation time; unavailable when any measured run lacks token counts. |
+| Guardrail pass rate | Fraction of attempted cues passing deterministic source/output checks and subtitle language/layout checks. |
+| Mean adequacy and scored runs | Mean of available judge scores and the number of runs actually scored. Judge outages retain a missing score. |
+| Memory, swap and VRAM | Sampled peak host memory use, peak swap use, and minimum free NVIDIA VRAM. These are host-wide observations; unsupported counters remain unavailable. |
+
+The JSON also retains each output, error, resource sample, judge verdict, workload
+hash, prompt version and runtime identity. Exit status `0` means every measured
+translation completed. Quality rejections remain in the report and do not change
+that exit status. See the [benchmark methodology and measured baselines](benchmarks/README.md)
+for reproducible comparison instructions and results.
+
 ### Merge bilingual subtitles (`subzero merge`)
 
 Combine two language tracks into one subtitle file:
@@ -225,7 +301,7 @@ Set `NTFY_TOPIC` to receive phone pings. Manual jobs notify on every outcome; au
 
 The worker binds to `127.0.0.1:8787`. Configure `JELLYFIN_URL`, `JELLYFIN_API_KEY`, and `BEARER_TOKEN` before starting it. API requests require `Authorization: Bearer TOKEN`.
 
-`worker status` reports the transcription model and device (`whisperDevice`), translation provider and model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. For Ollama translation, use `ollama ps` to inspect where the model is running.
+`worker status` reports the transcription model and device (`whisperDevice`), translation provider and model, queue, and runner state. Its `gpu` field measures free NVIDIA VRAM and is `null` on Apple Silicon. `resourcePressure` contains the resource watchdog's enabled/blocked state, reason and latest snapshot. For Ollama translation, use `ollama ps` to inspect where the model is running.
 
 Configuration is read from an explicit `--env` file, the current directory's `.env`, the package/project `.env`, or `~/.config/subzero/.env`, in that order. Process environment variables override file values. The retired `~/.config/srtworker/.env` location is no longer discovered automatically; select it with `--env` during migration. The `srtworker` command and the existing macOS launchd label remain compatible.
 
@@ -242,7 +318,7 @@ curl -H "Authorization: Bearer $BEARER_TOKEN" http://127.0.0.1:8787/health
 
 | Request | Purpose |
 | --- | --- |
-| `GET /health` | Worker version, configured models, queue counts, and runner status. |
+| `GET /health` | Worker version, configured models, queue counts, runner status, and `resourcePressure`. |
 | `GET /media/{item_id}` | Jellyfin item details, embedded stream indexes, and sidecars. |
 | `POST /search` | Search OpenSubtitles with `itemId`, optional `query`, and optional `langs`. |
 | `POST /jobs` | Queue a job with `itemId`, `kind`, `targetLang`, and optional `sourceId`. |
@@ -301,17 +377,65 @@ ACCEPTED_LANGS=
 
 Translation requires the selected provider to be available. Fallbacks run only when you configure `TRANSLATION_FALLBACK`: Ollama can switch to LibreTranslate at admission, DeepL Free can switch to LibreTranslate or Apple Foundation Models at admission, and Apple Foundation Models can retry refused or echoed units through LibreTranslate. Malformed or incomplete output fails validation before installation. Review translated dialogue against the source for meaning.
 
+#### OpenAI-compatible worker translation
+
+Set `TRANSLATION_PROVIDER=openai` to translate queued jobs through an API serving
+`/chat/completions`, including a local llama.cpp or vLLM endpoint:
+
+```dotenv
+TRANSLATION_PROVIDER=openai
+OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+OPENAI_MODEL=local-translator
+OPENAI_API_KEY=
+OPENAI_TIMEOUT=120
+```
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API base URL, including any `/v1` prefix. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model identifier sent to the server. |
+| `OPENAI_API_KEY` | Empty | Optional bearer credential; leave empty for a local server without authentication. |
+| `OPENAI_TIMEOUT` | `120` | Positive finite request timeout in seconds. |
+
+Subzero validates the endpoint, model and timeout before translation and checks
+response size, completion status, output format and cue count. The configured
+server owns its model lifecycle. Changing the endpoint, model, prompt settings
+or timeout changes the translation cache identity, preventing reuse across
+different configurations. Credentials are excluded from that identity and health
+responses. This provider has no automatic provider fallback.
+
+Portuguese semantic QA still uses the separately configured Ollama judge below.
+Set `SEMANTIC_QA=0` to disable that worker check when no judge is intended.
+
 #### Translation quality checks
 
-`SEMANTIC_QA=1` enables checks on full worker translations into Portuguese.
+`SEMANTIC_QA=1`, the default, enables checks on full worker translations into Portuguese.
 Deterministic checks flag extreme length changes, mistranslated game terms, and
 repeated translations for distinct dialogue. An Ollama judge scores up to 40
-source/output pairs, including suspect cues. Output is rejected when the mean
+source/output pairs in batches of 20, including suspect cues. Output is rejected when the mean
 score falls below 3.5 out of 5, at least two sampled cues have critical defects,
 or at least five cues trigger deterministic checks.
 
+For a rejected result with at most 40 identified defective cues, the worker makes
+one targeted repair pass through the selected translation provider. It translates
+each flagged cue individually, using the existing malformed-output retry rules.
+Flags include adequacy scores below 3.5, critical judgments and deterministic
+defects. Unflagged text, cue indexes and timestamps remain unchanged.
+
+Each repaired cue must pass structural and language validation. The worker then
+checks the complete candidate again, keeping every repaired cue in the judge
+sample, and requires all original defects to clear. If a scored rejection is
+followed by a judge outage, the repair remains rejected. More than 40 defects,
+missing actionable cue IDs, or a failed repair keep the existing failure or
+review handling. There is no second semantic repair pass.
+
+When a translation cache is in use, blocks containing confirmed defects are
+invalidated so later jobs regenerate them. Other cached blocks remain reusable.
+Cancellation is checked around each repair and before accepting the candidate;
+an in-flight provider request may finish before cancellation takes effect.
+
 The judge uses `OLLAMA_URL` and `OLLAMA_MODEL`, even when another provider performs
-the translation. If the judge is unavailable, deterministic checks still run.
+the translation. If the initial judge request is unavailable, deterministic checks still run.
 Set `SEMANTIC_QA=0` to disable this extra check. Sampling does not establish the
 accuracy of every cue; review representative dialogue yourself. The CLI and
 standalone gap-recovery fragments do not use this worker check.
@@ -437,6 +561,41 @@ ollama create subzero/hy-mt2:7b -f "$subzero_model_stage/Modelfile"
 Run the preparation command with the Python environment where Subzero is installed. It requires a new staging directory, changes only the EOS metadata in the copy, and verifies the copied bytes. It retains the original model and tensor weights, and records hashes in `verification.json`. The template and end tokens follow [Tencent's 7B tokenizer](https://huggingface.co/tencent/Hy-MT2-7B/blob/main/chat_template.jinja).
 
 For a dedicated Ollama server on a small machine, set `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_MAX_LOADED_MODELS=1` in the server environment. Keep it bound to loopback when the worker runs on the same host.
+
+#### Resource pressure and deferred jobs
+
+The resource watchdog is opt-in. Set one or more byte thresholds in the worker
+environment to hold queued work when resources are unavailable:
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `COMPUTE_MIN_MEMORY_AVAILABLE_BYTES` | Unset | Block when available host memory is below this value. |
+| `COMPUTE_MAX_SWAP_USED_BYTES` | Unset | Block when used swap exceeds this value. |
+| `COMPUTE_MIN_VRAM_FREE_BYTES` | Unset | Block when the least free NVIDIA GPU memory is below this value. |
+| `COMPUTE_PRESSURE_INTERVAL` | `5` | Positive finite sampling interval in seconds. |
+| `COMPUTE_PRESSURE_RETRY_SECONDS` | `30` | Positive finite delay before a deferred job becomes eligible again. |
+
+Thresholds are nonnegative integer byte counts. For example,
+`COMPUTE_MIN_MEMORY_AVAILABLE_BYTES=4294967296` requires at least 4 GiB available.
+Host memory and swap measurements support macOS and Linux. Free VRAM requires
+`nvidia-smi`; Apple Silicon does not report a separate NVIDIA VRAM value. If an
+enabled threshold cannot be measured, admission remains blocked. With every
+threshold unset, the watchdog does not sample or unload services.
+
+The worker checks pressure before dispatch and at new local compute phases.
+An affected manual or automatic job returns to `queued` with
+`phase: "resource_pressure"` and a scheduled retry delay. This does not consume a
+handler retry, including when the job has already reached its exception retry
+limit. Once resources recover and the delay expires, normal queue selection
+resumes. Cancellation retains priority over deferral.
+
+The watchdog samples in the background and exposes `enabled`, `blocked`,
+`reason` and `snapshot` through `resourcePressure` in `GET /health` and
+`subzero worker status`. Snapshot counters use bytes and include a UTC timestamp.
+Under the managed compute policy, pressure may stop an idle owned Ollama daemon
+after acquiring its shared lease. Active compute ownership and native child
+leases prevent that cleanup; unmanaged servers are not stopped. Running native
+work finishes its current phase before later admission checks can defer the job.
 
 ### Contribute to OpenSubtitles (`subzero contribute`)
 

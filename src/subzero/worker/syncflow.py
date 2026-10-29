@@ -9,11 +9,12 @@ import subprocess
 import tempfile
 from collections import Counter
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 
 from subzero.caption_quality import validate_caption_readings
 from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
-from subzero.compute import ComputeShutdownError, compute_phase
+from subzero.compute import ComputePressureError, ComputeShutdownError, compute_phase
 from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
@@ -22,7 +23,7 @@ from subzero.timing import Report, correction
 from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_CUES,
                                TRANSLATION_CONTEXT_CHARS, _is_native_translation,
                                _is_translategemma, _previous_context, translation_blocks)
-from subzero.translation_quality import check_translation, deterministic_verdict
+from subzero.translation_quality import SAMPLE_CUES, check_translation, deterministic_verdict
 
 from .deepl import DeepLPause
 from .guards import check_excellence_guards, check_language_completeness, sanitize_to_excellence
@@ -286,7 +287,7 @@ class SyncFlow:
                 and not same_language(audio_lang,job.target_lang)):
             try:
                 self.translation_ready()
-            except DeepLPause:
+            except (DeepLPause, ComputePressureError):
                 raise
             except RuntimeError as err:
                 return self.review(media,job,key,f'Translation unavailable: {err}')
@@ -317,6 +318,8 @@ class SyncFlow:
                         continue
                     if is_embedded_match(s, target_lang):
                         candidates.append(s)
+            except ComputePressureError:
+                raise
             except Exception:
                 pass
         return sorted(candidates, key=lambda s: embedded_track_score(s, target_lang), reverse=True)
@@ -512,7 +515,7 @@ class SyncFlow:
                     raise RuntimeError(f'Merged subtitle failed validation: {reason}')
                 return self.install(media, job, key, text, report,
                                     expected_source=(target, digest(original)))
-        except DeepLPause:
+        except (DeepLPause, ComputePressureError):
             raise
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
             self.active(job)
@@ -523,23 +526,81 @@ class SyncFlow:
             if self.service.ollama is not None:
                 self.service.ollama.release()
 
-    def semantic_gate(self, cues, translated, lang):
-        if not getattr(self.cfg, 'semantic_qa', False):
-            return
-        if not same_language(lang, 'pt'):
-            return
-        sources = [c.text for c in cues]
-        targets = [c.text for c in translated]
+    def _translation_verdict(self, sources, targets, required_indexes=()):
+        options = {'required_indexes': required_indexes} if required_indexes else {}
         try:
             with compute_phase('ollama', ollama_url=getattr(self.cfg, 'ollama_url', None)):
-                verdict = check_translation(sources, targets,
-                                            url=self.cfg.ollama_url, model=self.cfg.ollama_model)
-        except ComputeShutdownError:
+                return check_translation(sources, targets, url=self.cfg.ollama_url,
+                                         model=self.cfg.ollama_model, **options)
+        except (ComputeShutdownError, ComputePressureError):
             raise
         except (RuntimeError, OSError):
-            verdict = deterministic_verdict(sources, targets)
-        if not verdict.ok:
+            return deterministic_verdict(sources, targets)
+
+    def _invalidate_translation_cues(self, key, cues, indexes):
+        for path in (self.cache / 'translations' / key).glob('*/*.json'):
+            if not path.stem.isdigit():
+                continue
+            try:
+                entry = json.loads(read_gap_source(path))
+                source = entry.get('source') if isinstance(entry, dict) else None
+                if not isinstance(source, str):
+                    continue
+                start = int(path.stem)
+                end = start + len(parse(source))
+                if (any(start <= n < end for n in indexes)
+                        and source == dump(cues[start:end])):
+                    path.unlink(missing_ok=True)
+            except (ValueError, UnicodeError):
+                continue
+
+    def semantic_gate(self, cues, translated, lang, *, source_lang=None, job=None, key=None):
+        """Accept QA or try one bounded repair pass, committing only a verified result."""
+        if not getattr(self.cfg, 'semantic_qa', False) or not same_language(lang, 'pt'):
+            return
+        if job is not None:
+            self.active(job)
+        sources = [c.text for c in cues]
+        targets = [c.text for c in translated]
+        verdict = self._translation_verdict(sources, targets)
+        if job is not None:
+            self.active(job)
+        if verdict.ok:
+            return
+        indexes = verdict.defect_indexes
+        if not indexes or any(type(n) is not int or not 0 <= n < len(cues) for n in indexes):
             raise RuntimeError(f'Translation quality gate: {verdict.reason}')
+        if key is not None:
+            self._invalidate_translation_cues(key, cues, indexes)
+        if len(indexes) > SAMPLE_CUES or self.service.ollama is None:
+            raise RuntimeError(f'Translation quality gate: {verdict.reason}')
+        if len(translated) != len(cues) or any(
+                (a.index, a.start, a.end) != (b.index, b.start, b.end)
+                for a, b in zip(cues, translated)):
+            raise RuntimeError('Translation quality gate: cue identity or timing changed')
+        candidate = list(translated)
+        try:
+            for n in indexes:
+                if job is not None:
+                    self.active(job)
+                repaired = translate([replace(cues[n])], lang, self.service.ollama,
+                                     lambda *_: self.active(job) if job is not None else None,
+                                     source_lang=source_lang)
+                if job is not None:
+                    self.active(job)
+                if (len(repaired) != 1 or repaired[0].index != cues[n].index
+                        or not valid_cached_block([cues[n]], repaired, lang, self.accepted_langs)):
+                    raise RuntimeError('Translation quality gate: repaired cue failed validation')
+                candidate[n] = repaired[0]
+            checked = self._translation_verdict(sources, [c.text for c in candidate], indexes)
+            if (not checked.ok or set(indexes).intersection(checked.defect_indexes)
+                    or (verdict.score is not None and checked.score is None)):
+                raise RuntimeError(f'Translation quality gate: targeted retry failed: {checked.reason}')
+        finally:
+            self.service.ollama.release()
+        if job is not None:
+            self.active(job)
+        translated[:] = candidate
 
     def translate_cues(self, cues, lang, progress, source_lang=None, *, job=None, key=None):
         self.translation_ready()
@@ -549,7 +610,7 @@ class SyncFlow:
                                  source_lang=source_lang)
             else:
                 done = self._translate_cues_cached(job, key, cues, lang, progress, source_lang)
-            self.semantic_gate(cues, done, lang)
+            self.semantic_gate(cues, done, lang, source_lang=source_lang, job=job, key=key)
             return done
         finally:
             self.service.ollama.release()
@@ -601,6 +662,8 @@ class SyncFlow:
                     validate_ocr_source(source, text, reference, all_captions=True)
                     progress('reutilizando fonte em ingles com Apple Vision', 30)
                     return text
+            except ComputePressureError:
+                raise
             except (ValueError, UnicodeError, RuntimeError):
                 pass
 
@@ -628,6 +691,8 @@ class SyncFlow:
         failure = None
         try:
             source_report = validate_ocr_source(source, text, reference, all_captions=True)
+        except ComputePressureError:
+            raise
         except RuntimeError as err:
             failure = str(err)
             source_report = Report('reject', failure)
@@ -759,7 +824,7 @@ class SyncFlow:
         if not same_language(job.target_lang, 'en'):
             translated = self.repair_translation(job, key, cues, progress,
                                                  title=media.series_name or media.name)
-            self.semantic_gate(cues, translated, job.target_lang)
+            self.semantic_gate(cues, translated, job.target_lang, source_lang='en', job=job, key=key)
         self.active(job)
         if [(c.start, c.end) for c in translated] != [(c.start, c.end) for c in cues]:
             raise RuntimeError('Translation changed source cue timing or count')
@@ -796,7 +861,7 @@ class SyncFlow:
             text, report = self.generate_from_english(media, job, key, reference, source, progress)
             return self.install(media, job, key, text, report,
                                 expected_source=(target, digest(original)))
-        except DeepLPause:
+        except (DeepLPause, ComputePressureError):
             raise
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
             self.active(job)
@@ -918,7 +983,7 @@ class SyncFlow:
                     expected_source = target, digest(original) if existed else None
                 text, report = self.generate_from_english(media, job, key, reference, text, progress)
                 return self.install(media, job, key, text, report, expected_source=expected_source)
-            except DeepLPause:
+            except (DeepLPause, ComputePressureError):
                 raise
             except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
                 self.active(job)
@@ -932,7 +997,7 @@ class SyncFlow:
             try:
                 cues = self.translate_cues(cues, job.target_lang, progress, source_lang=lang,
                                                  job=job, key=key)
-            except DeepLPause:
+            except (DeepLPause, ComputePressureError):
                 raise
             except RuntimeError as err:
                 return self.review(media,job,key,f'Translation failed: {err}')
@@ -964,7 +1029,7 @@ class SyncFlow:
             original = read_gap_source(target) if existed else ''
             return self._rebuild(media, job, key, reference, progress,
                                  expected_source=(target, digest(original) if existed else None))
-        except DeepLPause:
+        except (DeepLPause, ComputePressureError):
             raise
         except (ImportError, OSError, RuntimeError, UnicodeError, ValueError) as err:
             self.active(job)
@@ -979,7 +1044,7 @@ class SyncFlow:
         if source is not None and not same_language(source[1], job.target_lang):
             try:
                 self.translation_ready()
-            except DeepLPause:
+            except (DeepLPause, ComputePressureError):
                 raise
             except RuntimeError:
                 audio_lang = (media.audio_lang or '').strip()

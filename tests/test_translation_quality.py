@@ -165,6 +165,44 @@ def test_low_mean_score_needs_review(monkeypatch):
     assert "2.0" in verdict.reason
 
 
+def test_verdict_identifies_all_low_scoring_and_critical_cues(monkeypatch):
+    from subzero.translation_quality import Judgment
+
+    monkeypatch.setattr("subzero.translation_quality.judge_pairs", lambda pairs, **kwargs: [
+        Judgment(0, 5, False, "fine"), Judgment(1, 3, False, "lost meaning"),
+        Judgment(2, 5, True, "wrong person"), Judgment(3, 5, True, "negated"),
+    ])
+    verdict = check_translation(["Hello there."] * 4, ["Olá, tudo bem?"] * 4,
+                                url="http://judge", model="m")
+    assert not verdict.ok
+    assert verdict.defect_indexes == (1, 2, 3)
+
+
+def test_deterministic_verdict_identifies_defects_during_judge_outage(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise JudgeUnavailable("offline")
+
+    monkeypatch.setattr("subzero.translation_quality.judge_pairs", unavailable)
+    verdict = check_translation(["Are you absolutely sure about this decision?"] * 5,
+                                ["Sim."] * 5, url="http://judge", model="m")
+    assert not verdict.ok
+    assert verdict.defect_indexes == (0, 1, 2, 3, 4)
+
+
+def test_recheck_keeps_previously_defective_cues_in_sample(monkeypatch):
+    from subzero.translation_quality import Judgment
+
+    def judge(pairs, **kwargs):
+        return [Judgment(n, 1 if n in (77, 79) else 5, n in (77, 79), "meaning")
+                for n, _, _ in pairs]
+
+    monkeypatch.setattr("subzero.translation_quality.judge_pairs", judge)
+    verdict = check_translation(["Hello there."] * 100, ["Olá, tudo bem?"] * 100,
+                                url="http://judge", model="m", required_indexes=(77, 79))
+    assert not verdict.ok
+    assert verdict.defect_indexes == (77, 79)
+
+
 def test_two_criticals_need_review_even_with_high_mean(monkeypatch):
     from subzero.translation_quality import Judgment
 
@@ -320,3 +358,62 @@ def test_judge_pairs_batches_twenty_per_request(monkeypatch):
     judgments = judge_pairs(pairs, url="http://x", model="m")
     assert calls == [20, 20]
     assert len(judgments) == 40
+
+
+def test_openai_judge_transport_returns_localized_defects(monkeypatch):
+    import io
+
+    def respond(request, timeout=None):
+        assert request.full_url == "http://localhost:8080/v1/chat/completions"
+        assert request.get_header("Authorization") == "Bearer test-key"
+        payload = json.loads(request.data)
+        assert payload["model"] == "local-judge"
+        response_format = payload["response_format"]
+        assert response_format["type"] == "json_schema"
+        schema = response_format["json_schema"]["schema"]
+        assert schema["required"] == ["judgments"]
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["judgments"]["minItems"] == 1
+        assert schema["properties"]["judgments"]["maxItems"] == 1
+        assert '"judgments"' in payload["messages"][0]["content"]
+        pairs = json.loads(payload["messages"][0]["content"].rsplit("PAIRS:", 1)[1])
+        assert pairs == [{"id": 0, "en": "He never came.", "pt": "Ele veio."}]
+        content = json.dumps({"judgments": [
+            {"id": 0, "adequacy": 1, "critical": True, "reason": "negation"}]})
+        return io.BytesIO(json.dumps({"choices": [{"finish_reason": "stop",
+                                                  "message": {"content": content}}]}).encode())
+
+    monkeypatch.setattr("subzero.translation_quality.urllib.request.urlopen", respond)
+    verdict = check_translation(["He never came."], ["Ele veio."], provider="openai",
+                                url="http://localhost:8080/v1/", model="local-judge", api_key="test-key")
+    assert not verdict.ok
+    assert verdict.score == 1
+    assert verdict.defect_indexes == (0,)
+
+
+@pytest.mark.parametrize("response", [
+    {"choices": []},
+    {"choices": [{"finish_reason": "length", "message": {"content": "[]"}}]},
+    {"choices": [{"finish_reason": "stop", "message": {"content": "not JSON"}}]},
+    {"choices": [{"finish_reason": "stop", "message": {"content": "[]"}}]},
+    {"choices": [{"finish_reason": "stop", "message": {"content": '{"judgments": [], "extra": true}'}}]},
+])
+def test_invalid_openai_judge_response_degrades_to_deterministic(monkeypatch, response):
+    import io
+
+    monkeypatch.setattr("subzero.translation_quality.urllib.request.urlopen",
+                        lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode()))
+    verdict = check_translation(["Hello there."], ["Olá, tudo bem?"], provider="openai",
+                                url="http://localhost:8080/v1", model="local-judge")
+    assert verdict.ok
+    assert verdict.score is None
+    assert "judge unavailable" in verdict.reason
+
+
+def test_judge_rejects_duplicate_ids_instead_of_overwriting_a_defect():
+    body = {"response": json.dumps([
+        {"id": 0, "adequacy": 1, "critical": True, "reason": "wrong meaning"},
+        {"id": 0, "adequacy": 5, "critical": False, "reason": "fine"},
+    ])}
+    with pytest.raises(JudgeUnavailable):
+        parse_judgments([0], body)

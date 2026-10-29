@@ -327,6 +327,55 @@ def test_fallback_routes_to_secondary_when_ollama_is_down():
     assert [c.text for c in out] == ["FB hello", "FB world"]
 
 
+@pytest.mark.parametrize('failure_type', ['pressure', 'shutdown'])
+def test_resource_failure_does_not_switch_the_selected_provider(failure_type):
+    from subzero.compute import ComputePressureError, ComputeShutdownError
+    failure = ComputePressureError('memory pressure') if failure_type == 'pressure' else ComputeShutdownError('unverified child')
+
+    class HTTP:
+        def request(self, *args, **kwargs):
+            raise failure
+
+    primary = Ollama('http://localhost', 'generic:7b', http=HTTP())
+    client = FallbackTranslator(primary, StubFallback())
+    with pytest.raises(type(failure)) as error:
+        client.ensure_available()
+    assert error.value is failure
+    assert client.active is primary
+
+
+@pytest.mark.parametrize('jobs', [1, 2])
+@pytest.mark.parametrize('failure_type', ['pressure', 'shutdown'])
+def test_serial_and_parallel_translation_preserve_resource_failures(monkeypatch, jobs, failure_type):
+    from subzero.compute import ComputePressureError, ComputeShutdownError
+    failure = ComputePressureError('memory pressure') if failure_type == 'pressure' else ComputeShutdownError('unverified child')
+    monkeypatch.setattr('subzero.worker.tracks.BLOCK', 1)
+
+    class HTTP:
+        def request(self, *args, **kwargs):
+            raise failure
+
+    client = Ollama('http://localhost', 'generic:7b', http=HTTP(), jobs=jobs)
+    with pytest.raises(type(failure)) as error:
+        translate([Cue(1, 0, 1, 'Hello.'), Cue(2, 1, 2, 'Goodbye.')], 'es', client, lambda *_: None)
+    assert error.value is failure
+
+
+@pytest.mark.parametrize('failure_type', ['pressure', 'shutdown'])
+def test_applefm_readiness_preserves_resource_failures(monkeypatch, failure_type):
+    from subzero.compute import ComputePressureError, ComputeShutdownError
+    from subzero.worker.applefm import AppleFM
+    failure = ComputePressureError('memory pressure') if failure_type == 'pressure' else ComputeShutdownError('unverified child')
+
+    def request(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr('httpx.Client.stream', request)
+    with pytest.raises(type(failure)) as error:
+        AppleFM().ensure_available()
+    assert error.value is failure
+
+
 def test_fallback_keeps_parallel_ollama_blocks_parallel(monkeypatch):
     monkeypatch.setattr("subzero.worker.tracks.BLOCK", 2)
     seen = []

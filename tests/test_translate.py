@@ -27,6 +27,99 @@ def test_openai_client_init():
     assert client.model == "gpt-4o-mini"
 
 
+@pytest.mark.parametrize('provider', ['ollama', 'openai'])
+def test_provider_usage_accumulates_reported_tokens_and_preserves_unknowns(monkeypatch, provider):
+    from io import BytesIO
+    totals = [{'prompt_tokens': 10, 'completion_tokens': 4},
+              {'prompt_tokens': 20, 'completion_tokens': 6}, {}]
+    ticks = iter([0.0, 0.25, 1.0, 1.5, 2.0, 2.75])
+    monkeypatch.setattr('subzero.translate.time.perf_counter', lambda: next(ticks))
+
+    def request(req, timeout):
+        usage = totals.pop(0)
+        if provider == 'openai':
+            body = {'choices': [{'message': {'content': '1. Olá.'}, 'finish_reason': 'stop'}],
+                    'usage': usage}
+        else:
+            body = {'response': '[{"id":1,"text":"Olá."}]', 'done': True, 'done_reason': 'stop'}
+            if usage:
+                body.update(prompt_eval_count=usage['prompt_tokens'], eval_count=usage['completion_tokens'])
+        response = BytesIO(json.dumps(body).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    client = OpenAIClient(api_key='') if provider == 'openai' else OllamaClient(model='generic:7b')
+    for _ in range(2):
+        assert client.translate_block([Cue(1, 2, 'Hello.')], 'pt-BR') == ['Olá.']
+    assert client.usage == {'prompt_tokens': 30, 'completion_tokens': 10, 'request_seconds': 0.75}
+    client.translate_block([Cue(1, 2, 'Hello.')], 'pt-BR')
+    assert client.usage == {'prompt_tokens': None, 'completion_tokens': None, 'request_seconds': 1.5}
+
+
+def test_openai_local_endpoint_can_explicitly_omit_environment_key(monkeypatch):
+    from io import BytesIO
+    monkeypatch.setenv('OPENAI_API_KEY', 'unrelated-secret')
+
+    def request(req, timeout):
+        assert req.get_header('Authorization') is None
+        response = BytesIO(b'{"choices":[{"message":{"content":"1. Hola."}}]}')
+        response.status = 200
+        return response
+
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    client = OpenAIClient(api_key='', base_url='http://localhost:8000/v1')
+    assert client.translate_block([Cue(1, 2, 'Hello.')], 'es') == ['Hola.']
+
+
+@pytest.mark.parametrize('body', [b'x' * 131073, b'not json', b'[]',
+                                b'{"choices":[{"message":null}]}',
+                                b'{"choices":[{"message":{"content":"1. Hola."},"finish_reason":"length"}]}'])
+def test_openai_rejects_oversized_malformed_or_truncated_output(monkeypatch, body):
+    from io import BytesIO
+    from subzero.translate import translate_cues
+
+    def request(req, timeout):
+        response = BytesIO(body)
+        response.status = 200
+        return response
+
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    with pytest.raises(RuntimeError):
+        translate_cues([Cue(1, 2, 'Hello.')], 'es', OpenAIClient(api_key=''))
+
+
+def test_openai_cache_identity_tracks_endpoint_model_prompt_and_options_without_key():
+    client = OpenAIClient(api_key='cache-secret', base_url='http://localhost:8000/v1', model='translate-a')
+    baseline = client.cache_settings
+    assert 'cache-secret' not in json.dumps(baseline)
+    assert baseline != OpenAIClient(api_key='cache-secret', base_url='http://localhost:8001/v1', model='translate-a').cache_settings
+    assert baseline != OpenAIClient(api_key='cache-secret', base_url='http://localhost:8000/v1', model='translate-b').cache_settings
+    assert baseline != OpenAIClient(api_key='cache-secret', base_url='http://localhost:8000/v1', model='translate-a', cast='Ana:f').cache_settings
+    assert baseline != OpenAIClient(api_key='cache-secret', base_url='http://localhost:8000/v1', model='translate-a', timeout=30).cache_settings
+
+
+def test_openai_model_name_does_not_enable_ollama_specific_prompting(monkeypatch):
+    from io import BytesIO
+
+    def request(req, timeout):
+        response = BytesIO(b'{"choices":[{"message":{"content":"1. Hola."}}]}')
+        response.status = 200
+        return response
+
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    client = OpenAIClient(api_key='', model='hy-mt2')
+    translated = translate_cues([Cue(1, 2, 'Hello.')], 'es', client)
+    assert translated[0].text == 'Hola.'
+
+
+@pytest.mark.parametrize('url', ['https://user:secret@example.com/v1',
+                               'https://example.com/v1?key=secret', 'file:///tmp/provider'])
+def test_openai_rejects_secret_bearing_or_non_http_endpoints(url):
+    with pytest.raises(ValueError, match='endpoint'):
+        OpenAIClient(base_url=url)
+
+
 @pytest.mark.parametrize("response", [
     "2. dois\n1. um", "1. um\n1. dois", "Translation:\n1. um",
     '[{"id": 1, "text": " "}]', '[{"id": true, "text": "um"}]',

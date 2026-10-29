@@ -1,0 +1,570 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-10-29T00:47:34.479215+00:00",
+  "hardware": {
+    "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu_count": 18,
+    "python": "3.13.16"
+  },
+  "workload": {
+    "version": "subtitle-dialogue-v1",
+    "sha256": "4dcbfe8c117a03b4560752f86315ff3c54ef3a4989c8d8980c9ba328f82de10c",
+    "sources": [
+      "Please close the door.",
+      "I did not take your keys.",
+      "We have three minutes left.",
+      "Ana will meet us tomorrow.",
+      "You promised to tell the truth.",
+      "Keep an eye on the children.",
+      "The train leaves at six.",
+      "I thought you were joking.",
+      "Nobody knows where he went.",
+      "Could you speak more slowly?",
+      "This is our last chance.",
+      "Thank you for coming back."
+    ],
+    "cue_count": 12
+  },
+  "settings": {
+    "repeats": 3,
+    "warmup": 1,
+    "batch_size": 4,
+    "target_lang": "pt-BR",
+    "source_lang": "en",
+    "sample_interval": 0.25,
+    "prompt_version": "sentence-units-qwen-generic-9",
+    "judge": {
+      "model": "subzero-benchmark",
+      "provider": "openai",
+      "label": "Qwen3-0.6B BF16 fixed judge",
+      "precision": "BF16",
+      "url": "http://127.0.0.1:18082/v1"
+    }
+  },
+  "variants": [
+    {
+      "model": "subzero-benchmark",
+      "provider": "openai",
+      "label": "Qwen3-0.6B BF16",
+      "precision": "BF16",
+      "runtime": "llama.cpp 0.8.0 build 11960 (8642541b2), Metal",
+      "url": "http://127.0.0.1:18081/v1",
+      "model_sha256": "9b80f0f40c2038f5e9a909ead575bad9f1c2f3839e2d8c82559e53084992ad23",
+      "warmup_errors": [],
+      "metrics": {
+        "successful_runs": 3,
+        "attempted_runs": 3,
+        "latency_p50_seconds": 0.9601852920022793,
+        "latency_p95_seconds": 0.9720407669869019,
+        "cues_per_second": 12.779438163492811,
+        "tokens_per_second": 145.89858569987626,
+        "guardrail_pass_rate": 1.0,
+        "judge_scored_runs": 3,
+        "judge_mean_adequacy": 5.0
+      },
+      "resources": {
+        "sample_count": 15,
+        "peak_memory_used_bytes": 41660153856,
+        "min_memory_available_bytes": 27059322880,
+        "peak_swap_used_bytes": 993588674,
+        "min_vram_free_bytes": null
+      },
+      "runs": [
+        {
+          "elapsed_seconds": 0.8834819170006085,
+          "error": null,
+          "output": [
+            "Por favor, feche a porta.",
+            "Eu não tive seus chaveiros.",
+            "Temos três minutos restantes.",
+            "Ana vai nos encontrar amanhã.",
+            "Você prometeu dizer a verdade.",
+            "Mantenha seus olhos nos filhos.",
+            "A traiça sai às seis.",
+            "Eu pensei que você estivesse brincando.",
+            "Ninguém sabe onde ele viu.",
+            "Pode você falar mais lento?",
+            "Isso é nosso último chance.",
+            "Agradeça por voltar."
+          ],
+          "completion_tokens": 137,
+          "prompt_tokens": 392,
+          "guardrail_passes": 12,
+          "resources": [
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28102230016,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:36.235202+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28100132864,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:36.500683+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28190064640,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:36.766529+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28011593728,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:37.034861+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27873869824,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:37.129282+00:00"
+            }
+          ],
+          "judge": {
+            "ok": true,
+            "score": 5.0,
+            "reason": "score 5.0/5 over 12 cues"
+          },
+          "initial_judge": {
+            "ok": true,
+            "score": null,
+            "reason": "judge unavailable (judge returned no JSON array); 0 deterministic suspect cues"
+          }
+        },
+        {
+          "elapsed_seconds": 0.9601852920022793,
+          "error": null,
+          "output": [
+            "Por favor, feche a porta.",
+            "Eu não tive seus chaveiros.",
+            "Temos três minutos restantes.",
+            "Ana vai nos encontrar amanhã.",
+            "Você prometeu dizer a verdade.",
+            "Mantenha seus olhos nos filhos.",
+            "A traiça sai às seis.",
+            "Eu pensei que você estivesse brincando.",
+            "Ninguém sabe onde ele viu.",
+            "Pode você falar mais lento?",
+            "Isso é nosso último chance.",
+            "Agradeça por voltar."
+          ],
+          "completion_tokens": 137,
+          "prompt_tokens": 392,
+          "guardrail_passes": 12,
+          "resources": [
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27227111424,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:40.995677+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27083276288,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:41.263172+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27166195712,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:41.539673+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27118534656,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:41.809941+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27059322880,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:41.968804+00:00"
+            }
+          ],
+          "judge": {
+            "ok": true,
+            "score": 5.0,
+            "reason": "score 5.0/5 over 12 cues"
+          },
+          "initial_judge": {
+            "ok": true,
+            "score": null,
+            "reason": "judge unavailable (judge returned no JSON array); 0 deterministic suspect cues"
+          }
+        },
+        {
+          "elapsed_seconds": 0.9733580419851933,
+          "error": null,
+          "output": [
+            "Por favor, feche a porta.",
+            "Eu não tive seus chaveiros.",
+            "Temos três minutos restantes.",
+            "Ana vai nos encontrar amanhã.",
+            "Você prometeu dizer a verdade.",
+            "Mantenha seus olhos nos filhos.",
+            "A traiça sai às seis.",
+            "Eu pensei que você estivesse brincando.",
+            "Ninguém sabe onde ele viu.",
+            "Pode você falar mais lento?",
+            "Isso é nosso último chance.",
+            "Agradeça por voltar."
+          ],
+          "completion_tokens": 137,
+          "prompt_tokens": 392,
+          "guardrail_passes": 12,
+          "resources": [
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28484960256,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:45.615325+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28168519680,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:45.878897+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27896938496,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:46.146865+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27998797824,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:46.420808+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28055322624,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:46.600382+00:00"
+            }
+          ],
+          "judge": {
+            "ok": true,
+            "score": 5.0,
+            "reason": "score 5.0/5 over 12 cues"
+          },
+          "initial_judge": {
+            "ok": true,
+            "score": null,
+            "reason": "judge unavailable (judge returned no JSON array); 0 deterministic suspect cues"
+          }
+        }
+      ]
+    },
+    {
+      "model": "subzero-benchmark",
+      "provider": "openai",
+      "label": "Qwen3-0.6B Q8_0",
+      "precision": "Q8_0",
+      "runtime": "llama.cpp 0.8.0 build 11960 (8642541b2), Metal",
+      "url": "http://127.0.0.1:18081/v1",
+      "model_sha256": "13f4b656ed17ac3548a620ec03a89c95fd0bf25d1ff10d784de1c0b99ac00245",
+      "warmup_errors": [],
+      "metrics": {
+        "successful_runs": 3,
+        "attempted_runs": 3,
+        "latency_p50_seconds": 0.5839919589925557,
+        "latency_p95_seconds": 0.6507613831025083,
+        "cues_per_second": 19.783109799177424,
+        "tokens_per_second": 227.50576269054037,
+        "guardrail_pass_rate": 1.0,
+        "judge_scored_runs": 3,
+        "judge_mean_adequacy": 5.0
+      },
+      "resources": {
+        "sample_count": 12,
+        "peak_memory_used_bytes": 42043654144,
+        "min_memory_available_bytes": 26675822592,
+        "peak_swap_used_bytes": 993588674,
+        "min_vram_free_bytes": null
+      },
+      "runs": [
+        {
+          "elapsed_seconds": 0.5839919589925557,
+          "error": null,
+          "output": [
+            "Por favor, feche a porta.",
+            "Eu não tive seus chaveiros.",
+            "Temos três minutos restantes.",
+            "Ana vai nos encontrar amanhecer.",
+            "Você prometeu dizer a verdade.",
+            "Mantenha seus olhos nos filhos.",
+            "A traiça sai às seis.",
+            "Eu pensei que você estivesse jogando.",
+            "Ninguém sabe onde ele viu.",
+            "Pode-tú falar mais lento?",
+            "Isso é a última chance.",
+            "Agradeça por voltar."
+          ],
+          "completion_tokens": 138,
+          "prompt_tokens": 392,
+          "guardrail_passes": 12,
+          "resources": [
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28366946304,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:51.709209+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 28331573248,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:51.973116+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27445919744,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:52.239963+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27439333376,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:52.302125+00:00"
+            }
+          ],
+          "judge": {
+            "ok": true,
+            "score": 5.0,
+            "reason": "score 5.0/5 over 12 cues"
+          },
+          "initial_judge": {
+            "ok": true,
+            "score": null,
+            "reason": "judge unavailable (judge returned no JSON array); 0 deterministic suspect cues"
+          }
+        },
+        {
+          "elapsed_seconds": 0.577561957994476,
+          "error": null,
+          "output": [
+            "Por favor, feche a porta.",
+            "Eu não tive seus chaveiros.",
+            "Temos três minutos restantes.",
+            "Ana vai nos encontrar amanhecer.",
+            "Você prometeu dizer a verdade.",
+            "Mantenha seus olhos nos filhos.",
+            "A traiça sai às seis.",
+            "Eu pensei que você estivesse jogando.",
+            "Ninguém sabe onde ele viu.",
+            "Pode-tú falar mais lento?",
+            "Isso é a última chance.",
+            "Agradeça por voltar."
+          ],
+          "completion_tokens": 138,
+          "prompt_tokens": 392,
+          "guardrail_passes": 12,
+          "resources": [
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 26675822592,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:55.777032+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 26734510080,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:56.040860+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 26722304000,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:56.307878+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 26734264320,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:56.364734+00:00"
+            }
+          ],
+          "judge": {
+            "ok": true,
+            "score": 5.0,
+            "reason": "score 5.0/5 over 12 cues"
+          },
+          "initial_judge": {
+            "ok": true,
+            "score": null,
+            "reason": "judge unavailable (judge returned no JSON array); 0 deterministic suspect cues"
+          }
+        },
+        {
+          "elapsed_seconds": 0.6581802080036141,
+          "error": null,
+          "output": [
+            "Por favor, feche a porta.",
+            "Eu não tive seus chaveiros.",
+            "Temos três minutos restantes.",
+            "Ana vai nos encontrar amanhecer.",
+            "Você prometeu dizer a verdade.",
+            "Mantenha seus olhos nos filhos.",
+            "A traiça sai às seis.",
+            "Eu pensei que você estivesse jogando.",
+            "Ninguém sabe onde ele viu.",
+            "Pode-tú falar mais lento?",
+            "Isso é a última chance.",
+            "Agradeça por voltar."
+          ],
+          "completion_tokens": 138,
+          "prompt_tokens": 392,
+          "guardrail_passes": 12,
+          "resources": [
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27997306880,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:47:59.898442+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27964178432,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:48:00.161858+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27866759168,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:48:00.425931+00:00"
+            },
+            {
+              "memory_total_bytes": 68719476736,
+              "memory_available_bytes": 27855486976,
+              "swap_used_bytes": 993588674,
+              "swap_total_bytes": 2147483648,
+              "vram_free_bytes": null,
+              "timestamp": "2026-10-29T00:48:00.569959+00:00"
+            }
+          ],
+          "judge": {
+            "ok": true,
+            "score": 5.0,
+            "reason": "score 5.0/5 over 12 cues"
+          },
+          "initial_judge": {
+            "ok": true,
+            "score": null,
+            "reason": "judge unavailable (judge returned no JSON array); 0 deterministic suspect cues"
+          }
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "hardware": "Mac mini, Apple M5 Pro, 18 CPU cores, 64 GiB unified memory",
+    "model_repository": "Mungert/Qwen3-0.6B-GGUF",
+    "model_revision": "905efeec5cb1f50bc98f912941ef26c8a3840225",
+    "bf16_sha256": "9b80f0f40c2038f5e9a909ead575bad9f1c2f3839e2d8c82559e53084992ad23",
+    "q8_recipe": "llama-quantize Qwen3-0.6B-bf16.gguf Qwen3-0.6B-Q8_0.gguf Q8_0",
+    "server_arguments": [
+      "--host",
+      "127.0.0.1",
+      "--alias",
+      "subzero-benchmark",
+      "--ctx-size",
+      "4096",
+      "--parallel",
+      "1",
+      "--threads",
+      "8",
+      "--seed",
+      "42",
+      "--n-gpu-layers",
+      "99",
+      "--predict",
+      "2048",
+      "--jinja",
+      "--chat-template-kwargs",
+      "{\"enable_thinking\":false}"
+    ],
+    "scheduling": "One gpu-run lease; sequential translation and judge requests; fixed BF16 judge stays resident",
+    "memory_scope": "Host-wide samples with fixed BF16 judge and selected translation server resident; model loading excluded",
+    "limits": {
+      "min_memory_available_bytes": 6442450944,
+      "max_swap_used_bytes": 4294967296
+    },
+    "quality_scope": "12 synthetic English cues to Brazilian Portuguese; 0.6B model judge, not human evaluation",
+    "judge_rescored_at": "2026-10-29T00:49:25.261383+00:00",
+    "judge_rescore_reason": "Initial prompt-only judge returned invalid JSON; same captured translation outputs rescored with fixed BF16 judge and strict JSON schema. Translation measurements were retained unchanged.",
+    "backend_verification": {
+      "bf16": [
+        "print_info: file type   = BF16",
+        "load_tensors: offloaded 29/29 layers to GPU",
+        "ggml_metal_init: found device: Apple M5 Pro"
+      ],
+      "Q8_0": [
+        "print_info: file type   = Q8_0",
+        "load_tensors: offloaded 29/29 layers to GPU",
+        "ggml_metal_init: found device: Apple M5 Pro"
+      ]
+    }
+  }
+}

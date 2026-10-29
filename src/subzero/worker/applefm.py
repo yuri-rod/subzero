@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..translate import SPEAKER, reflow_translation, sentence_units
+from ..compute import ComputePressureError, ComputeShutdownError
 
 MODEL = 'system'
 PROMPT_VERSION = 2
@@ -81,6 +82,8 @@ class AppleFM:
             self.fallback.ensure_available()
         try:
             body = self._request('GET', '/v1/models')
+        except (ComputePressureError, ComputeShutdownError):
+            raise
         except RuntimeError as err:
             if 'rejected the request' in str(err):
                 raise

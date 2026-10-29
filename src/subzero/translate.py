@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -98,6 +100,18 @@ NEUTRAL_NOTE = (
     "adjectives or participles, prefer phrasing that avoids gendered agreement "
     "(for example invariable adjectives). Never guess gender from stereotypes.\n"
 )
+
+
+def _record_usage(client, reported, seconds):
+    for name in ('prompt_tokens', 'completion_tokens'):
+        value = reported.get(name) if isinstance(reported, dict) else None
+        known = type(value) is int and value >= 0
+        previous = client.usage[name]
+        client.usage[name] = ((previous or 0) + value
+                              if known and (client._usage_requests == 0 or previous is not None)
+                              else None)
+    client.usage['request_seconds'] += seconds
+    client._usage_requests += 1
 
 
 def chunks(seq: list, n: int) -> Iterable[list]:
@@ -441,6 +455,8 @@ class OllamaClient:
         self.keep_alive = keep_alive
         self.num_ctx = num_ctx
         self.num_predict = num_predict
+        self.usage = {'prompt_tokens': None, 'completion_tokens': None, 'request_seconds': 0.0}
+        self._usage_requests = 0
 
     def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None, *, context=None) -> list[str]:
         with compute_phase("ollama", ollama_url=self.url):
@@ -469,6 +485,7 @@ class OllamaClient:
         last_err = None
         for attempt in range(3):
             try:
+                started = time.perf_counter()
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     if resp.status == 200:
                         raw = resp.read(MAX_RESPONSE_BYTES + 1)
@@ -478,6 +495,10 @@ class OllamaClient:
                             body = json.loads(raw.decode("utf-8"))
                         except (ValueError, UnicodeError):
                             return []
+                        if isinstance(body, dict):
+                            _record_usage(self, {'prompt_tokens': body.get('prompt_eval_count'),
+                                                 'completion_tokens': body.get('eval_count')},
+                                          time.perf_counter() - started)
                         return _parse_ollama_response(body, native=_is_native_translation(self.model))
                     last_err = f"Ollama returned status {resp.status}"
             except urllib.error.HTTPError as err:
@@ -496,6 +517,11 @@ class OllamaClient:
 class OpenAIClient:
     """Client for OpenAI-compatible chat completions APIs (OpenAI, Groq, OpenRouter, DeepSeek, LocalAI, vLLM)."""
 
+    provider = 'openai'
+    needs_local_compute = False
+    uses_sentence_units = False
+    supports_context = False
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -504,11 +530,35 @@ class OpenAIClient:
         timeout: int = 120,
         cast: str | dict | None = None,
     ):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.api_key = os.environ.get("OPENAI_API_KEY", "") if api_key is None else api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self.cast = parse_cast(cast)
+        self.usage = {'prompt_tokens': None, 'completion_tokens': None, 'request_seconds': 0.0}
+        self._usage_requests = 0
+        self.ensure_available()
+
+    @property
+    def cache_settings(self):
+        return {'endpoint': self.base_url, 'model': self.model,
+                'prompt_version': TRANSLATION_PROMPT_VERSION, 'temperature': 0.2,
+                'cast': dict(self.cast), 'timeout': self.timeout}
+
+    def ensure_available(self):
+        """Validate configuration without a provider-specific discovery request."""
+        parsed = urlsplit(self.base_url)
+        if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment):
+            raise ValueError('OpenAI endpoint must be an HTTP(S) URL without credentials, query or fragment')
+        if not self.model.strip():
+            raise ValueError('OpenAI model must not be empty')
+        if not math.isfinite(self.timeout) or self.timeout <= 0:
+            raise ValueError('OpenAI timeout must be positive and finite')
+
+    def release(self):
+        """The caller does not own the external API server's model lifecycle."""
 
     def translate_block(self, cues: list[Cue], target_lang: str, source_lang: str | None = None) -> list[str]:
         target_name = LANG_NAMES.get(target_lang, target_lang)
@@ -541,16 +591,34 @@ class OpenAIClient:
         last_err = None
         for attempt in range(3):
             try:
+                started = time.perf_counter()
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     if resp.status == 200:
-                        body = json.loads(resp.read().decode("utf-8"))
+                        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+                        if len(raw) > MAX_RESPONSE_BYTES:
+                            raise RuntimeError('OpenAI response exceeds the subtitle size limit')
+                        try:
+                            body = json.loads(raw.decode('utf-8'))
+                        except (ValueError, UnicodeError):
+                            return []
+                        if not isinstance(body, dict):
+                            return []
+                        _record_usage(self, body.get('usage'), time.perf_counter() - started)
                         choices = body.get("choices", [])
-                        if choices:
-                            content = choices[0].get("message", {}).get("content", "")
-                            return _parse_lines(content)
+                        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                            return []
+                        choice = choices[0]
+                        message = choice.get('message')
+                        if not isinstance(message, dict) or choice.get('finish_reason') not in (None, 'stop'):
+                            return []
+                        return _parse_lines(message.get('content', ''))
                     last_err = f"API returned status {resp.status}"
-            except (urllib.error.URLError, TimeoutError) as err:
-                last_err = f"API connection error: {err}"
+            except urllib.error.HTTPError as err:
+                if 400 <= err.code < 500 and err.code != 429:
+                    raise RuntimeError(f'OpenAI rejected the translation request ({err.code})') from None
+                last_err = f'OpenAI returned status {err.code}'
+            except (urllib.error.URLError, TimeoutError, OSError):
+                last_err = 'OpenAI is unavailable or the translation request timed out'
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
         raise RuntimeError(last_err or "Failed to translate block with API")
@@ -574,7 +642,8 @@ def translate_cues(
     with phase:
         for idx, block in enumerate(blocks, start=1):
             context = (_previous_context(cues[:len(translated)])
-                       if _is_native_translation(model) and not _is_translategemma(model) else None)
+                       if getattr(client, 'supports_context',
+                                  _is_native_translation(model) and not _is_translategemma(model)) else None)
             lines = _translate_lines(block, target_lang, client, source_lang=source_lang, context=context)
             for cue, text in zip(block, lines):
                 translated.append(Cue(cue.start, cue.end, text))

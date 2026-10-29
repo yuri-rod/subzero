@@ -5,8 +5,7 @@ from dataclasses import dataclass
 
 from subzero.convert import parse_srt
 from subzero.core import Options, Stats, analyze, fix_text
-from .service import same_language
-from .srt import ASS, TAG
+from .srt import ASS, TAG, same_language
 
 EXCELLENCE_OPTIONS = Options(
     languages=("pt", "en"),

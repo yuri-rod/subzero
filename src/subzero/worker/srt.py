@@ -4,6 +4,30 @@ from typing import Iterator
 
 TIME = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{1,3})")
 
+# Map UI language tags to Jellyfin three-letter codes.
+THREE_LETTER = {
+    "pt-BR": "por",
+    "pt-br": "por",
+    "pob": "por",
+    "pb": "por",
+    "pt": "por",
+    "por": "por",
+    "en": "eng",
+    "eng": "eng",
+    "es": "spa",
+    "spa": "spa",
+    "ja": "jpn",
+    "jpn": "jpn",
+}
+
+
+def three_letter(lang: str) -> str:
+    return THREE_LETTER.get(lang, lang.split("-")[0][:3].lower())
+
+
+def same_language(a: str, b: str) -> bool:
+    return three_letter(a) == three_letter(b)
+
 
 @dataclass
 class Cue:

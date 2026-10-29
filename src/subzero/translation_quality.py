@@ -1,7 +1,7 @@
 """Semantic quality signal for translated subtitles.
 
-Deterministic tripwires catch gross defects without a model; a local Ollama
-judge scores a sample of cue pairs for meaning preservation. The judge is
+Deterministic tripwires catch gross defects without a model; an Ollama or
+OpenAI-compatible judge scores sampled cue pairs for meaning preservation. The judge is
 best-effort: any failure degrades to the deterministic-only verdict instead
 of failing the job.
 """
@@ -45,6 +45,7 @@ class Verdict:
     reason: str
     score: float | None = None
     worst: tuple[Judgment, ...] = ()
+    defect_indexes: tuple[int, ...] = ()  # 0-based source cue indexes
 
 
 def _plain(text: str) -> str:
@@ -171,6 +172,7 @@ def parse_judgments(ids: list[int], body: dict) -> list[Judgment]:
             not isinstance(cue, int)
             or isinstance(cue, bool)
             or cue not in wanted
+            or cue in by_id
             or not isinstance(adequacy, int)
             or isinstance(adequacy, bool)
             or not 1 <= adequacy <= 5
@@ -185,12 +187,28 @@ def parse_judgments(ids: list[int], body: dict) -> list[Judgment]:
 
 
 def _judge_batch(
-    batch: list[tuple[int, str, str]], *, url: str, model: str, timeout: int
+    batch: list[tuple[int, str, str]], *, url: str, model: str, timeout: int,
+    provider: str = "ollama", api_key: str | None = None,
 ) -> list[Judgment]:
+    payload = _judge_payload(batch, model)
+    endpoint = "/api/generate"
+    headers = {"Content-Type": "application/json"}
+    if provider == "openai":
+        endpoint = "/chat/completions"
+        prompt = payload["prompt"].replace(
+            "Reply with a JSON array", 'Reply with a JSON object containing only "judgments", an array')
+        schema = {"type": "object", "properties": {"judgments": payload["format"]},
+                  "required": ["judgments"], "additionalProperties": False}
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                   "temperature": 0, "stream": False,
+                   "response_format": {"type": "json_schema", "json_schema": {
+                       "name": "subtitle_judgments", "strict": True, "schema": schema}}}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
-        url.rstrip("/") + "/api/generate",
-        data=json.dumps(_judge_payload(batch, model)).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        url.rstrip("/") + endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
         method="POST",
     )
     try:
@@ -206,16 +224,35 @@ def _judge_batch(
         raise JudgeUnavailable("judge response is not JSON") from None
     if not isinstance(body, dict):
         raise JudgeUnavailable("judge response is not JSON")
+    if provider == "openai":
+        choices = body.get("choices")
+        if (not isinstance(choices, list) or len(choices) != 1
+                or not isinstance(choices[0], dict) or choices[0].get("finish_reason") != "stop"
+                or not isinstance(choices[0].get("message"), dict)):
+            raise JudgeUnavailable("judge returned an incomplete completion")
+        try:
+            content = choices[0]["message"].get("content")
+            wrapper = json.loads(content) if isinstance(content, str) else None
+        except ValueError:
+            wrapper = None
+        if not isinstance(wrapper, dict) or set(wrapper) != {"judgments"}:
+            raise JudgeUnavailable("judge returned no judgments object")
+        body = {"response": json.dumps(wrapper["judgments"])}
     return parse_judgments([n for n, _, _ in batch], body)
 
 
 def judge_pairs(
-    pairs: list[tuple[int, str, str]], *, url: str, model: str, timeout: int = JUDGE_TIMEOUT
+    pairs: list[tuple[int, str, str]], *, url: str, model: str, timeout: int = JUDGE_TIMEOUT,
+    provider: str = "ollama", api_key: str | None = None,
 ) -> list[Judgment]:
-    """Score sampled pairs with the local Ollama judge, 20 pairs per request."""
+    """Score pairs with Ollama or an OpenAI-compatible judge, 20 per request."""
+    if provider not in ("ollama", "openai"):
+        raise ValueError("Judge provider must be ollama or openai")
+    options = {"provider": provider, "api_key": api_key} if provider != "ollama" else {}
     out: list[Judgment] = []
     for start in range(0, len(pairs), JUDGE_BATCH):
-        out.extend(_judge_batch(pairs[start : start + JUDGE_BATCH], url=url, model=model, timeout=timeout))
+        out.extend(_judge_batch(pairs[start : start + JUDGE_BATCH], url=url, model=model,
+                                timeout=timeout, **options))
     return out
 
 
@@ -224,26 +261,33 @@ def deterministic_verdict(sources: list[str], translated: list[str]) -> Verdict:
     det = deterministic_hits(sources, translated)
     if len(det) >= REVIEW_DET_HITS:
         detail = "; ".join(f"#{n + 1}: {det[n][0]}" for n in sorted(det)[:5])
-        return Verdict(False, f"{len(det)} deterministic suspect cues: {detail}", None, ())
-    return Verdict(True, f"{len(det)} deterministic suspect cues", None, ())
+        return Verdict(False, f"{len(det)} deterministic suspect cues: {detail}",
+                       defect_indexes=tuple(sorted(det)))
+    return Verdict(True, f"{len(det)} deterministic suspect cues", defect_indexes=tuple(sorted(det)))
 
 
-def check_translation(sources: list[str], translated: list[str], *, url: str, model: str) -> Verdict:
+def check_translation(sources: list[str], translated: list[str], *, url: str, model: str,
+                      required_indexes=(), provider: str = "ollama", api_key: str | None = None) -> Verdict:
     """Score a translated cue list against its source; judge outage degrades, never fails."""
     if len(sources) != len(translated):
         raise ValueError("source and translation cue counts differ")
     if not sources:
         return Verdict(True, "no cues to judge", None, ())
     det = deterministic_hits(sources, translated)
-    pairs = [(n, sources[n], translated[n]) for n in sample_indexes(len(sources), sorted(det))]
+    suspects = list(required_indexes) + sorted(det)
+    pairs = [(n, sources[n], translated[n]) for n in sample_indexes(len(sources), suspects)]
+    options = {"provider": provider, "api_key": api_key} if provider != "ollama" else {}
     try:
-        judgments = judge_pairs(pairs, url=url, model=model)
+        judgments = judge_pairs(pairs, url=url, model=model, **options)
     except JudgeUnavailable as err:
         fallen = deterministic_verdict(sources, translated)
-        return Verdict(fallen.ok, f"judge unavailable ({err}); {fallen.reason}", None, fallen.worst)
+        return Verdict(fallen.ok, f"judge unavailable ({err}); {fallen.reason}",
+                       defect_indexes=fallen.defect_indexes)
     score = sum(j.adequacy for j in judgments) / len(judgments)
     criticals = [j for j in judgments if j.critical]
     worst = tuple(sorted(judgments, key=lambda j: (j.adequacy, j.cue))[:5])
+    defects = tuple(sorted(set(det) | {j.cue for j in judgments
+                                      if j.adequacy < REVIEW_MEAN or j.critical}))
     if score < REVIEW_MEAN or len(criticals) >= REVIEW_CRITICALS or len(det) >= REVIEW_DET_HITS:
         detail = "; ".join(f"#{j.cue + 1} ({j.adequacy}/5): {j.reason}" for j in worst)
         if len(det) >= REVIEW_DET_HITS:
@@ -254,5 +298,6 @@ def check_translation(sources: list[str], translated: list[str], *, url: str, mo
             f"score {score:.1f}/5 over {len(judgments)} cues, {len(criticals)} critical: {detail}",
             score,
             worst,
+            defects,
         )
-    return Verdict(True, f"score {score:.1f}/5 over {len(judgments)} cues", score, worst)
+    return Verdict(True, f"score {score:.1f}/5 over {len(judgments)} cues", score, worst, defects)

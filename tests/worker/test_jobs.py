@@ -243,3 +243,57 @@ def test_cancelled_job_cannot_be_retried_by_exception_handler(store):
     store.start(job.id);store.cancel(job.id)
     store.fail(job.id,'cancelled',retryable=True)
     assert store.get(job.id).state=='cancelled'
+
+
+@pytest.mark.parametrize('origin', ['manual', 'auto'])
+def test_resource_pressure_defers_jobs_without_spending_handler_attempts(store, monkeypatch, origin):
+    from subzero.compute import ComputePressureError
+    job = store.enqueue('movie', 'translate', 'pt-BR', origin=origin)
+    store._set(job.id, attempts=MAX_RETRIES)
+    monkeypatch.setattr(time, 'time', lambda: 1000.0)
+    def pressured(job, progress):
+        raise ComputePressureError('Available memory below limit', retry_after=12)
+    result = Runner(store, {'translate': pressured}).run_once()
+    assert result.state == 'queued'
+    assert result.phase == 'resource_pressure'
+    assert result.attempts == MAX_RETRIES
+    assert result.next_attempt == 1012.0
+    assert 'Available memory' in result.message
+    assert store.claim() is None
+    monkeypatch.setattr(time, 'time', lambda: 1012.0)
+    result = Runner(store, {'translate': lambda *_: 'translated.srt'}).run_once()
+    assert result.state == 'done'
+    assert result.result_path == 'translated.srt'
+
+
+def test_runner_does_not_dispatch_until_resource_pressure_clears(store, monkeypatch):
+    from subzero import compute
+    job = store.enqueue('movie', 'translate', 'pt-BR')
+    available = [0]
+    clock = [1000.0]
+    monkeypatch.setattr(compute, 'sample_resources', lambda: {'memory_available_bytes': available[0]})
+    monkeypatch.setattr(time, 'time', lambda: clock[0])
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    guard = compute.PressureWatchdog(min_memory_available_bytes=10, interval_seconds=1, retry_seconds=5)
+    def handler(job, progress):
+        assert available[0] >= 10
+        return 'ready.srt'
+    runner = Runner(store, {'translate': handler}, pressure=guard)
+    result = runner.run_once()
+    assert result.state == 'queued'
+    assert result.attempts == 0
+    assert runner.run_once() is None
+    available[0] = 10
+    clock[0] = 1005.0
+    assert runner.run_once().state == 'done'
+    assert store.get(job.id).result_path == 'ready.srt'
+
+
+def test_pressure_backoff_cannot_overwrite_cancellation(store):
+    from subzero.compute import ComputePressureError
+    job = store.enqueue('movie', 'translate', 'pt-BR')
+    def cancelled(job, progress):
+        store.cancel(job.id)
+        raise ComputePressureError('Memory unavailable')
+    Runner(store, {'translate': cancelled}).run_once()
+    assert store.get(job.id).state == 'cancelled'

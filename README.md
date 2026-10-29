@@ -52,7 +52,7 @@ Install `subzero-cli[sync]` for timing analysis or `subzero-cli[worker]` for the
 
 See the [command and worker reference](docs/usage.md) for recipes, provider configuration, API requests, platform requirements, and service setup. `subzero COMMAND --help` shows the installed command's options.
 
-## Implementation and recovery
+## Architecture and reliability
 
 ```text
 operator / Jellyfin
@@ -63,9 +63,39 @@ bearer-authenticated API -> SQLite queue -> single runner -> subtitle handlers
                                 +-- restart -----+
 ```
 
-The worker atomically claims one job at a time. Startup requeues interrupted running jobs. Automatic jobs retry handler exceptions up to five times with backoff; manual jobs fail for inspection. Quota-paused jobs hold the queue until resumed or cancelled. Cancellation is cooperative: a cancelled state does not mean a native subprocess has already exited.
+### Transactional queue and recovery
 
-The repair workflow stages and validates candidates, checks whether its source changed, and backs up the installed subtitle before replacement. A later media-server refresh can fail after installation, so inspect `resultPath`, job details, and the installed file before retrying. Timing and language checks do not establish translation accuracy.
+Job routes use shared bearer-token authentication with `hmac.compare_digest` in [`require_token`](src/subzero/worker/api.py). [`JobStore.claim`](src/subzero/worker/jobs.py) uses `BEGIN IMMEDIATE` to atomically claim one job. Startup calls `requeue_running` for interrupted jobs. Separately, automatic handler failures retry up to five times with exponential backoff; manual failures stop for inspection. Quota-paused jobs hold the queue. Cancellation is cooperative and does not prove a native child has exited.
+
+### Staged installation
+
+Repair workflows retain candidates through [`SyncFlow.stage`](src/subzero/worker/syncflow.py), then validate before `install`. Installation checks job and source state, backs up existing subtitles, and writes through a temporary file, `fsync`, and atomic replacement or creation. Basic delivery uses [`tracks.deliver`](src/subzero/worker/tracks.py) and writes directly. A later audit or media-server refresh can fail after installation; inspect the installed file and job details before retrying.
+
+### Local and API inference paths
+
+Queued translation selects `TRANSLATION_PROVIDER=ollama` (the default) or `openai` in [`Config`](src/subzero/worker/config.py). The worker uses [`tracks.Ollama`](src/subzero/worker/tracks.py) or [`OpenAIClient`](src/subzero/translate.py); CLI translation uses `OllamaClient` or `OpenAIClient`. OpenAI-compatible endpoints include local `mlx_lm.server`, `llama-server`, vLLM, and remote services. Endpoint, model, and prompt settings enter the cache identity; API keys do not. External API servers retain their own lifecycle. Direct Apple Silicon speech transcription uses [`MlxModel.transcribe`](src/subzero/worker/mlx_asr.py) with `mlx-whisper`; Ollama can separately serve MLX-backed translation models. See [provider configuration](docs/usage.md#openai-compatible-worker-translation).
+
+### Deterministic validation and retries
+
+[`_parse_lines` and `_translate_lines`](src/subzero/translate.py) validate JSON entries or numbered lines, sequential cue IDs, nonempty text, and cue counts. Structural failures can trigger retries and recursive batch bisection while preserving cue order. [`check_language_completeness` and `check_excellence_guards`](src/subzero/worker/guards.py) check Portuguese language completeness, SDH artifacts, and formatting; `sanitize_to_excellence` applies cleanup. [`AppleFM`](src/subzero/worker/applefm.py) supports explicitly configured unit-level fallback for refusals or repeated echoes.
+
+### Batched LLM-as-judge QA
+
+For full worker translations into Portuguese, [`semantic_gate`](src/subzero/worker/syncflow.py) is enabled by default. [`check_translation` and `judge_pairs`](src/subzero/translation_quality.py) sample up to 40 source/output pairs and score adequacy through Ollama in sequential batches of 20. Mean adequacy below 3.5/5, at least two critical judgments, or at least five deterministic suspect cues rejects a candidate. The verdict identifies defective cue indexes; one bounded repair pass retranslates those cues individually, preserves untouched cues and timing, invalidates affected cache blocks, and re-evaluates with repaired cues included in the sample. A failed repair stops delivery. Initial judge outages fall back to deterministic checks; an outage after a scored rejection cannot approve its repair. Standalone CLI translation skips this gate.
+
+### Compute leases and resumable caches
+
+An optional macOS policy uses [`compute_phase`](src/subzero/compute.py) to combine a thread lock with POSIX `flock` and manage Ollama's service lifecycle. Participating native children inherit the lease through `compute_lease_fd` and [`pass_fds`](src/subzero/worker/asr_process.py), retaining ownership if the parent crashes. On `ComputeShutdownError`, the phase retains the lock and `_poison` records the blocked state. Coordination covers participating processes using the same policy.
+
+[`_translate_cues_cached` and `_repair_translation`](src/subzero/worker/syncflow.py) key translation caches by source hashes and provider/model/prompt settings. [`read_cached_block` and `write_cached_block`](src/subzero/worker/translate_cache.py) verify source, output digest, timing, and cue count, and persist blocks with `fsync` and atomic replacement for resume. [`build_reference`](src/subzero/reference.py) caches timing references using `fingerprint`, which hashes video metadata, validator version, and sampled file bytes.
+
+### Memory and swap admission
+
+[`PressureWatchdog`](src/subzero/compute.py) samples macOS `vm_stat`/`sysctl`, Linux `/proc/meminfo`, and NVIDIA free VRAM. Configurable byte thresholds block new compute phases and defer queued jobs with `phase=resource_pressure` and a retry time, without consuming handler retries. `/health` exposes the snapshot and blocking reason. Under a managed compute policy, the watchdog acquires the idle lease before stopping Ollama; active leases remain untouched. Admission resumes when pressure clears. Thresholds default to disabled. See [pressure configuration](docs/usage.md#resource-pressure-and-deferred-jobs).
+
+### Quantization benchmarks
+
+[`subzero benchmark`](src/subzero/benchmark.py) runs a fixed subtitle workload through Ollama or OpenAI-compatible servers and writes JSON plus Markdown: p50/p95 workload latency, cues/sec, reported completion tokens/sec, sampled host memory/swap, deterministic guardrail rate, and optional judge adequacy. Reports retain outputs, failures, model/workload hashes, and missing metrics. The [BF16 versus Q8_0 baseline](docs/benchmarks/README.md) includes measured results, runtime settings, and reproduction steps. The harness uses the standard library and adds no base CLI dependencies.
 
 | Area | Implementation | Tests |
 | --- | --- | --- |
@@ -78,6 +108,8 @@ The repair workflow stages and validates candidates, checks whether its source c
 | Persistent queue, retries, cancellation | [jobs.py](src/subzero/worker/jobs.py) | [test_jobs.py](tests/worker/test_jobs.py) |
 | Candidate validation and installation | [syncflow.py](src/subzero/worker/syncflow.py) | [test_syncflow.py](tests/worker/test_syncflow.py) |
 | Worker API and authentication | [api.py](src/subzero/worker/api.py) | [test_api_auth.py](tests/worker/test_api_auth.py), [test_api_jobs.py](tests/worker/test_api_jobs.py) |
+| Queued providers and semantic repair | [translate.py](src/subzero/translate.py), [syncflow.py](src/subzero/worker/syncflow.py) | [queued providers](tests/worker/test_worker_providers.py), [targeted repair](tests/worker/test_semantic_retry.py) |
+| Resource admission and benchmarking | [compute.py](src/subzero/compute.py), [benchmark.py](src/subzero/benchmark.py) | [pressure controls](tests/test_compute_pressure.py), [benchmark harness](tests/test_benchmark.py) |
 | Jellyfin, OpenSubtitles, and qBittorrent | [Jellyfin client](src/subzero/worker/jellyfin.py), [subtitle search](src/subzero/worker/opensubs.py), [completion watcher](src/subzero/worker/qbt_watch.py) | [Jellyfin](tests/worker/test_jellyfin.py), [OpenSubtitles](tests/worker/test_opensubs.py), [qBittorrent](tests/worker/test_qbt_watch.py) |
 | Subtitle contribution | [contribute.py](src/subzero/worker/contribute.py) | [test_contribute.py](tests/worker/test_contribute.py) |
 

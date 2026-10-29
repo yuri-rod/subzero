@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
+from subzero.compute import ComputePressureError
+
 from .deepl import DeepLPause
 
 KINDS = ("embedded", "opensubtitles", "whisper", "translate",
@@ -190,6 +192,13 @@ class JobStore:
             db.execute("UPDATE jobs SET state = 'cancelled', updated = ? WHERE id = ? AND state IN ('queued', 'running', 'paused')",
                        (time.time(), job_id))
 
+    def defer_pressure(self, job_id: str, message: str, delay: float) -> None:
+        now = time.time()
+        with self._db() as db:
+            db.execute("UPDATE jobs SET state='queued', phase='resource_pressure', message=?,"
+                       " next_attempt=?, updated=? WHERE id=? AND state='running'",
+                       (message[:500], now + delay, now, job_id))
+
     def requeue_running(self) -> None:
         """Return interrupted running jobs to the queue at startup."""
         with self._db() as db:
@@ -201,9 +210,10 @@ Handler = Callable[[Job, Callable[[str, int], None]], str | None]
 
 
 class Runner:
-    def __init__(self, store: JobStore, handlers: dict[str, Handler]):
+    def __init__(self, store: JobStore, handlers: dict[str, Handler], *, pressure=None):
         self.store = store
         self.handlers = handlers
+        self.pressure = pressure
 
     def run_once(self, allow_auto: bool = True) -> Job | None:
         job = self.store.claim(allow_auto=allow_auto)
@@ -219,7 +229,11 @@ class Runner:
             self.store.progress(job.id, phase, percent)
 
         try:
+            if self.pressure is not None:
+                self.pressure.check()
             result = handler(job, progress)
+        except ComputePressureError as err:
+            self.store.defer_pressure(job.id, str(err), err.retry_after)
         except DeepLPause as err:
             self.store.pause(job.id, str(err))
         except Exception as err:

@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, Up
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+from ..compute import PressureWatchdog, install_pressure_watchdog
 from . import __version__
 from .config import Config, resolve_deepl_key
 from .jellyfin import JellyfinClient, JellyfinError
@@ -110,7 +111,11 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
         opensubs.login()
     except (OpenSubtitlesError, AttributeError):
         pass
-    if cfg.translation_provider == 'libretranslate':
+    if cfg.translation_provider == 'openai':
+        from ..translate import OpenAIClient
+        translator = OpenAIClient(api_key=cfg.openai_api_key, base_url=cfg.openai_base_url,
+                                  model=cfg.openai_model, timeout=cfg.openai_timeout)
+    elif cfg.translation_provider == 'libretranslate':
         from .libretranslate import LibreTranslate
         translator = LibreTranslate(cfg.libretranslate_runtime)
     elif cfg.translation_provider == 'applefm':
@@ -159,6 +164,12 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     app.state.service = service
     app.state.stop = threading.Event()
     app.state.last_activity = time.time()
+    app.state.pressure_watchdog = PressureWatchdog(
+        min_memory_available_bytes=cfg.compute_min_memory_available_bytes,
+        max_swap_used_bytes=cfg.compute_max_swap_used_bytes,
+        min_vram_free_bytes=cfg.compute_min_vram_free_bytes,
+        interval_seconds=cfg.compute_pressure_interval,
+        retry_seconds=cfg.compute_pressure_retry_seconds)
 
     @app.middleware("http")
     async def track_activity(request: Request, call_next):
@@ -184,6 +195,7 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
                 "translation_model": service.ollama.model,
                 "paused": sum(j.state == 'paused' for j in store.active()),
                 "auto": cfg.auto_enabled, "queued": len(store.active()),
+                "resourcePressure": app.state.pressure_watchdog.status(),
                 "runner": bool(thread and thread.is_alive())}
 
     @app.get("/media/{item_id}", dependencies=guard)
@@ -327,7 +339,10 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
 
 def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: Config,
                  jellyfin, notifier: Notifier) -> None:
-    runner = Runner(store, {kind: service.run for kind in KINDS})
+    pressure = getattr(app.state, 'pressure_watchdog', None) or PressureWatchdog()
+    pressure.start()
+    previous_pressure = install_pressure_watchdog(pressure)
+    runner = Runner(store, {kind: service.run for kind in KINDS}, pressure=pressure)
 
     def in_window(hour: int) -> bool:
         start_h = cfg.auto_window_start
@@ -398,7 +413,14 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
             if not job:
                 app.state.stop.wait(2)
 
-    thread = threading.Thread(target=loop, name="srt-runner", daemon=True)
+    def run() -> None:
+        try:
+            loop()
+        finally:
+            pressure.stop()
+            install_pressure_watchdog(previous_pressure)
+
+    thread = threading.Thread(target=run, name="srt-runner", daemon=True)
     thread.start()
     app.state.runner_thread = thread
 

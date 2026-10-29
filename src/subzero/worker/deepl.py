@@ -17,6 +17,7 @@ import time
 import httpx
 
 from ..translate import SPEAKER, reflow_translation, sentence_units
+from ..compute import ComputePressureError, ComputeShutdownError
 
 ENDPOINT = 'https://api-free.deepl.com'
 FREE_CHARACTER_LIMIT = 500000
@@ -384,6 +385,8 @@ class FallbackTranslator:
             self.fallback.ensure_available()
             try:
                 self.primary.ensure_available()
+            except (ComputePressureError, ComputeShutdownError):
+                raise
             except DeepLQuotaExceeded as err:
                 LOG.info('Primary provider quota exhausted on startup (%d remaining); routing to %s',
                          err.remaining, self.fallback.provider)

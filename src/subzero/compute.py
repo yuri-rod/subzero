@@ -12,10 +12,12 @@ import re
 import socket
 import stat
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -23,6 +25,152 @@ from urllib.parse import urlsplit
 _gate = threading.RLock()
 _owner = threading.local()
 _blocked = None
+_pressure_watchdog = None
+
+
+def _resource_command(argv):
+    try:
+        response = subprocess.run(argv, capture_output=True, text=True, timeout=2,
+                                  env={**os.environ, 'LC_ALL': 'C'})
+        return response.stdout if response.returncode == 0 else ''
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
+def sample_resources():
+    """Return byte counters; unavailable measurements remain None."""
+    result = dict.fromkeys(('memory_total_bytes', 'memory_available_bytes',
+                           'swap_used_bytes', 'swap_total_bytes', 'vram_free_bytes'))
+    result['timestamp'] = datetime.now(timezone.utc).isoformat()
+    if sys.platform == 'darwin':
+        total = _resource_command(['/usr/sbin/sysctl', '-n', 'hw.memsize']).strip()
+        if total.isdigit():
+            result['memory_total_bytes'] = int(total)
+        vm = _resource_command(['/usr/bin/vm_stat'])
+        page = re.search(r'page size of (\d+) bytes', vm)
+        pages = dict(re.findall(r'^(Pages [\w ]+):\s*(\d+)\.', vm, re.MULTILINE))
+        names = ('Pages free', 'Pages inactive', 'Pages speculative')
+        if page and all(name in pages for name in names):
+            available = int(page[1]) * sum(int(pages[name]) for name in names)
+            result['memory_available_bytes'] = min(available, int(total)) if total.isdigit() else available
+        swap = _resource_command(['/usr/sbin/sysctl', '-n', 'vm.swapusage'])
+        for name, key in (('total', 'swap_total_bytes'), ('used', 'swap_used_bytes')):
+            match = re.search(rf'\b{name}\s*=\s*(\d+(?:\.\d+)?)\s*([KMGT]?)', swap)
+            if match:
+                result[key] = int(float(match[1]) * 1024 ** ('KMGT'.index(match[2]) + 1 if match[2] else 0))
+    elif sys.platform.startswith('linux'):
+        try:
+            values = {name: int(value) * 1024 for name, value in
+                      re.findall(r'^(\w+):\s*(\d+)\s+kB$', Path('/proc/meminfo').read_text(), re.MULTILINE)}
+        except (OSError, UnicodeError, ValueError):
+            values = {}
+        result['memory_total_bytes'] = values.get('MemTotal')
+        result['memory_available_bytes'] = values.get('MemAvailable')
+        result['swap_total_bytes'] = values.get('SwapTotal')
+        if 'SwapTotal' in values and 'SwapFree' in values and values['SwapFree'] <= values['SwapTotal']:
+            result['swap_used_bytes'] = values['SwapTotal'] - values['SwapFree']
+    vram = _resource_command(['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'])
+    devices = vram.splitlines()
+    if devices and all(value.strip().isdigit() for value in devices):
+        # Admission must fit on every reported device, not their combined memory.
+        result['vram_free_bytes'] = min(int(value) for value in devices) * 1024 * 1024
+    return result
+
+
+class ComputePressureError(RuntimeError):
+    """Resource admission can be retried without consuming a handler attempt."""
+
+    def __init__(self, message, *, retry_after=30.0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class PressureWatchdog:
+    def __init__(self, *, min_memory_available_bytes=None, max_swap_used_bytes=None,
+                 min_vram_free_bytes=None, interval_seconds=5.0, retry_seconds=30.0):
+        self.limits = {'memory_available_bytes': min_memory_available_bytes,
+                       'swap_used_bytes': max_swap_used_bytes, 'vram_free_bytes': min_vram_free_bytes}
+        if any(value is not None and (type(value) is not int or value < 0) for value in self.limits.values()):
+            raise ValueError('Resource thresholds must be nonnegative integer byte counts')
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) or value <= 0 for value in (interval_seconds, retry_seconds)):
+            raise ValueError('Resource sampling and retry intervals must be positive finite seconds')
+        self.interval_seconds = interval_seconds
+        self.retry_seconds = retry_seconds
+        self.enabled = any(value is not None for value in self.limits.values())
+        self._state = {'enabled': self.enabled, 'blocked': False, 'reason': '', 'snapshot': None}
+        self._mutex = threading.Lock()
+        self._poll_mutex = threading.Lock()
+        self._next_sample = 0.0
+        self._stop = threading.Event()
+        self._thread = None
+
+    def status(self):
+        with self._mutex:
+            return {**self._state, 'snapshot': dict(self._state['snapshot']) if self._state['snapshot'] is not None else None}
+
+    def poll(self):
+        with self._poll_mutex:
+            if not self.enabled or time.monotonic() < self._next_sample:
+                return self.status()
+            try:
+                snapshot = sample_resources()
+            except (OSError, ValueError, RuntimeError):
+                snapshot = {}
+            reasons = []
+            for metric, limit in self.limits.items():
+                if limit is None:
+                    continue
+                value = snapshot.get(metric)
+                if type(value) is not int or value < 0:
+                    reasons.append(f'{metric} is unavailable')
+                elif (value > limit if metric == 'swap_used_bytes' else value < limit):
+                    comparison = 'above maximum' if metric == 'swap_used_bytes' else 'below minimum'
+                    reasons.append(f'{metric}={value} {comparison} {limit}')
+            with self._mutex:
+                self._state.update(blocked=bool(reasons), reason='; '.join(reasons), snapshot=snapshot)
+            self._next_sample = time.monotonic() + self.interval_seconds
+            if reasons:
+                try:
+                    _release_idle_compute()
+                except (RuntimeError, OSError) as err:
+                    with self._mutex:
+                        self._state['reason'] += f'; managed cleanup: {err}'
+            return self.status()
+
+    def check(self):
+        state = self.poll()
+        if state['blocked']:
+            raise ComputePressureError(state['reason'], retry_after=self.retry_seconds)
+
+    def start(self):
+        if self.enabled and self._thread is None:
+            self.poll()
+            self._stop.clear()
+            def watch():
+                while not self._stop.wait(self.interval_seconds):
+                    self.poll()
+            self._thread = threading.Thread(target=watch, name='compute-pressure', daemon=True)
+            self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+
+
+def install_pressure_watchdog(watchdog):
+    global _pressure_watchdog
+    previous = _pressure_watchdog
+    _pressure_watchdog = watchdog
+    return previous
+
+
+def check_compute_pressure():
+    if _pressure_watchdog is not None:
+        _pressure_watchdog.check()
 
 
 class ComputeShutdownError(RuntimeError):
@@ -381,6 +529,35 @@ def compute_lease_fd():
     return None
 
 
+def _release_idle_compute():
+    """Release only a managed daemon whose cooperative compute lease is idle."""
+    if _blocked is not None or getattr(_owner, 'phase', None) is not None or not _gate.acquire(blocking=False):
+        return
+    lock = None
+    try:
+        policy = _load_policy()
+        if policy is None:
+            return
+        try:
+            lock = _open_lock(policy.lock_path, 0)
+        except RuntimeError:
+            return
+        try:
+            _Lifecycle(policy, lock).stop()
+        except ComputeShutdownError as err:
+            retained, lock = lock, None
+            try:
+                _poison(retained, 'ollama', err)
+            except OSError:
+                os.fchmod(retained, 0)
+                raise
+            raise
+    finally:
+        if lock is not None:
+            os.close(lock)
+        _gate.release()
+
+
 @contextmanager
 def compute_phase(kind, *, ollama_url=None, start_ollama=True):
     """Yield whether strict ownership is active, releasing services before handoff.
@@ -404,6 +581,8 @@ def compute_phase(kind, *, ollama_url=None, start_ollama=True):
             raise RuntimeError('Ollama URL differs from the managed compute policy')
         yield True
         return
+    if start_ollama:
+        check_compute_pressure()
     policy = _load_policy()
     if policy is None:
         yield False
@@ -418,6 +597,8 @@ def compute_phase(kind, *, ollama_url=None, start_ollama=True):
         if _blocked is not None:
             raise ComputeShutdownError('Compute remains blocked after an unverified shutdown')
         lock = _open_lock(policy.lock_path, timeout)
+        if start_ollama:
+            check_compute_pressure()
         lifecycle = _Lifecycle(policy, lock)
         lifecycle.stop()
         try:

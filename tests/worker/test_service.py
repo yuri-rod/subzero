@@ -175,9 +175,10 @@ def test_translation_quality_rejection_preserves_the_installed_subtitle(
                             lambda *args, **kwargs: [Cue(1, 1, 2, "ola")])
     monkeypatch.setattr("subzero.worker.syncflow.check_translation",
                         lambda *args, **kwargs: Verdict(False, "meaning changed"))
-
+    queued = store.enqueue("abc", kind, "pt-BR", source_id="en")
+    store.start(queued.id)
     with pytest.raises(RuntimeError, match="Translation quality gate: meaning changed"):
-        service.run(job(kind, source="en"), lambda *args: None)
+        service.run(store.get(queued.id), lambda *args: None)
 
     assert target.read_text(encoding="utf-8") == "existing subtitle"
     assert service.jellyfin.refreshed == []

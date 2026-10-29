@@ -3,36 +3,11 @@ from typing import Callable
 
 from .jobs import Job
 from .opensubs import QuotaExceeded
-from .srt import parse, strip_hearing_impaired
+from .srt import THREE_LETTER, parse, same_language, strip_hearing_impaired, three_letter
 from .tracks import (audio_start_offset, deliver, extract_audio, extract_embedded,
                      shift, sidecar_path, transcribe, translate)
 
 Progress = Callable[[str, int], None]
-
-# Map UI language tags to Jellyfin three-letter codes.
-THREE_LETTER = {
-    "pt-BR": "por",
-    "pt-br": "por",
-    "pob": "por",
-    "pb": "por",
-    "pt": "por",
-    "por": "por",
-    "en": "eng",
-    "eng": "eng",
-    "es": "spa",
-    "spa": "spa",
-    "ja": "jpn",
-    "jpn": "jpn",
-}
-
-
-def three_letter(lang: str) -> str:
-    return THREE_LETTER.get(lang, lang.split("-")[0][:3].lower())
-
-
-def same_language(a: str, b: str) -> bool:
-    return three_letter(a) == three_letter(b)
-
 
 class Service:
     def __init__(self, jellyfin, opensubs, holder, ollama, bare_lang: str = ""):
@@ -95,7 +70,7 @@ class Service:
 
         if not same_language(detected, job.target_lang):
             progress("traduzindo", 0)
-            cues = self.translate_cues(cues, job.target_lang, progress, source_lang=detected)
+            cues = self.translate_cues(cues, job.target_lang, progress, source_lang=detected, job=job)
 
         progress("gravando sidecar", 95)
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
@@ -106,13 +81,13 @@ class Service:
         source_lang = (self.embedded_track(media, int(source_id.split(':', 1)[1])).lang
                        if source_id.startswith('embedded:') else source_id)
         progress("traduzindo", 0)
-        cues = self.translate_cues(source, job.target_lang, progress, source_lang=source_lang)
+        cues = self.translate_cues(source, job.target_lang, progress, source_lang=source_lang, job=job)
         progress("gravando sidecar", 95)
         return deliver(media, cues, job.target_lang, self.jellyfin, bare=self._bare(job.target_lang))
 
-    def translate_cues(self, cues, lang, progress, source_lang=None):
+    def translate_cues(self, cues, lang, progress, source_lang=None, *, job=None):
         if self.sync_flow is not None:
-            return self.sync_flow.translate_cues(cues, lang, progress, source_lang=source_lang)
+            return self.sync_flow.translate_cues(cues, lang, progress, source_lang=source_lang, job=job)
         return translate(cues, lang, self.ollama, progress, source_lang=source_lang)
 
     @staticmethod
