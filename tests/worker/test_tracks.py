@@ -728,6 +728,24 @@ def test_sidecar_path_can_drop_the_language_tag():
     assert sidecar_path("F:\\FILMES\\Filme.mkv", "pt-BR", bare=True) == "F:\\FILMES\\Filme.srt"
 
 
+@pytest.mark.parametrize("bad_lang", ["../escape", "pt/BR", "pt_BR", "123", ""])
+def test_sidecar_path_rejects_invalid_language_tag(bad_lang):
+    with pytest.raises(ValueError, match="Invalid subtitle language"):
+        sidecar_path("/media/Filme.mkv", bad_lang)
+
+
+def test_deliver_rejects_symlink_sidecar(tmp_path):
+    video = tmp_path / "Filme.mkv"
+    video.write_bytes(b"x")
+    outside = tmp_path / "outside.srt"
+    outside.write_text("keep\n", encoding="utf-8")
+    (tmp_path / "Filme.pt-BR.srt").symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="Refusing to replace a subtitle symlink"):
+        deliver(media(path=str(video)), [Cue(1, 0, 1, "Oi")], "pt-BR", FakeJellyfin())
+    assert outside.read_text(encoding="utf-8") == "keep\n"
+
+
 def test_ollama_asks_the_model_to_be_released_after_the_job():
     """Release the translation model before loading the transcription model."""
     class Recorder:

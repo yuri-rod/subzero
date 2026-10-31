@@ -87,6 +87,16 @@ def test_explicit_config_option_requires_a_path(monkeypatch, capsys, option):
     assert "requires a file path" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("argv", [["status", "--port"], ["status", "-p"], ["status", "--port", "abc"], ["status", "--port", "70000"]])
+def test_port_option_validates_value(monkeypatch, capsys, argv):
+    def unexpected_run(**kwargs):
+        raise AssertionError("An invalid port argument must stop before worker actions")
+
+    monkeypatch.setattr(worker_main, "run_worker_cmd", unexpected_run)
+    assert worker_main.main(argv) == 1
+    assert "port" in capsys.readouterr().err.lower()
+
+
 def test_explicit_config_disappearing_before_read_stops_worker_action(config_paths, monkeypatch, capsys):
     _, cwd, _ = config_paths
     explicit = cwd / "selected.env"

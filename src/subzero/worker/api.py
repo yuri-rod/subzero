@@ -22,7 +22,7 @@ from .notify import Notifier
 from .opensubs import OpenSubtitles, OpenSubtitlesError
 from .service import Service
 from .srt import dump
-from .tracks import ModelHolder, Ollama, transcribe
+from .tracks import LANG_TAG, ModelHolder, Ollama, transcribe
 from .watch import Watcher, excluded, has_language, is_transcode_tmp
 
 
@@ -230,6 +230,8 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
     def create_job(req: JobRequest) -> dict:
         if req.kind not in KINDS:
             raise HTTPException(status_code=400, detail=f"tipo invalido: {req.kind}")
+        if not LANG_TAG.fullmatch(req.targetLang or ""):
+            raise HTTPException(status_code=400, detail=f"idioma invalido: {req.targetLang}")
         found = resolve(req.itemId)
         if excluded(found.path, cfg.excluded_paths):
             raise HTTPException(status_code=403, detail="essa biblioteca esta fora do escopo")
@@ -237,6 +239,8 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
 
     @app.get("/jobs", dependencies=guard)
     def list_jobs(limit: int = 50) -> dict:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=400, detail="limit invalido")
         return {"jobs": [job_json(j) for j in store.recent(limit)]}
 
     @app.get('/sync/audits', dependencies=guard)
@@ -271,6 +275,8 @@ def create_app(cfg: Config, runner: bool = True, jellyfin=None, opensubs=None, w
 
     @app.get("/coverage", dependencies=guard)
     def coverage(lang: str = "pt-BR") -> dict:
+        if not LANG_TAG.fullmatch(lang or ""):
+            raise HTTPException(status_code=400, detail=f"idioma invalido: {lang}")
         items = jellyfin.all_items()
         missing = []
         for it in items:
@@ -424,9 +430,10 @@ def start_runner(app: FastAPI, store: JobStore, service: Service, watcher, cfg: 
     thread.start()
     app.state.runner_thread = thread
 
-    @app.on_event("shutdown")
     def stop() -> None:
         app.state.stop.set()
         qbt_watcher = getattr(app.state, "qbt_watcher", None)
         if qbt_watcher is not None:
             qbt_watcher.stop()
+
+    app.router.on_shutdown.append(stop)

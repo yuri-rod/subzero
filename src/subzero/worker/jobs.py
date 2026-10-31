@@ -1,8 +1,9 @@
+from contextlib import contextmanager
+from dataclasses import dataclass
 import sqlite3
 import time
-import uuid
-from dataclasses import dataclass
 from typing import Callable
+import uuid
 
 from subzero.compute import ComputePressureError
 
@@ -70,10 +71,17 @@ class JobStore:
         if "next_attempt" not in cols:
             db.execute("ALTER TABLE jobs ADD COLUMN next_attempt REAL NOT NULL DEFAULT 0")
 
-    def _db(self) -> sqlite3.Connection:
+    @contextmanager
+    def _db(self):
         db = sqlite3.connect(self.db_path, timeout=30)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+                if db.in_transaction:
+                    db.commit()
+        finally:
+            db.close()
 
     def enqueue(self, item_id: str, kind: str, target_lang: str,
                 source_id: str | None = None, origin: str = "manual") -> Job:
@@ -93,6 +101,9 @@ class JobStore:
         return Job(**dict(row)) if row else None
 
     def recent(self, limit: int = 50) -> list[Job]:
+        if limit <= 0:
+            return []
+        limit = min(int(limit), 500)
         with self._db() as db:
             rows = db.execute("SELECT * FROM jobs ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
         return [Job(**dict(r)) for r in rows]

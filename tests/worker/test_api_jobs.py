@@ -179,3 +179,18 @@ def test_review_outcome_remains_terminal_for_existing_clients(tmp_path):
     response=job_json(store.get(job.id))
     assert response['state']=='failed'
     assert response['outcome']=='needs_review'
+
+
+@pytest.mark.parametrize("bad_lang", ["../etc/passwd", "pt/BR", "pt_BR", "123", ""])
+def test_api_rejects_invalid_language_tags(client, bad_lang):
+    res = client.post("/jobs", json={"itemId": "abc", "kind": "whisper", "targetLang": bad_lang}, headers=AUTH)
+    assert res.status_code == 400
+    cov = client.get("/coverage", params={"lang": bad_lang}, headers=AUTH)
+    assert cov.status_code == 400
+
+
+@pytest.mark.parametrize("bad_limit", [0, -5, 501])
+def test_api_rejects_out_of_range_job_limits(client, bad_limit):
+    res = client.get("/jobs", params={"limit": bad_limit}, headers=AUTH)
+    assert res.status_code == 400
+

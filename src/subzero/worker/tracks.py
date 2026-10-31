@@ -1,6 +1,8 @@
 import json
 import math
+import os
 import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -22,6 +24,7 @@ from .asr_process import transcribe_in_process
 from .srt import Cue, dump
 
 BLOCK = 20
+LANG_TAG = re.compile(r"[a-zA-Z]{2,3}(?:-[a-zA-Z]{2})?")
 Progress = Callable[[str, int], None]
 
 
@@ -34,6 +37,8 @@ def split_path(video_path: str) -> tuple[str, str, str]:
 
 def sidecar_path(video_path: str, lang: str, bare: bool = False) -> str:
     """Build a sidecar path, optionally omitting the language tag."""
+    if not bare and not LANG_TAG.fullmatch(str(lang or "")):
+        raise ValueError("Invalid subtitle language")
     folder, stem, sep = split_path(video_path)
     name = f"{stem}.srt" if bare else f"{stem}.{lang}.srt"
     return f"{folder}{sep}{name}" if folder else name
@@ -569,7 +574,25 @@ def deliver(media: Media, cues: list[Cue], lang: str, jellyfin, bare: bool = Fal
     from .service import same_language
     path = sidecar_path(media.path, lang, bare=bare)
     target = Path(path)
-    target.write_text(dump(cues), encoding="utf-8")
+    if target.is_symlink():
+        raise RuntimeError("Refusing to replace a subtitle symlink")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="", dir=target.parent,
+        prefix=".subtitle-", suffix=".tmp", delete=False,
+    ) as handle:
+        tmp = Path(handle.name)
+        try:
+            handle.write(dump(cues))
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.close()
+            if target.is_symlink():
+                raise RuntimeError("Refusing to replace a subtitle symlink")
+            os.replace(tmp, target)
+        finally:
+            handle.close()
+            tmp.unlink(missing_ok=True)
     video = Path(media.path)
     embedded_langs = {getattr(s, "lang", "").lower() for s in getattr(media, "embedded", [])}
     prefix = video.stem + '.'

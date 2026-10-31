@@ -78,13 +78,19 @@ def test_worker_contribute_action_parses():
     assert args.port == 9000
 
 
-@pytest.mark.parametrize("action", ["jobs", "sweep", "coverage", "audits"])
+@pytest.mark.parametrize("action", ["jobs", "sweep", "coverage", "audits", "triage", "shell"])
 def test_worker_query_actions_parse(action):
     from subzero.cli import build_parser
     parser = build_parser()
     args = parser.parse_args(["worker", action])
     assert args.command == "worker"
     assert args.action == action
+
+
+def test_moviehash_returns_error_on_missing_file(tmp_path):
+    from subzero.cli import main
+
+    assert main(["moviehash", str(tmp_path / "missing.mkv")]) == 1
 
 
 

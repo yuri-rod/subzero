@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Callable
 
 from .jobs import Job
@@ -106,7 +107,7 @@ class Service:
         else:
             path = sidecar_path(media.path, str(job.source_id))
         try:
-            text = open(path, encoding="utf-8", errors="replace").read()
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
         except OSError as err:
             raise RuntimeError(f"legenda de origem nao encontrada: {err}") from err
         cues = strip_hearing_impaired(parse(text))

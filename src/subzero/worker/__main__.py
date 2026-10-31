@@ -5,9 +5,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import uvicorn
-
-from .api import create_app
 from .config import Config, read_env_file
 
 
@@ -178,6 +175,8 @@ def run_worker_cmd(action: str = "serve", env_file: str | Path | None = None, po
     except ValueError as err:
         print(err, file=sys.stderr)
         return 1
+    import uvicorn
+    from .api import create_app
     app = create_app(cfg)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=effective_port, log_level="info"))
     app.state.server = server
@@ -199,8 +198,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             env_file = args[idx + 1]
             idx += 2
-        elif arg in ("--port", "-p") and idx + 1 < len(args):
-            port = int(args[idx + 1])
+        elif arg in ("--port", "-p"):
+            if idx + 1 == len(args):
+                print(f"subzero worker: {arg} requires a port number", file=sys.stderr)
+                return 1
+            try:
+                port = int(args[idx + 1])
+            except ValueError:
+                print(f"subzero worker: invalid port {args[idx + 1]!r}", file=sys.stderr)
+                return 1
+            if not 1 <= port <= 65535:
+                print(f"subzero worker: port must be between 1 and 65535", file=sys.stderr)
+                return 1
             idx += 2
         elif not arg.startswith("-"):
             action = arg

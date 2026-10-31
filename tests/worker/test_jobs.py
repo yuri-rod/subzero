@@ -297,3 +297,13 @@ def test_pressure_backoff_cannot_overwrite_cancellation(store):
         raise ComputePressureError('Memory unavailable')
     Runner(store, {'translate': cancelled}).run_once()
     assert store.get(job.id).state == 'cancelled'
+
+
+def test_recent_clamps_limit_bounds(store):
+    store.enqueue("a", "whisper", "pt-BR")
+    store.enqueue("b", "whisper", "pt-BR")
+    assert store.recent(limit=0) == []
+    assert store.recent(limit=-3) == []
+    assert len(store.recent(limit=1)) == 1
+    assert len(store.recent(limit=9999)) == 2
+
