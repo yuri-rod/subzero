@@ -54,23 +54,47 @@ def shift_timestamps(
     text: str,
     delta_seconds: float = 0.0,
     scale_factor: float = 1.0,
+    segments: list | None = None,
 ) -> tuple[str, int]:
-    """Shift and/or stretch all subtitle timecodes.
-    
-    Returns (processed_text, count_of_shifted_cues).
+    """Shift and/or stretch subtitle timecodes.
+
+    Supports uniform global shift/scale or piecewise segment shifts across
+    commercial breaks and segmented masters.
     """
     if not math.isfinite(delta_seconds):
         raise ValueError("Shift seconds must be finite")
     if not math.isfinite(scale_factor) or scale_factor <= 0:
         raise ValueError("Scale factor must be finite and positive")
     shifted_count = 0
+    last_end = 0.0
 
     def repl(m: re.Match) -> str:
-        nonlocal shifted_count
+        nonlocal shifted_count, last_end
         g = m.groups()
         sep = "," if "," in m.group(0) else "."
-        start_sec = max(0.0, (_to_seconds(*g[:4]) * scale_factor) + delta_seconds)
-        end_sec = max(start_sec, (_to_seconds(*g[4:]) * scale_factor) + delta_seconds)
+        raw_start = _to_seconds(*g[:4])
+        raw_end = _to_seconds(*g[4:])
+
+        if segments:
+            chosen = segments[-1]
+            for seg in segments:
+                s_start = seg.start if hasattr(seg, "start") else seg[0]
+                s_end = seg.end if hasattr(seg, "end") else seg[1]
+                if s_start <= raw_start < s_end:
+                    chosen = seg
+                    break
+            offset = chosen.offset if hasattr(chosen, "offset") else chosen[2]
+            scale = getattr(chosen, "scale", 1.0) if hasattr(chosen, "scale") else (chosen[3] if len(chosen) > 3 else 1.0)
+        else:
+            offset = delta_seconds
+            scale = scale_factor
+
+        start_sec = max(0.0, (raw_start * scale) + offset)
+        end_sec = max(start_sec, (raw_end * scale) + offset)
+        if segments and start_sec < last_end:
+            start_sec = last_end + 0.05
+            end_sec = max(start_sec + 0.1, end_sec)
+        last_end = end_sec
         shifted_count += 1
         return f"{_to_timestamp(start_sec, sep)} --> {_to_timestamp(end_sec, sep)}"
 
@@ -86,6 +110,7 @@ def shift_file(
     output: Path | None = None,
     backup_dir: str | Path | None = None,
     dry: bool = False,
+    segments: list | None = None,
 ) -> tuple[Path, int]:
     """Shift and/or speed-stretch a subtitle file in place or to a target output path."""
     if (from_fps is None) != (to_fps is None):
@@ -99,7 +124,12 @@ def shift_file(
         raise OSError(f"Refusing to modify symbolic link: {target if target.is_symlink() else path}")
 
     content, _ = read(path)
-    shifted_text, count = shift_timestamps(content, delta_seconds=delta_seconds, scale_factor=scale_factor)
+    shifted_text, count = shift_timestamps(
+        content,
+        delta_seconds=delta_seconds,
+        scale_factor=scale_factor,
+        segments=segments,
+    )
 
     if dry:
         return target, count

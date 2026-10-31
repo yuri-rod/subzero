@@ -2275,6 +2275,38 @@ def test_call_with_cancel_omits_cancel_check_for_incompatible_signatures():
     assert calls == [(10, 20)]
 
 
+def test_resync_succeeds_with_piecewise_correction(setup, monkeypatch):
+    from subzero.reference import fingerprint
+    from subzero.timing import Segment, Report
+    from subzero.worker.syncflow import digest
 
+    flow, jobs, provider, media = setup
+    key = fingerprint(media.path)
+    target_dir = flow.cache / 'candidates' / key / 'pt-BR'
+    target_dir.mkdir(parents=True, exist_ok=True)
 
+    # Write a candidate subtitle in cache
+    cand_text = dialogue()
+    cand_file = target_dir / f"{digest(cand_text)}.srt"
+    cand_file.write_text(cand_text, encoding='utf-8')
 
+    # Initial verify returns reject, but post-piecewise verify returns pass
+    reports = [
+        Report(status='reject', reason='Commercial break jump'),
+        Report(status='pass', reason='Piecewise aligned'),
+        Report(status='pass', reason='Final verification pass'),
+    ]
+
+    monkeypatch.setattr('subzero.worker.syncflow.verify_text', lambda *args, **kwargs: reports.pop(0))
+    monkeypatch.setattr('subzero.worker.syncflow.correction', lambda rep: None)
+    monkeypatch.setattr(
+        'subzero.worker.syncflow.piecewise_correction',
+        lambda rep: [Segment(0.0, 450.0, -3.0), Segment(450.0, 950.0, -33.0)],
+    )
+
+    job = jobs.enqueue('id', 'resync', 'pt-BR')
+    Runner(jobs, {'resync': flow.run}).run_once()
+    updated = jobs.get(job.id)
+    assert updated.state == 'done'
+    installed_path = Path(media.path).with_suffix('.pt-BR.srt')
+    assert installed_path.exists()

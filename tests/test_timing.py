@@ -91,3 +91,53 @@ def test_severe_offset_in_single_window_is_rejected():
     report = timing.evaluate(shifted, ref)
     assert report.status == 'reject'
     assert 'Severe timing offset' in report.reason or 'mismatch' in report.reason
+
+
+def test_piecewise_correction_detects_act_breaks_and_commercial_cuts():
+    ref = dialogue(seed=42, duration=1800)
+    # Segment 1 (0 to 600s): offset +3s
+    # Segment 2 (600 to 1200s): offset +33s (30s commercial gap)
+    # Segment 3 (1200 to 1800s): offset +63s (another 30s gap)
+    shifted = []
+    for a, b in ref:
+        if a < 600:
+            shifted.append((a + 3.0, b + 3.0))
+        elif a < 1200:
+            shifted.append((a + 33.0, b + 33.0))
+        else:
+            shifted.append((a + 63.0, b + 63.0))
+
+    report = timing.evaluate(shifted, ref)
+    assert report.status == 'reject'
+    assert timing.correction(report) is None
+
+    segments = timing.piecewise_correction(report)
+    assert segments is not None
+    assert len(segments) == 3
+    assert abs(segments[0].offset - (-3.0)) < 0.3
+    assert abs(segments[1].offset - (-33.0)) < 0.3
+    assert abs(segments[2].offset - (-63.0)) < 0.3
+
+    # Apply piecewise shift and verify
+    repaired = []
+    for a, b in shifted:
+        chosen = segments[-1]
+        for s in segments:
+            if s.start <= a < s.end:
+                chosen = s
+                break
+        repaired.append((a + chosen.offset, b + chosen.offset))
+
+    assert timing.evaluate(repaired, ref).status == 'pass'
+
+
+def test_piecewise_correction_rejects_sparse_or_inconsistent_segments():
+    # Noise with single jump does not meet minimum windows per segment
+    windows = [
+        timing.Window(90.0, 1.0, 0.8, 0.2, True),
+        timing.Window(180.0, 1.0, 0.8, 0.2, True),
+        timing.Window(270.0, 25.0, 0.8, 0.2, True),  # isolated single window
+        timing.Window(360.0, 1.0, 0.8, 0.2, True),
+    ]
+    report = timing.Report('reject', 'mismatch', windows=windows)
+    assert timing.piecewise_correction(report) is None

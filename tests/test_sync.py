@@ -157,3 +157,41 @@ def test_auto_sync_preserves_first_backup_and_rejects_symlink(monkeypatch, tmp_p
     with pytest.raises(OSError, match="symbolic link"):
         auto_sync_file(video, link)
 
+
+def test_auto_sync_file_piecewise_synced_after_segment_correction(monkeypatch, tmp_path):
+    from subzero.timing import Segment
+
+    video = tmp_path / 'movie.mkv'
+    video.write_bytes(b'video')
+    sub = tmp_path / 'movie.srt'
+    sub.write_text(
+        '1\n00:01:03,000 --> 00:01:05,000\nAct 1 cue\n\n'
+        '2\n00:15:33,000 --> 00:15:35,000\nAct 2 cue\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr('subzero.sync.require_ffmpeg', lambda: None)
+
+    initial_report = Report(status='reject', reason='Severe timing offset')
+    repaired_report = Report(status='pass', reason='Timing agrees after piecewise shift')
+
+    reports = [initial_report, repaired_report]
+
+    def fake_verify(txt, ref):
+        return reports.pop(0)
+
+    monkeypatch.setattr('subzero.reference.build_reference', lambda vid, cache: {})
+    monkeypatch.setattr('subzero.reference.verify_text', fake_verify)
+    monkeypatch.setattr('subzero.timing.correction', lambda rep: None)
+    monkeypatch.setattr('subzero.timing.piecewise_correction', lambda rep: [
+        Segment(start=0.0, end=600.0, offset=-3.0),
+        Segment(start=600.0, end=1800.0, offset=-33.0),
+    ])
+
+    res = auto_sync_file(video, sub)
+    assert res.method == 'piecewise_synced'
+    assert abs(res.offset - (-3.0)) < 0.001
+    assert res.count == 2
+    assert res.report['status'] == 'pass'
+    content = sub.read_text(encoding='utf-8')
+    assert '00:01:00,000 --> 00:01:02,000' in content
+    assert '00:15:00,000 --> 00:15:02,000' in content

@@ -27,7 +27,7 @@ from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
 from subzero.shift import shift_timestamps
-from subzero.timing import Report, correction, spans
+from subzero.timing import Report, correction, piecewise_correction, spans
 from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_CUES,
                                TRANSLATION_CONTEXT_CHARS, _is_native_translation,
                                _is_translategemma, _previous_context, translation_blocks)
@@ -623,12 +623,21 @@ class SyncFlow:
             if report.status == 'pass' and guard.ok:
                 return self.install(media,job,key,text,report)
             change = correction(report)
-            if change is None:
-                continue
-            scale,offset = change
-            repaired,_ = shift_timestamps(text,offset,scale)
-            repaired = sanitize_to_excellence(repaired, job.target_lang, self.accepted_langs)
-            if verify_text(repaired,reference).status != 'pass':
+            repaired = None
+            if change is not None:
+                scale,offset = change
+                shifted,_ = shift_timestamps(text,offset,scale)
+                shifted = sanitize_to_excellence(shifted, job.target_lang, self.accepted_langs)
+                if verify_text(shifted,reference).status == 'pass':
+                    repaired = shifted
+            if repaired is None:
+                pw = piecewise_correction(report)
+                if pw:
+                    shifted,_ = shift_timestamps(text,segments=pw)
+                    shifted = sanitize_to_excellence(shifted, job.target_lang, self.accepted_langs)
+                    if verify_text(shifted,reference).status == 'pass':
+                        repaired = shifted
+            if repaired is None:
                 continue
             report = verify_text(repaired,reference,phase=45)
             guard = check_excellence_guards(repaired,job.target_lang)

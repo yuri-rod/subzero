@@ -89,3 +89,50 @@ def test_shift_file_preserves_first_backup_and_rejects_symlinks(tmp_path):
         pytest.skip("Creating symlinks requires platform permissions")
     with pytest.raises(OSError, match="symbolic link"):
         shift_file(link, delta_seconds=1.0)
+
+
+def test_shift_timestamps_with_piecewise_segments():
+    from subzero.timing import Segment
+
+    srt = """1
+00:01:00,000 --> 00:01:03,000
+Act 1 cue
+
+2
+00:15:00,000 --> 00:15:04,000
+Act 2 cue
+"""
+    segments = [
+        Segment(start=0.0, end=600.0, offset=-2.0, scale=1.0),
+        Segment(start=600.0, end=1800.0, offset=+10.0, scale=1.0),
+    ]
+    shifted, count = shift_timestamps(srt, segments=segments)
+    assert count == 2
+    # Act 1 cue (60s) shifted by -2s -> 58s
+    assert "00:00:58,000 --> 00:01:01,000" in shifted
+    # Act 2 cue (900s) shifted by +10s -> 910s
+    assert "00:15:10,000 --> 00:15:14,000" in shifted
+
+
+def test_shift_timestamps_piecewise_enforces_monotonic_cue_order():
+    from subzero.timing import Segment
+
+    srt = """1
+00:09:58,000 --> 00:10:00,000
+Boundary 1
+
+2
+00:10:01,000 --> 00:10:03,000
+Boundary 2
+"""
+    # Segment 1 has +10s offset (cues land at 10:08 - 10:10)
+    # Segment 2 has -15s offset (cues without ordering would land at 09:46 - 09:48)
+    segments = [
+        Segment(start=0.0, end=600.0, offset=10.0),
+        Segment(start=600.0, end=1200.0, offset=-15.0),
+    ]
+    shifted, count = shift_timestamps(srt, segments=segments)
+    assert count == 2
+    assert "00:10:08,000 --> 00:10:10,000" in shifted
+    # Second cue must be ordered after 10:10
+    assert "00:10:10,050 --> 00:10:10,150" in shifted

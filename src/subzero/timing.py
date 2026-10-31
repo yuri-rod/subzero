@@ -18,6 +18,21 @@ class Window:
 
 
 @dataclass
+class Segment:
+    start: float
+    end: float
+    offset: float
+    scale: float = 1.0
+    confidence: float = 1.0
+    windows_count: int = 0
+    ref_start: float = 0.0
+    ref_end: float = 0.0
+
+    def json(self):
+        return asdict(self)
+
+
+@dataclass
 class Report:
     status: str
     reason: str
@@ -133,3 +148,90 @@ def correction(report):
             return 1.0, median_offset
 
     return None
+
+
+def piecewise_correction(
+    report: Report,
+    min_segments: int = 2,
+    min_windows_per_segment: int = 2,
+    max_residual: float = 0.4,
+    min_jump: float = 1.0,
+) -> list[Segment] | None:
+    """Detect segmented constant offsets across act breaks or recut broadcast masters.
+
+    Requires per-segment speech-anchor confidence thresholds so sparse intervals
+    or noise do not skew dialogue timing.
+    """
+    import numpy as np
+
+    valid = [w for w in report.windows if w.confident]
+    if len(valid) < min_segments * min_windows_per_segment:
+        return None
+
+    # Detect candidate break indices between consecutive confident windows
+    breaks = []
+    for i in range(len(valid) - 1):
+        delta = abs(valid[i + 1].offset - valid[i].offset)
+        if delta >= min_jump:
+            breaks.append(i + 1)
+
+    if len(breaks) < min_segments - 1:
+        return None
+
+    # Partition windows into contiguous slices based on breaks
+    slices = []
+    prev_idx = 0
+    for b_idx in breaks:
+        slices.append(valid[prev_idx:b_idx])
+        prev_idx = b_idx
+    slices.append(valid[prev_idx:])
+
+    # Validate each segment against confidence thresholds
+    segment_stats = []
+    for s in slices:
+        if len(s) < min_windows_per_segment:
+            return None
+        offsets = np.array([w.offset for w in s])
+        median_offset = float(np.median(offsets))
+        residuals = np.abs(offsets - median_offset)
+        if float(np.max(residuals)) > max_residual:
+            return None
+        avg_score = float(np.mean([w.score for w in s]))
+        segment_stats.append((median_offset, avg_score, len(s)))
+
+    # Verify that adjacent segments actually have distinct offsets
+    for i in range(len(segment_stats) - 1):
+        if abs(segment_stats[i + 1][0] - segment_stats[i][0]) < min_jump:
+            return None
+
+    # Construct time boundaries covering the full timeline
+    segments = []
+    num_segs = len(slices)
+    ref_boundaries = [0.0]
+    for i in range(num_segs - 1):
+        midpoint = (slices[i][-1].center + slices[i + 1][0].center) / 2.0
+        ref_boundaries.append(midpoint)
+    ref_boundaries.append(float('inf'))
+
+    sub_boundaries = [0.0]
+    for i in range(1, num_segs):
+        o_prev = segment_stats[i - 1][0]
+        o_curr = segment_stats[i][0]
+        sub_mid = max(sub_boundaries[i - 1], ref_boundaries[i] - (o_prev + o_curr) / 2.0)
+        sub_boundaries.append(sub_mid)
+    sub_boundaries.append(float('inf'))
+
+    for i in range(num_segs):
+        med_off, score, count = segment_stats[i]
+        segments.append(Segment(
+            start=sub_boundaries[i],
+            end=sub_boundaries[i + 1],
+            offset=med_off,
+            scale=1.0,
+            confidence=round(score, 4),
+            windows_count=count,
+            ref_start=ref_boundaries[i],
+            ref_end=ref_boundaries[i + 1],
+        ))
+
+    return segments

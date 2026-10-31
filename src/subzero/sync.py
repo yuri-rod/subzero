@@ -98,7 +98,7 @@ def auto_sync_file(
     result = None
     try:
         from .reference import build_reference, verify_text
-        from .timing import correction
+        from .timing import correction, piecewise_correction
 
         cache = Path(cache_dir) if cache_dir else (Path.home() / ".cache/subzero/references")
         ref = build_reference(video_p, cache)
@@ -115,11 +115,25 @@ def auto_sync_file(
                 if repaired_report.status == "pass":
                     content = shifted_text
                     result = SyncResult(target, count, offset, method="speech_synced", report=repaired_report.json())
+            if result is None:
+                pw = piecewise_correction(report)
+                if pw:
+                    shifted_text, count = shift_timestamps(content, segments=pw)
+                    repaired_report = verify_text(shifted_text, ref)
+                    if repaired_report.status == "pass":
+                        content = shifted_text
+                        result = SyncResult(
+                            target,
+                            count,
+                            pw[0].offset,
+                            method="piecewise_synced",
+                            report=repaired_report.json(),
+                        )
     except Exception:
         pass
 
     if result is not None:
-        if not dry and (result.method == "speech_synced" or target != sub_p):
+        if not dry and (result.method in ("speech_synced", "piecewise_synced") or target != sub_p):
             if backup_dir and target == sub_p:
                 bdir = Path(backup_dir)
                 bdir.mkdir(parents=True, exist_ok=True)
