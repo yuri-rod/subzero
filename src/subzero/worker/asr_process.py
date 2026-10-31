@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import queue
 import subprocess
 import sys
@@ -9,13 +10,19 @@ import tempfile
 import threading
 import time
 
-from subzero.compute import ComputeShutdownError, compute_lease_fd
+from subzero.compute import (
+    ComputeShutdownError,
+    check_cancelled,
+    compute_lease_fd,
+    reap_process_group,
+)
 from .srt import Cue
 
 
-def transcribe_in_process(audio_path, holder, progress):
+def transcribe_in_process(audio_path, holder, progress, cancel_check=None):
     if getattr(holder, "model", None) is not None:
         raise RuntimeError("Whisper is already loaded in the worker; restart before isolated transcription")
+    check_cancelled(cancel_check)
     argv = [sys.executable, "-m", "subzero.worker.asr_process", str(audio_path),
             holder.name, holder.device, holder.compute_type]
     messages = queue.Queue(maxsize=64)
@@ -27,8 +34,19 @@ def transcribe_in_process(audio_path, holder, progress):
     last_progress = time.monotonic()
     lease = compute_lease_fd()
     with tempfile.TemporaryFile(mode="w+b") as errors:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors,
-                                pass_fds=() if lease is None else (lease,))
+        kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": errors,
+            "pass_fds": () if lease is None else (lease,),
+        }
+        if os.name == "posix":
+            try:
+                proc = subprocess.Popen(argv, start_new_session=True, **kwargs)
+            except TypeError:
+                proc = subprocess.Popen(argv, **kwargs)
+        else:
+            proc = subprocess.Popen(argv, **kwargs)
 
         def send(message):
             while not stopped.is_set():
@@ -52,9 +70,11 @@ def transcribe_in_process(audio_path, holder, progress):
         try:
             reader.start()
             while True:
+                check_cancelled(cancel_check)
                 try:
-                    line = messages.get(timeout=1)
+                    line = messages.get(timeout=0.5)
                 except queue.Empty:
+                    check_cancelled(cancel_check)
                     if time.monotonic() - last_progress >= 5:
                         progress("transcrevendo", percent)
                         last_progress = time.monotonic()
@@ -98,10 +118,12 @@ def transcribe_in_process(audio_path, holder, progress):
                 else:
                     raise RuntimeError("Whisper child returned an unknown event")
             while True:
+                check_cancelled(cancel_check)
                 try:
-                    code = proc.wait(timeout=1)
+                    code = proc.wait(timeout=0.5)
                     break
                 except subprocess.TimeoutExpired:
+                    check_cancelled(cancel_check)
                     if time.monotonic() - last_progress >= 5:
                         progress("transcrevendo", percent)
                         last_progress = time.monotonic()
@@ -115,19 +137,13 @@ def transcribe_in_process(audio_path, holder, progress):
         finally:
             stopped.set()
             if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired as err:
-                        raise ComputeShutdownError("Whisper child did not exit after termination",
-                                                   pids=(proc.pid,)) from err
+                reap_process_group(proc, timeout=10, name="Whisper child")
             if reader.ident is not None:
                 reader.join(timeout=2)
-            proc.stdout.close()
+            try:
+                proc.stdout.close()
+            except (OSError, ValueError):
+                pass
             if reader.is_alive():
                 raise RuntimeError("Whisper output reader did not stop after child exit")
 

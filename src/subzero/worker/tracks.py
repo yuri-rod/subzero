@@ -13,7 +13,14 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
 
-from subzero.compute import ComputePressureError, ComputeShutdownError, compute_phase
+from subzero.compute import (
+    ComputePressureError,
+    ComputeShutdownError,
+    check_cancelled,
+    compute_phase,
+    is_cancelled,
+    reap_process_group,
+)
 from subzero.translate import (MAX_RESPONSE_BYTES, _is_native_translation, _is_translategemma,
                                _ollama_payload, _parse_lines, _parse_ollama_response, _previous_context,
                                _translate_lines, _translate_sentence_units, _uses_sentence_units, translation_blocks)
@@ -53,14 +60,28 @@ def last_lines(text: str | None, count: int = 4) -> str:
 
 
 def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
-               popen=subprocess.Popen) -> None:
+               popen=subprocess.Popen, *, cancel_check=None) -> None:
     """Run FFmpeg while reporting its progress.
 
     Drain stderr concurrently so a large stream listing cannot fill the pipe
     and block progress on stdout."""
-    proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], stdout=subprocess.PIPE,
-                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
-                 encoding="utf-8", errors="strict", bufsize=1)
+    check_cancelled(cancel_check)
+    kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "stdin": subprocess.DEVNULL,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "strict",
+        "bufsize": 1,
+    }
+    if os.name == "posix":
+        try:
+            proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], start_new_session=True, **kwargs)
+        except TypeError:
+            proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], **kwargs)
+    else:
+        proc = popen(cmd + ["-progress", "pipe:1", "-nostats"], **kwargs)
     errors: list[str] = []
     lines = queue.Queue(maxsize=64)
     stopped = threading.Event()
@@ -100,9 +121,11 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
         stdout.start()
         total = max(1.0, duration)
         while True:
+            check_cancelled(cancel_check)
             try:
-                line = lines.get(timeout=1)
+                line = lines.get(timeout=0.5)
             except queue.Empty:
+                check_cancelled(cancel_check)
                 if time.monotonic() - last_progress >= 5:
                     progress(phase, percent)
                     last_progress = time.monotonic()
@@ -117,10 +140,12 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
                 progress(phase, percent)
                 last_progress = time.monotonic()
         while True:
+            check_cancelled(cancel_check)
             try:
-                code = proc.wait(timeout=1)
+                code = proc.wait(timeout=0.5)
                 break
             except subprocess.TimeoutExpired:
+                check_cancelled(cancel_check)
                 if time.monotonic() - last_progress >= 5:
                     progress(phase, percent)
                     last_progress = time.monotonic()
@@ -128,18 +153,7 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
     finally:
         stopped.set()
         if not finished:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired as err:
-                    raise ComputeShutdownError("FFmpeg did not exit after termination", pids=(proc.pid,)) from err
+            reap_process_group(proc, timeout=10, name="FFmpeg")
         if reader.ident is not None:
             reader.join(timeout=10)
         if stdout.ident is not None:
@@ -149,11 +163,11 @@ def run_ffmpeg(cmd: list[str], duration: float, progress: Progress, phase: str,
 
 
 def extract_embedded(media: Media, sub_index: int, lang: str, progress: Progress = lambda p, n: None,
-                     popen=subprocess.Popen, bare: bool = False) -> str:
+                     popen=subprocess.Popen, bare: bool = False, *, cancel_check=None) -> str:
     out = sidecar_path(media.path, lang, bare=bare)
     cmd = ["ffmpeg", "-nostdin", "-y", "-i", media.path, "-map", f"0:s:{sub_index}", "-vn", "-an",
            "-c:s", "srt", out]
-    run_ffmpeg(cmd, media.duration, progress, "extraindo do arquivo", popen=popen)
+    run_ffmpeg(cmd, media.duration, progress, "extraindo do arquivo", popen=popen, cancel_check=cancel_check)
     if Path(out).exists() and Path(out).stat().st_size == 0:
         Path(out).unlink()
         raise RuntimeError(f"a trilha {sub_index} nao rendeu nenhuma legenda")
@@ -202,7 +216,7 @@ def shift(cues: list[Cue], offset: float) -> list[Cue]:
 
 
 def extract_audio(video_path: str, duration: float = 0, progress: Progress = lambda p, n: None,
-                  popen=subprocess.Popen, *, audio_index: int | None = None) -> str:
+                  popen=subprocess.Popen, *, audio_index: int | None = None, cancel_check=None) -> str:
     if audio_index is not None and (type(audio_index) is not int or audio_index < 0):
         raise ValueError('Invalid audio stream index')
     with tempfile.NamedTemporaryFile(prefix="subzero-audio-", suffix=".wav", delete=False) as handle:
@@ -213,7 +227,7 @@ def extract_audio(video_path: str, duration: float = 0, progress: Progress = lam
     cmd += ["-vn", "-ac", "1", "-ar", "16000", "-f", "wav", str(wav)]
     complete = False
     try:
-        run_ffmpeg(cmd, duration, progress, "extraindo audio", popen=popen)
+        run_ffmpeg(cmd, duration, progress, "extraindo audio", popen=popen, cancel_check=cancel_check)
         complete = True
         return str(wav)
     finally:
@@ -284,15 +298,24 @@ class ModelHolder:
             pass
 
 
-def transcribe(audio_path: str, holder: ModelHolder, progress: Progress) -> tuple[list[Cue], str]:
+def transcribe(audio_path: str, holder: ModelHolder, progress: Progress, *,
+               cancel_check=None) -> tuple[list[Cue], str]:
     with holder.lock:
         with compute_phase("whisper") as isolated:
             if isolated:
-                return transcribe_in_process(audio_path, holder, progress)
-            return _transcribe(audio_path, holder, progress)
+                try:
+                    return transcribe_in_process(audio_path, holder, progress, cancel_check=cancel_check)
+                except TypeError:
+                    return transcribe_in_process(audio_path, holder, progress)
+            try:
+                return _transcribe(audio_path, holder, progress, cancel_check=cancel_check)
+            except TypeError:
+                return _transcribe(audio_path, holder, progress)
 
 
-def _transcribe(audio_path: str, holder: ModelHolder, progress: Progress) -> tuple[list[Cue], str]:
+def _transcribe(audio_path: str, holder: ModelHolder, progress: Progress, *,
+                cancel_check=None) -> tuple[list[Cue], str]:
+    check_cancelled(cancel_check)
     model = holder.load()
     try:
         segments, info = model.transcribe(audio_path, vad_filter=True, beam_size=5)
@@ -301,6 +324,7 @@ def _transcribe(audio_path: str, holder: ModelHolder, progress: Progress) -> tup
         total = max(1.0, duration) if bounded else 1.0
         cues: list[Cue] = []
         for seg in segments:
+            check_cancelled(cancel_check)
             text = (seg.text or "").strip()
             if not text:
                 continue

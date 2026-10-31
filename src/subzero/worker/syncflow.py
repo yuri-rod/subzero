@@ -14,7 +14,14 @@ from pathlib import Path
 
 from subzero.caption_quality import validate_caption_readings
 from subzero.caption_timeline import compose_caption_timeline, validate_caption_timeline
-from subzero.compute import ComputePressureError, ComputeShutdownError, compute_phase
+from subzero.compute import (
+    ComputePressureError,
+    ComputeShutdownError,
+    check_cancelled,
+    compute_phase,
+    is_cancelled,
+    reap_process_group,
+)
 from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
@@ -42,6 +49,15 @@ OCR_SOURCE_VERSION = 17
 
 def digest(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _call_with_cancel(fn, *args, cancel_check=None, **kwargs):
+    if cancel_check is not None:
+        try:
+            return fn(*args, cancel_check=cancel_check, **kwargs)
+        except TypeError:
+            pass
+    return fn(*args, **kwargs)
 
 
 def valid_cached_block(source, translated, target_lang, accepted_langs):
@@ -259,9 +275,16 @@ class SyncFlow:
         except (OSError,UnicodeError):
             return False
 
+    def _is_job_active(self, job_id: str) -> bool:
+        current = self.jobs.get(job_id)
+        return current is not None and current.state == 'running'
+
+    def cancel_check(self, job):
+        job_id = job.id if hasattr(job, 'id') else str(job)
+        return lambda: not self._is_job_active(job_id)
+
     def active(self, job):
-        current = self.jobs.get(job.id)
-        if current is None or current.state != 'running':
+        if not self._is_job_active(job.id if hasattr(job, 'id') else str(job)):
             raise RuntimeError('Subtitle job cancelled')
 
     def review(self, media, job, key, reason):
@@ -391,7 +414,8 @@ class SyncFlow:
             progress(phase,percent)
         return getattr(self,kind)(media,job,key,reference,guarded_progress)
 
-    def embedded_candidates(self, media, target_lang: str, reference: dict | None = None):
+    def embedded_candidates(self, media, target_lang: str, reference: dict | None = None,
+                            *, cancel_check=None):
         candidates = []
         embedded = getattr(media, 'embedded', []) or []
         for s in embedded:
@@ -423,7 +447,8 @@ class SyncFlow:
                     scored.append((base_score, s))
                     continue
                 try:
-                    raw = self.extract_embedded_text(media.path, s)
+                    raw = _call_with_cancel(self.extract_embedded_text, media.path, s,
+                                            cancel_check=cancel_check)
                     cues = spans(raw) if raw else []
                     score = embedded_track_score(s, target_lang, reference=reference, cues=cues)
                 except Exception:
@@ -434,7 +459,8 @@ class SyncFlow:
 
         return sorted(candidates, key=lambda s: embedded_track_score(s, target_lang), reverse=True)
 
-    def extract_embedded_text(self, video_path: str, stream) -> str:
+    def extract_embedded_text(self, video_path: str, stream, *, cancel_check=None) -> str:
+        check_cancelled(cancel_check)
         if isinstance(stream, int):
             stream_arg = f'0:{stream}'
         elif getattr(stream, 'sub_index', None) is not None and stream.sub_index >= 0:
@@ -445,13 +471,38 @@ class SyncFlow:
             return ''
         cmd = ['ffmpeg', '-v', 'error', '-nostdin', '-i', str(video_path),
                '-map', stream_arg, '-vn', '-an', '-c:s', 'srt', '-f', 'srt', 'pipe:1']
+        kwargs = {
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+        }
+        if os.name == 'posix':
+            try:
+                proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
+            except TypeError:
+                proc = subprocess.Popen(cmd, **kwargs)
+        else:
+            proc = subprocess.Popen(cmd, **kwargs)
+
+        start = time.monotonic()
         try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+            while True:
+                check_cancelled(cancel_check)
+                try:
+                    stdout, _ = proc.communicate(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    check_cancelled(cancel_check)
+                    if time.monotonic() - start > 120:
+                        raise
         except (OSError, subprocess.SubprocessError):
             return ''
+        finally:
+            if proc.poll() is None:
+                reap_process_group(proc, timeout=10, name='FFmpeg embedded extract')
+
         if proc.returncode != 0:
             return ''
-        return proc.stdout.decode('utf-8', errors='replace')
+        return stdout.decode('utf-8', errors='replace')
 
     def audit(self, media, job, key, reference, progress):
         path = self.installed(media,job.target_lang)
@@ -485,9 +536,11 @@ class SyncFlow:
                     shutil.copy2(path,quarantine/f'{job.target_lang}-{digest(text)}.srt')
                     path.unlink()
                 self.service.jellyfin.refresh(media.item_id)
-        for stream in self.embedded_candidates(media, job.target_lang, reference=reference):
+        for stream in self.embedded_candidates(media, job.target_lang, reference=reference,
+                                               cancel_check=self.cancel_check(job)):
             self.active(job)
-            raw = self.extract_embedded_text(media.path, stream)
+            raw = _call_with_cancel(self.extract_embedded_text, media.path, stream,
+                                     cancel_check=self.cancel_check(job))
             if not raw or not raw.strip():
                 continue
             cleaned = sanitize_to_excellence(raw, job.target_lang, self.accepted_langs)
@@ -608,10 +661,12 @@ class SyncFlow:
                 source.write_text(original, encoding='utf-8', newline='')
                 progress('recuperando legendas com Apple Vision', 0)
                 self.active(job)
-                recovered = fill_subtitle_gaps(
+                recovered = _call_with_cancel(
+                    fill_subtitle_gaps,
                     media.path, source, output=output, target_lang=job.target_lang,
                     translation_client=self.service.ollama,
                     cache_dir=self.cache / 'references', backup=False, progress=ocr_progress,
+                    cancel_check=self.cancel_check(job),
                 )
                 self.active(job)
                 if not recovered.cues_recovered:
@@ -786,12 +841,16 @@ class SyncFlow:
             input_path.write_text(source, encoding='utf-8', newline='')
             progress('recuperando fonte em ingles com Apple Vision', 0)
             self.active(job)
-            recovered = fill_subtitle_gaps(media.path, input_path, output=output_path,
-                                          target_lang='en', backup=False,
-                                          cache_dir=self.cache / 'references', progress=ocr_progress,
-                                          caption_cache_dir=self.cache / 'caption-scans',
-                                          all_captions=True,
-                                          **({'caption_rescue': self.caption_rescue} if self.caption_rescue is not None else {}))
+            recovered = _call_with_cancel(
+                fill_subtitle_gaps,
+                media.path, input_path, output=output_path,
+                target_lang='en', backup=False,
+                cache_dir=self.cache / 'references', progress=ocr_progress,
+                caption_cache_dir=self.cache / 'caption-scans',
+                all_captions=True,
+                cancel_check=self.cancel_check(job),
+                **({'caption_rescue': self.caption_rescue} if self.caption_rescue is not None else {}),
+            )
             self.active(job)
             text = read_gap_source(output_path) if recovered.cues_recovered else source
             candidate = self.stage(key, 'en', text)
@@ -1173,13 +1232,17 @@ class SyncFlow:
             self.service.ollama.release()
         self.active(job)
         offset = audio_start_offset(media.path)
+        cancel_cb = self.cancel_check(job)
         if ocr_enabled:
-            audio = extract_audio(media.path, media.duration, progress, audio_index=audio_index)
+            audio = _call_with_cancel(extract_audio, media.path, media.duration, progress,
+                                       audio_index=audio_index, cancel_check=cancel_cb)
         else:
-            audio = extract_audio(media.path, media.duration, progress)
+            audio = _call_with_cancel(extract_audio, media.path, media.duration, progress,
+                                       cancel_check=cancel_cb)
         try:
             self.active(job)
-            cues,detected = transcribe(audio,self.service.holder,progress)
+            cues,detected = _call_with_cancel(transcribe, audio, self.service.holder, progress,
+                                              cancel_check=cancel_cb)
         finally:
             Path(audio).unlink(missing_ok=True)
         self.active(job)

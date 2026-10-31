@@ -24,16 +24,17 @@ Track full media runs separately from code tests. For each run, record the insta
 - [x] Explicit environment-file selection fails when the file is absent or the option has no argument. Obsolete automatic configuration discovery was removed without breaking explicit compatibility paths.
 - [x] The native LibreTranslate runtime is isolated, hash-pinned and verified before use. Translation runs on CPU without network access. Installer support remains limited to the documented interpreter and platform.
 - [x] Multi-track embedded subtitle selection filters commentary, forced, and signs or songs tracks in extraction and worker flows, ranking candidate streams by stream metadata, cue density, and speech-timing overlap against audio references.
+- [x] Fine-grained subprocess cancellation reaps FFmpeg, Whisper, and Vision OCR process groups immediately upon job cancellation or timeout, ensuring orphaned processes never retain the shared compute lease flock.
 
 ## Prioritized engineering roadmap
 
-Estimated effort below reflects implementation, automated regression coverage, and end-to-end media verification (remaining: 29 to 38 hours).
+Estimated effort below reflects implementation, automated regression coverage, and end-to-end media verification (remaining: 24 to 31 hours).
 
 1. [x] **Multi-track embedded subtitle selection and commentary filtering (completed)**
    - Inspect all embedded text subtitle streams in [`SyncFlow`](src/subzero/worker/syncflow.py) and [`extract.py`](src/subzero/extract.py) instead of stopping at the first matching language tag when multiple tracks exist (full dialogue, SDH, commentary, signs/songs).
    - Rank candidate streams by cue density, speech-timing overlap against [`reference.py`](src/subzero/reference.py), and stream title metadata so commentary or sparse forced tracks are not selected ahead of main dialogue.
 
-2. **Fine-grained subprocess cancellation for FFmpeg, Whisper, and Vision OCR (5 to 7 hours)**
+2. [x] **Fine-grained subprocess cancellation for FFmpeg, Whisper, and Vision OCR (completed)**
    - Propagate job cancellation tokens into [`tracks.run_ffmpeg`](src/subzero/worker/tracks.py), [`asr_process.py`](src/subzero/worker/asr_process.py), and [`ocr.py`](src/subzero/ocr.py) child processes so `DELETE /jobs/{id}` terminates active media extraction or transcription promptly instead of waiting for the current phase to finish.
    - Ensure child process groups are reaped cleanly before releasing the shared compute lease.
 

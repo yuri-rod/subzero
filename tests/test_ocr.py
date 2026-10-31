@@ -1038,3 +1038,13 @@ def test_fill_preserves_rendered_newlines_on_windows(recovery, monkeypatch):
         fill_subtitle_gaps('video.mkv', source, target_lang='pt-BR')
     assert b'\r\r\n' not in source.read_bytes()
     assert len(parse_srt(source.read_text(encoding='utf-8'))) == 2
+
+
+def test_vision_frames_cancels_promptly():
+    with pytest.raises(RuntimeError, match="cancelled"):
+        ocr._run_vision_frames("/bin/true", [Path("frame1.jpg")], cancel_check=lambda: True)
+
+
+def test_scan_caption_frames_cancels_promptly():
+    with pytest.raises(RuntimeError, match="cancelled"):
+        ocr._scan_caption_frames("video.mkv", [(0.0, 10.0)], cancel_check=lambda: True)

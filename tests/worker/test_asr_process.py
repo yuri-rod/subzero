@@ -209,3 +209,20 @@ def test_ffmpeg_utf8_diagnostics_are_preserved_with_a_windows_locale():
     with pytest.raises(RuntimeError, match="arquivo não encontrado"):
         tracks.run_ffmpeg(["ffmpeg"], 10, lambda *_: None, "extracting", popen=launch)
     assert children[0].poll() == 1
+
+
+def test_transcribe_in_process_with_cancel_check_terminates_and_reaps(monkeypatch):
+    script = messages({"event": "progress", "percent": 1}) + "\nimport time; time.sleep(60)"
+    children = child(monkeypatch, script)
+    cancelled = False
+
+    def check():
+        return cancelled
+
+    def on_progress(phase, pct):
+        nonlocal cancelled
+        cancelled = True
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asr_process.transcribe_in_process("audio.wav", holder(), on_progress, cancel_check=check)
+    assert children[0].poll() is not None

@@ -159,7 +159,8 @@ def audio_rebuild(setup, monkeypatch, tmp_path):
     calls = []
 
     def extract(*args, **kwargs):
-        calls.append(('audio', kwargs))
+        filtered = {k: v for k, v in kwargs.items() if k != 'cancel_check'}
+        calls.append(('audio', filtered))
         return str(audio)
 
     def transcribe(*args):
@@ -2216,6 +2217,33 @@ def test_regenerate_runs_semantic_gate(setup, monkeypatch):
     job=jobs.enqueue('id','repair','pt-BR');jobs.start(job.id)
     flow.generate_from_english(media,job,'k',flow.reference_builder(),dialogue(),lambda *a:None)
     assert len(calls)==1
+
+
+def test_cancellation_during_rebuild_terminates_job_cleanly(setup, monkeypatch, tmp_path):
+    from subzero.worker import syncflow
+    flow, jobs, provider, media = setup
+    media.audio_lang = 'por'
+    audio = tmp_path / 'audio.wav'
+    audio.write_bytes(b'audio')
+    cancelled_seen = False
+
+    def fake_extract(*args, **kwargs):
+        cancel_check = kwargs.get('cancel_check')
+        jobs.cancel('job_cancel_test')
+        if cancel_check and cancel_check():
+            nonlocal cancelled_seen
+            cancelled_seen = True
+            raise RuntimeError('Subtitle job cancelled')
+        return str(audio)
+
+    monkeypatch.setattr(syncflow, 'extract_audio', fake_extract)
+    monkeypatch.setattr(syncflow, 'audio_start_offset', lambda *args: 0)
+    job = jobs.enqueue('id', 'rebuild', 'pt-BR')
+    with jobs._db() as db:
+        db.execute("UPDATE jobs SET id='job_cancel_test' WHERE id=?", (job.id,))
+    Runner(jobs, {'rebuild': flow.run}).run_once()
+    assert jobs.get('job_cancel_test').state == 'cancelled'
+    assert cancelled_seen is True
 
 
 

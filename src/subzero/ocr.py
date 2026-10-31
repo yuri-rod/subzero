@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -22,7 +23,15 @@ from typing import Callable, Iterable
 from .caption_quality import stabilize_caption_readings, validate_caption_readings
 from .caption_rescue import CAPTION_CROP, CaptionFrame, CaptionRescue, _image_bytes, crop_caption_image
 from .caption_scan_cache import CaptionScanCache
-from .compute import compute_lease_fd, compute_phase
+from .compute import (
+    ComputePressureError,
+    ComputeShutdownError,
+    check_cancelled,
+    compute_lease_fd,
+    compute_phase,
+    is_cancelled,
+    reap_process_group,
+)
 from .convert import Cue, dump_srt, parse_srt
 from .core import Options, fix_text, read
 from .reference import build_reference, fingerprint
@@ -647,22 +656,62 @@ def cluster_ocr_detections(
             for start, end, text in merged if end > start]
 
 
-def _vision_frames(binary: str, frames: list[Path], caption_region: bool = False) -> dict[str, dict]:
+def _vision_frames(binary: str, frames: list[Path], caption_region: bool = False,
+                   cancel_check=None) -> dict[str, dict]:
     with compute_phase("vision"):
-        return _run_vision_frames(binary, frames, caption_region)
+        return _run_vision_frames(binary, frames, caption_region, cancel_check=cancel_check)
 
 
-def _run_vision_frames(binary: str, frames: list[Path], caption_region: bool = False) -> dict[str, dict]:
+def _run_vision_frames(binary: str, frames: list[Path], caption_region: bool = False,
+                       cancel_check=None) -> dict[str, dict]:
+    check_cancelled(cancel_check)
     lease = compute_lease_fd()
-    res = subprocess.run([binary, "--json"] + (["--caption-region"] if caption_region else [])
-                         + [str(frame) for frame in frames],
-             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-             check=False, timeout=max(120, len(frames) * 10),
-             pass_fds=() if lease is None else (lease,))
-    if res.returncode:
-        raise RuntimeError(f"Vision OCR failed: {res.stderr[-400:]}")
+    cmd = [binary, "--json"] + (["--caption-region"] if caption_region else []) + [str(frame) for frame in frames]
+    timeout = max(120, len(frames) * 10)
+    pass_fds = () if lease is None else (lease,)
+
+    if getattr(subprocess.run, "__module__", None) != "subprocess":
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             check=False, timeout=timeout, pass_fds=pass_fds)
+        check_cancelled(cancel_check)
+        if res.returncode:
+            raise RuntimeError(f"Vision OCR failed: {res.stderr[-400:]}")
+        stdout = res.stdout
+    else:
+        kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "pass_fds": pass_fds,
+        }
+        if os.name == "posix":
+            try:
+                proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
+            except TypeError:
+                proc = subprocess.Popen(cmd, **kwargs)
+        else:
+            proc = subprocess.Popen(cmd, **kwargs)
+
+        start = time.monotonic()
+        try:
+            while True:
+                check_cancelled(cancel_check)
+                try:
+                    stdout, stderr = proc.communicate(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    check_cancelled(cancel_check)
+                    if time.monotonic() - start > timeout:
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+        finally:
+            if proc.poll() is None:
+                reap_process_group(proc, timeout=10, name="Vision OCR")
+
+        if proc.returncode:
+            raise RuntimeError(f"Vision OCR failed: {stderr[-400:]}")
+
     try:
-        rows = json.loads(res.stdout)
+        rows = json.loads(stdout)
     except (ValueError, UnicodeError) as err:
         raise RuntimeError("Vision OCR returned invalid JSON") from err
     if not isinstance(rows, list) or len(rows) != len(frames):
@@ -693,6 +742,7 @@ def _scan_caption_frames(
     *,
     retry_all: bool = False,
     frame_sink: Callable[[Path, float, dict, dict | None], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[tuple[float, str]]:
     if not gaps:
         return []
@@ -712,35 +762,76 @@ def _scan_caption_frames(
 
     try:
         for idx, (g_start, g_end) in enumerate(gaps, start=1):
+            check_cancelled(cancel_check)
             if g_end <= g_start:
                 continue
             gap_dir = Path(tempfile.mkdtemp(prefix=f"gap_{idx:03d}_", dir=work_dir))
             dur = g_end - g_start
-            # Millisecond PTS can subtract exact 100 ms intervals to just below 0.1.
-            cmd = [
-                "ffmpeg", "-hide_banner", "-nostdin", "-y", "-ss", f"{g_start:.3f}", "-i", str(video),
-                "-t", f"{dur:.3f}", "-an", "-sn", "-vf",
-                f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{1 / fps:.9f}-0.000000001),showinfo",
-                "-fps_mode", "vfr", "-q:v", "2",
-                str(gap_dir / "f_%03d.jpg"),
-            ]
             try:
-                decoded = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                # Millisecond PTS can subtract exact 100 ms intervals to just below 0.1.
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-nostdin", "-y", "-ss", f"{g_start:.3f}", "-i", str(video),
+                    "-t", f"{dur:.3f}", "-an", "-sn", "-vf",
+                    f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{1 / fps:.9f}-0.000000001),showinfo",
+                    "-fps_mode", "vfr", "-q:v", "2",
+                    str(gap_dir / "f_%03d.jpg"),
+                ]
+                check_cancelled(cancel_check)
+                if getattr(subprocess.run, "__module__", None) != "subprocess":
+                    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                          text=True, check=False, timeout=180)
-                if decoded.returncode:
-                    raise RuntimeError(f"ffmpeg failed during caption extraction: {decoded.stderr[-400:]}")
+                    check_cancelled(cancel_check)
+                    if res.returncode:
+                        raise RuntimeError(f"ffmpeg failed during caption extraction: {res.stderr[-400:]}")
+                    stderr = res.stderr
+                else:
+                    ffmpeg_kwargs = {
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": subprocess.PIPE,
+                        "text": True,
+                    }
+                    if os.name == "posix":
+                        try:
+                            ffmpeg_proc = subprocess.Popen(cmd, start_new_session=True, **ffmpeg_kwargs)
+                        except TypeError:
+                            ffmpeg_proc = subprocess.Popen(cmd, **ffmpeg_kwargs)
+                    else:
+                        ffmpeg_proc = subprocess.Popen(cmd, **ffmpeg_kwargs)
+                    start_ff = time.monotonic()
+                    try:
+                        while True:
+                            check_cancelled(cancel_check)
+                            try:
+                                _, stderr = ffmpeg_proc.communicate(timeout=0.5)
+                                break
+                            except subprocess.TimeoutExpired:
+                                check_cancelled(cancel_check)
+                                if time.monotonic() - start_ff > 180:
+                                    raise subprocess.TimeoutExpired(cmd, 180)
+                    finally:
+                        if ffmpeg_proc.poll() is None:
+                            reap_process_group(ffmpeg_proc, timeout=10, name="FFmpeg OCR extractor")
+
+                    if ffmpeg_proc.returncode:
+                        raise RuntimeError(f"ffmpeg failed during caption extraction: {stderr[-400:]}")
                 frames = sorted(gap_dir.glob("*.jpg"), key=lambda frame: int(frame.stem[2:]))
-                timestamps = [float(value) for value in re.findall(r"\bpts_time:([\d.eE+-]+)", decoded.stderr)]
+                timestamps = [float(value) for value in re.findall(r"\bpts_time:([\d.eE+-]+)", stderr)]
                 if not frames or len(timestamps) < len(frames):
                     raise RuntimeError("ffmpeg did not return timestamped caption frames")
-                by_file = _vision_frames(binary, frames)
+                try:
+                    by_file = _vision_frames(binary, frames, cancel_check=cancel_check)
+                except TypeError:
+                    by_file = _vision_frames(binary, frames)
                 ordered = [by_file[frame.name] for frame in frames]
                 selected = ([index for index, frame in enumerate(ordered) if not _caption_title_card(frame)]
                             if retry_all else caption_retry_indices(ordered, timestamps, fps))
                 retried = {}
                 if selected:
                     retry_frames = [frames[index] for index in selected]
-                    retried = _vision_frames(binary, retry_frames, caption_region=True)
+                    try:
+                        retried = _vision_frames(binary, retry_frames, caption_region=True, cancel_check=cancel_check)
+                    except TypeError:
+                        retried = _vision_frames(binary, retry_frames, caption_region=True)
                     readings = recover_caption_runs(ordered, {index: retried[frames[index].name] for index in selected},
                                                     timestamps, center_tolerance)
                 else:
@@ -783,9 +874,11 @@ def extract_and_ocr_gaps(
     ignore_patterns: Iterable[re.Pattern] = DEFAULT_IGNORE_PATTERNS,
     progress: Callable[[int, int], None] | None = None,
     center_tolerance: float | None = 0.12,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[Cue]:
     detections = _scan_caption_frames(video, gaps, ocr_bin, fps, tmp_dir, ignore_patterns,
-                                      progress, center_tolerance)
+                                      progress, center_tolerance, cancel_check=cancel_check)
     recovered = []
     for start, end in gaps:
         frames = [(timestamp, text) for timestamp, text in detections if start <= timestamp < end]
@@ -797,25 +890,28 @@ def extract_and_ocr_gaps(
 def extract_all_captions(video: str | Path, duration: float, *,
                          progress: Callable[[int, int], None] | None = None,
                          cache_dir: str | Path | None = None,
-                         caption_rescue: CaptionRescue | None = None) -> list[Cue]:
+                         caption_rescue: CaptionRescue | None = None,
+                         cancel_check: Callable[[], bool] | None = None) -> list[Cue]:
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Caption scanning requires a positive video duration")
     detections = []
     cache = _caption_scan_cache(video, Path(cache_dir)) if cache_dir is not None else None
     starts = range(0, math.ceil(duration), 120)
     for index, start in enumerate(starts):
+        check_cancelled(cancel_check)
         end = min(duration, start + 120)
         windows = [(max(0, start - 1), min(duration, end + 1))]
         frames = cache.read(windows, fps=2) if cache is not None else None
         if frames is None:
-            frames = _scan_caption_frames(video, windows)
+            frames = _scan_caption_frames(video, windows, cancel_check=cancel_check)
             if cache is not None:
                 cache.write(windows, frames, fps=2)
         detections.extend((timestamp, text) for timestamp, text in frames if start <= timestamp < end)
         if progress:
             progress(int(50 * (index + 1) / len(starts)), 100)
     options = {"caption_rescue": caption_rescue} if caption_rescue is not None else {}
-    return refine_caption_timing(video, detections, duration, progress=progress, scan_cache=cache, **options)
+    return refine_caption_timing(video, detections, duration, progress=progress, scan_cache=cache,
+                                 cancel_check=cancel_check, **options)
 
 
 def caption_transition_windows(detections: list[tuple[float, str]], duration: float) -> list[tuple[float, float]]:
@@ -874,7 +970,9 @@ def _normalize_english_caption(text: str) -> str:
 def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]], duration: float, *,
                           progress: Callable[[int, int], None] | None = None,
                           scan_cache: CaptionScanCache | None = None,
-                          caption_rescue: CaptionRescue | None = None) -> list[Cue]:
+                          caption_rescue: CaptionRescue | None = None,
+                          cancel_check: Callable[[], bool] | None = None) -> list[Cue]:
+    check_cancelled(cancel_check)
     windows = caption_transition_windows(detections, duration)
     if not windows:
         if progress:
@@ -887,19 +985,23 @@ def refine_caption_timing(video: str | Path, detections: list[tuple[float, str]]
             progress(50 + int(extent * done / max(1, total)), 100)
 
     if scan_cache is None:
-        dense = _scan_caption_frames(video, windows, fps=10, retry_all=True, progress=dense_progress)
+        dense = _scan_caption_frames(video, windows, fps=10, retry_all=True, progress=dense_progress,
+                                     cancel_check=cancel_check)
     else:
         dense = []
         for index, window in enumerate(windows, start=1):
+            check_cancelled(cancel_check)
             frames = scan_cache.read([window], fps=10, retry_all=True)
             if frames is None:
-                frames = _scan_caption_frames(video, [window], fps=10, retry_all=True)
+                frames = _scan_caption_frames(video, [window], fps=10, retry_all=True,
+                                              cancel_check=cancel_check)
                 scan_cache.write([window], frames, fps=10, retry_all=True)
             dense.extend(frames)
             dense_progress(index, len(windows))
     losses = [] if caption_rescue is not None else None
     cues = _interpret_caption_frames(detections, dense, windows, duration, losses=losses)
     if caption_rescue is not None:
+        check_cancelled(cancel_check)
         losses = [span for span in losses if _substantial_span(detections, dense, span)]
         intervals = _caption_rescue_windows(detections, cues, losses, duration)
         if intervals:
@@ -1144,7 +1246,10 @@ def fill_subtitle_gaps(
     caption_cache_dir: str | Path | None = None,
     caption_rescue: CaptionRescue | None = None,
     translation_client=None,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> GapReport:
+    check_cancelled(cancel_check)
     sub_p = Path(subtitle_path)
     if sub_p.is_symlink() or not sub_p.is_file():
         raise RuntimeError("Caption recovery requires a regular subtitle file")
@@ -1172,8 +1277,10 @@ def fill_subtitle_gaps(
         if not all_captions:
             raise ValueError("Caption rescue requires whole-video caption recovery")
         scan_options["caption_rescue"] = caption_rescue
+    if cancel_check is not None:
+        scan_options["cancel_check"] = cancel_check
     recovered = (extract_all_captions(video, duration, progress=progress, **scan_options) if all_captions else
-                 extract_and_ocr_gaps(video, gaps, progress=progress))
+                 extract_and_ocr_gaps(video, gaps, progress=progress, cancel_check=cancel_check))
     if not recovered:
         return GapReport(total_gaps=len(gaps), speech_seconds=total_speech_sec, cues_recovered=0, cues=[])
 

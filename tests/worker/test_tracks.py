@@ -1292,3 +1292,33 @@ def test_cpu_provider_keeps_sentence_boundaries_without_starting_ollama(monkeypa
     translated = translate(cues, 'pt-BR', CPUTranslator(), lambda *args: None, source_lang='en')
     assert [len(block) for block in seen] == [19, 2]
     assert [(cue.index, cue.start, cue.end) for cue in translated] == [(cue.index, cue.start, cue.end) for cue in cues]
+
+
+def test_run_ffmpeg_reaps_process_on_cancellation():
+    import subprocess
+    import sys
+
+    children = []
+    cancelled = False
+
+    def launch(argv, **kwargs):
+        nonlocal cancelled
+        script = "import time; time.sleep(60)"
+        proc = subprocess.Popen([sys.executable, "-u", "-c", script], **kwargs)
+        children.append(proc)
+        cancelled = True
+        return proc
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        run_ffmpeg(["ffmpeg"], 10, lambda *_: None, "extracting",
+                   popen=launch, cancel_check=lambda: cancelled)
+    assert len(children) == 1
+    assert children[0].poll() is not None
+
+
+def test_extract_audio_cancels_and_cleans_temporary_wav(tmp_path):
+    video = tmp_path / "video.mkv"
+    video.write_bytes(b"dummy")
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        extract_audio(str(video), duration=10, cancel_check=lambda: True)

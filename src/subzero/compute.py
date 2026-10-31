@@ -9,6 +9,7 @@ import math
 import os
 import plistlib
 import re
+import signal
 import socket
 import stat
 import subprocess
@@ -179,6 +180,69 @@ class ComputeShutdownError(RuntimeError):
     def __init__(self, message, *, pids=()):
         super().__init__(message)
         self.pids = tuple(pids)
+
+
+def is_cancelled(cancel_check) -> bool:
+    """Return True if cancel_check indicates cancellation."""
+    if cancel_check is None:
+        return False
+    if hasattr(cancel_check, 'is_cancelled'):
+        return bool(cancel_check.is_cancelled)
+    if callable(cancel_check):
+        try:
+            return bool(cancel_check())
+        except Exception:
+            return True
+    return bool(cancel_check)
+
+
+def check_cancelled(cancel_check) -> None:
+    """Raise RuntimeError if cancellation was requested."""
+    if is_cancelled(cancel_check):
+        raise RuntimeError('Subtitle job cancelled')
+
+
+def reap_process_group(proc, timeout: float = 10.0, name: str = 'child') -> None:
+    """Terminate and reap a subprocess and its process group cleanly.
+
+    Ensures child processes do not linger and retain the shared compute lease.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    pgid = None
+    if os.name == 'posix':
+        try:
+            pgid = os.getpgid(proc.pid)
+            if pgid != os.getpid():
+                os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.terminate()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    if os.name == 'posix' and pgid is not None and pgid != os.getpid():
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    try:
+        proc.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as err:
+        pids = (proc.pid,) if getattr(proc, 'pid', None) is not None else ()
+        raise ComputeShutdownError(f'{name} did not exit after termination', pids=pids) from err
 
 
 def _endpoint(url):
