@@ -147,81 +147,18 @@ subzero translate episode.srt --to pt-BR --provider openai --cast "Ana:f,Rick:m"
 
 `--cast` applies to the generic translation prompts. Hy-MT2 and TranslateGemma use their native prompt formats and do not consume this option. Selecting a remote provider or Ollama URL sends subtitle text to that endpoint.
 
-### Benchmark translation (`subzero benchmark`)
+### Benchmark translation (`subzero-benchmark`)
 
-Run the versioned `subtitle-dialogue-v1` workload of 12 synthetic English cues
-against explicitly configured Ollama or OpenAI-compatible servers. The command
-uses the installed translation clients, performs warmups, and writes JSON plus
-a Markdown report beside it:
+Inference throughput, latency, memory sampling, and quantization benchmarks across translation backends are maintained in the standalone [subzero-benchmark](https://github.com/yuri-rod/subzero-benchmark) repository.
+
+Install the benchmark tool and run a workload:
 
 ```console
-subzero benchmark --config /absolute/path/to/benchmark.json --output /absolute/path/to/results.json
+pip install subzero-benchmark
+subzero-benchmark --config /path/to/benchmark.json --output /path/to/results.json
 ```
 
-For example, configure a translator and an optional fixed Portuguese adequacy
-judge in `benchmark.json`:
-
-```json
-{
-  "repeats": 3,
-  "warmup": 1,
-  "batch_size": 4,
-  "sample_interval": 0.25,
-  "source_lang": "en",
-  "target_lang": "pt-BR",
-  "variants": [
-    {
-      "label": "candidate-q8",
-      "provider": "openai",
-      "url": "http://127.0.0.1:8080/v1",
-      "model": "local-translator",
-      "precision": "Q8_0",
-      "runtime": "llama.cpp",
-      "api_key_env": "BENCHMARK_API_KEY"
-    }
-  ],
-  "judge": {
-    "provider": "openai",
-    "url": "http://127.0.0.1:8081/v1",
-    "model": "fixed-judge",
-    "api_key_env": "BENCHMARK_JUDGE_KEY"
-  }
-}
-```
-
-The values shown for repeats, warmup, batch size, sampling interval and languages
-are the defaults. `variants` must contain at least one model. Each variant needs
-`provider` (`ollama` or `openai`) and `model`; `label`, `precision`, `runtime`,
-`url`, `api_key_env` and `model_file` are optional. An Ollama URL defaults to
-`http://127.0.0.1:11434`; an OpenAI-compatible URL defaults to
-`http://127.0.0.1:8080/v1`. API keys come from the named environment variable,
-defaulting to `OPENAI_API_KEY`, and are omitted from requests when empty.
-`model_file` adds a SHA-256 hash of a local weights file to the report.
-Precision and runtime are supplied labels, so match them to the server actually
-serving each model.
-
-Provision and start the selected servers before the benchmark. It runs variants
-serially and does not start external inference servers or quantize weights.
-For separate model launches on shared hardware, run one variant per report with
-the same workload, settings and fixed judge. Omit `judge` for translation and
-deterministic checks only. The judge supports Portuguese targets and can use
-either provider; the OpenAI-compatible judge requires JSON Schema structured
-output support.
-
-| Metric | Measurement |
-| --- | --- |
-| p50 and p95 latency | Complete workload translation time, including client retries and failed attempts. Warmup and judge execution are excluded. |
-| Cues per second | Successfully translated cues divided by total measured translation time. |
-| Tokens per second | Provider-reported completion tokens divided by translation time; unavailable when any measured run lacks token counts. |
-| Guardrail pass rate | Fraction of attempted cues passing deterministic source/output checks and subtitle language/layout checks. |
-| Mean adequacy and scored runs | Mean of available judge scores and the number of runs actually scored. Judge outages retain a missing score. |
-| Memory, swap and VRAM | Sampled peak host memory use, peak swap use, and minimum free NVIDIA VRAM. These are host-wide observations; unsupported counters remain unavailable. |
-
-The JSON also retains each output, error, resource sample, judge verdict, workload
-hash, prompt version and runtime identity. Exit status `0` means every measured
-translation completed. Quality rejections remain in the report and do not change
-that exit status. See the [benchmark methodology and measured baselines](benchmarks/README.md)
-for reproducible comparison instructions and results.
+See the [subzero-benchmark repository](https://github.com/yuri-rod/subzero-benchmark) for configuration examples, baseline comparisons, and reproduction instructions.
 
 ### Merge bilingual subtitles (`subzero merge`)
 

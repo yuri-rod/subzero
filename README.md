@@ -93,9 +93,9 @@ An optional macOS policy uses [`compute_phase`](src/subzero/compute.py) to combi
 
 [`PressureWatchdog`](src/subzero/compute.py) samples macOS `vm_stat`/`sysctl`, Linux `/proc/meminfo`, and NVIDIA free VRAM. Configurable byte thresholds block new compute phases and defer queued jobs with `phase=resource_pressure` and a retry time, without consuming handler retries. `/health` exposes the snapshot and blocking reason. Under a managed compute policy, the watchdog acquires the idle lease before stopping Ollama; active leases remain untouched. Admission resumes when pressure clears. Thresholds default to disabled. See [pressure configuration](docs/usage.md#resource-pressure-and-deferred-jobs).
 
-### Quantization benchmarks
+### Model benchmarks
 
-[`subzero benchmark`](src/subzero/benchmark.py) runs a fixed subtitle workload through Ollama or OpenAI-compatible servers and writes JSON plus Markdown: p50/p95 workload latency, cues/sec, reported completion tokens/sec, sampled host memory/swap, deterministic guardrail rate, and optional judge adequacy. Reports retain outputs, failures, model/workload hashes, and missing metrics. The [BF16 versus Q8_0 baseline](docs/benchmarks/README.md) includes measured results, runtime settings, and reproduction steps. The harness uses the standard library and adds no base CLI dependencies.
+For inference throughput, latency, memory sampling, and quantization benchmarks across translation backends, see the separate [subzero-benchmark](https://github.com/yuri-rod/subzero-benchmark) tool.
 
 | Area | Implementation | Tests |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ An optional macOS policy uses [`compute_phase`](src/subzero/compute.py) to combi
 | Candidate validation and installation | [syncflow.py](src/subzero/worker/syncflow.py) | [test_syncflow.py](tests/worker/test_syncflow.py) |
 | Worker API and authentication | [api.py](src/subzero/worker/api.py) | [test_api_auth.py](tests/worker/test_api_auth.py), [test_api_jobs.py](tests/worker/test_api_jobs.py) |
 | Queued providers and semantic repair | [translate.py](src/subzero/translate.py), [syncflow.py](src/subzero/worker/syncflow.py) | [queued providers](tests/worker/test_worker_providers.py), [targeted repair](tests/worker/test_semantic_retry.py) |
-| Resource admission and benchmarking | [compute.py](src/subzero/compute.py), [benchmark.py](src/subzero/benchmark.py) | [pressure controls](tests/test_compute_pressure.py), [benchmark harness](tests/test_benchmark.py) |
+| Resource admission | [compute.py](src/subzero/compute.py) | [pressure controls](tests/test_compute_pressure.py) |
 | Jellyfin, OpenSubtitles, and qBittorrent | [Jellyfin client](src/subzero/worker/jellyfin.py), [subtitle search](src/subzero/worker/opensubs.py), [completion watcher](src/subzero/worker/qbt_watch.py) | [Jellyfin](tests/worker/test_jellyfin.py), [OpenSubtitles](tests/worker/test_opensubs.py), [qBittorrent](tests/worker/test_qbt_watch.py) |
 | Subtitle contribution | [contribute.py](src/subzero/worker/contribute.py) | [test_contribute.py](tests/worker/test_contribute.py) |
 

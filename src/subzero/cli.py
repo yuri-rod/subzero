@@ -602,14 +602,6 @@ def build_parser() -> argparse.ArgumentParser:
     trans.add_argument("--cast", default=None, metavar="SPEC", help="character genders for pronoun agreement, e.g. Ana:f,Rick:m")
     trans.set_defaults(func=cmd_translate)
 
-    bench = sub.add_parser("benchmark", help="benchmark subtitle translation models with JSON and Markdown reports")
-    bench.add_argument("--config", required=True, help="JSON workload and model configuration")
-    bench.add_argument("--output", required=True, help="report .json path; also writes a .md report")
-    def run_benchmark(args):
-        from .benchmark import command
-        return command(args)
-    bench.set_defaults(func=run_benchmark)
-
     merge = sub.add_parser("merge", help="merge two subtitles into dual-language/bilingual subtitles")
     merge.add_argument("primary", help="primary language subtitle file")
     merge.add_argument("secondary", help="secondary language subtitle file")

@@ -4,11 +4,10 @@ import subprocess
 import sys
 
 
-def test_benchmark_and_subtitle_guards_import_without_optional_worker_dependencies(tmp_path):
+def test_subtitle_guards_import_without_optional_worker_dependencies(tmp_path):
     source = Path(__file__).resolve().parents[1] / 'src'
     result = subprocess.run([sys.executable, '-S', '-c', '''
 import sys
-import subzero.benchmark
 from subzero.worker import Config
 from subzero.worker.guards import check_excellence_guards
 from subzero.worker.srt import same_language
