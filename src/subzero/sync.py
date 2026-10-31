@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import os
 from pathlib import Path
 import shutil
+import subprocess
+import tempfile
 
 from .core import read
 from .extract import require_ffmpeg, ToolError
@@ -118,17 +120,20 @@ def auto_sync_file(
             if result is None:
                 pw = piecewise_correction(report)
                 if pw:
-                    shifted_text, count = shift_timestamps(content, segments=pw)
-                    repaired_report = verify_text(shifted_text, ref)
-                    if repaired_report.status == "pass":
-                        content = shifted_text
-                        result = SyncResult(
-                            target,
-                            count,
-                            pw[0].offset,
-                            method="piecewise_synced",
-                            report=repaired_report.json(),
-                        )
+                    try:
+                        shifted_text, count = shift_timestamps(content, segments=pw)
+                        repaired_report = verify_text(shifted_text, ref)
+                        if repaired_report.status == "pass":
+                            content = shifted_text
+                            result = SyncResult(
+                                target,
+                                count,
+                                pw[0].offset,
+                                method="piecewise_synced",
+                                report=repaired_report.json(),
+                            )
+                    except ValueError:
+                        pass
     except Exception:
         pass
 
@@ -143,7 +148,21 @@ def auto_sync_file(
                 if not bfile.exists():
                     shutil.copy2(sub_p, bfile)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content.encode("utf-8"))
+            with tempfile.NamedTemporaryFile(
+                mode="wb", delete=False, dir=target.parent, prefix=".subzero-", suffix=".subzero-part",
+            ) as fh:
+                try:
+                    fh.write(content.encode("utf-8"))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                    fh.close()
+                    if sub_p.exists():
+                        shutil.copymode(sub_p, fh.name)
+                    os.replace(fh.name, target)
+                finally:
+                    fh.close()
+                    if os.path.exists(fh.name):
+                        os.unlink(fh.name)
         return result
 
     offset = probe_audio_delay(video_p)

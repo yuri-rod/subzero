@@ -733,3 +733,53 @@ sys.exit(0)
     with compute.compute_phase('vision') as strict:
         assert strict is True
         assert compute.compute_lease_fd() is not None
+
+
+def test_is_pgid_alive_filters_zombies_in_proc(monkeypatch, tmp_path):
+    monkeypatch.setattr('os.killpg', lambda pgid, sig: None)
+    fake_proc = tmp_path / 'proc'
+    fake_proc.mkdir()
+    pid_dir = fake_proc / '456'
+    pid_dir.mkdir()
+    # /proc/[pid]/stat format: pid (comm) state ppid pgrp ...
+    (pid_dir / 'stat').write_text('456 (child) Z 1 999 0 0\n', encoding='ascii')
+
+    monkeypatch.setattr('os.path.isdir', lambda path: True if path == '/proc' else os.path.isdir(path))
+    monkeypatch.setattr('os.listdir', lambda path: ['456'] if path == '/proc' else os.listdir(path))
+    real_open = open
+
+    def fake_open(file, *args, **kwargs):
+        if str(file) == '/proc/456/stat':
+            return real_open(pid_dir / 'stat', *args, **kwargs)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr('builtins.open', fake_open)
+    assert compute._is_pgid_alive(999) is False
+
+
+def test_is_pgid_alive_reports_running_process_in_proc(monkeypatch, tmp_path):
+    monkeypatch.setattr('os.killpg', lambda pgid, sig: None)
+    fake_proc = tmp_path / 'proc'
+    fake_proc.mkdir()
+    pid_dir = fake_proc / '789'
+    pid_dir.mkdir()
+    (pid_dir / 'stat').write_text('789 (worker) S 1 999 0 0\n', encoding='ascii')
+
+    monkeypatch.setattr('os.path.isdir', lambda path: True if path == '/proc' else os.path.isdir(path))
+    monkeypatch.setattr('os.listdir', lambda path: ['789'] if path == '/proc' else os.listdir(path))
+    real_open = open
+
+    def fake_open(file, *args, **kwargs):
+        if str(file) == '/proc/789/stat':
+            return real_open(pid_dir / 'stat', *args, **kwargs)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr('builtins.open', fake_open)
+    assert compute._is_pgid_alive(999) is True
+
+
+def test_is_pgid_alive_filters_zombies_via_ps(monkeypatch):
+    monkeypatch.setattr('os.killpg', lambda pgid, sig: None)
+    monkeypatch.setattr('os.path.isdir', lambda path: False)
+    monkeypatch.setattr(subprocess, 'check_output', lambda *args, **kwargs: 'Z\nZ+\n')
+    assert compute._is_pgid_alive(999) is False

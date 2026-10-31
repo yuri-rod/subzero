@@ -55,6 +55,7 @@ def shift_timestamps(
     delta_seconds: float = 0.0,
     scale_factor: float = 1.0,
     segments: list | None = None,
+    max_adjustment: float | None = 2.0,
 ) -> tuple[str, int]:
     """Shift and/or stretch subtitle timecodes.
 
@@ -92,8 +93,14 @@ def shift_timestamps(
         start_sec = max(0.0, (raw_start * scale) + offset)
         end_sec = max(start_sec, (raw_end * scale) + offset)
         if segments and start_sec < last_end:
+            overlap = last_end - start_sec
+            if max_adjustment is not None and overlap > max_adjustment:
+                raise ValueError(
+                    f"Excessive cue movement required to order timestamps: {overlap:.2f}s exceeds maximum {max_adjustment:.2f}s"
+                )
             start_sec = last_end + 0.05
-            end_sec = max(start_sec + 0.1, end_sec)
+            raw_duration = (raw_end - raw_start) * scale
+            end_sec = max(start_sec + raw_duration, end_sec)
         last_end = end_sec
         shifted_count += 1
         return f"{_to_timestamp(start_sec, sep)} --> {_to_timestamp(end_sec, sep)}"
@@ -111,6 +118,7 @@ def shift_file(
     backup_dir: str | Path | None = None,
     dry: bool = False,
     segments: list | None = None,
+    max_adjustment: float | None = 2.0,
 ) -> tuple[Path, int]:
     """Shift and/or speed-stretch a subtitle file in place or to a target output path."""
     if (from_fps is None) != (to_fps is None):
@@ -129,6 +137,7 @@ def shift_file(
         delta_seconds=delta_seconds,
         scale_factor=scale_factor,
         segments=segments,
+        max_adjustment=max_adjustment,
     )
 
     if dry:

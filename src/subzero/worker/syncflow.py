@@ -633,10 +633,13 @@ class SyncFlow:
             if repaired is None:
                 pw = piecewise_correction(report)
                 if pw:
-                    shifted,_ = shift_timestamps(text,segments=pw)
-                    shifted = sanitize_to_excellence(shifted, job.target_lang, self.accepted_langs)
-                    if verify_text(shifted,reference).status == 'pass':
-                        repaired = shifted
+                    try:
+                        shifted,_ = shift_timestamps(text,segments=pw)
+                        shifted = sanitize_to_excellence(shifted, job.target_lang, self.accepted_langs)
+                        if verify_text(shifted,reference).status == 'pass':
+                            repaired = shifted
+                    except ValueError:
+                        pass
             if repaired is None:
                 continue
             report = verify_text(repaired,reference,phase=45)

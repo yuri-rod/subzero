@@ -117,11 +117,39 @@ def test_sync_output_error_does_not_fall_back_to_container_delay(monkeypatch, tm
     def unexpected_fallback(*args):
         pytest.fail("A failed write must not change the synchronization method")
 
-    monkeypatch.setattr(Path, "write_bytes", refuse_write)
+    monkeypatch.setattr("os.replace", refuse_write)
     monkeypatch.setattr("subzero.sync.probe_audio_delay", unexpected_fallback)
     with pytest.raises(PermissionError, match="Output is read-only"):
         auto_sync_file(video, subtitle, output=tmp_path / "synced.srt")
     assert subtitle.read_text(encoding="utf-8") == original
+
+
+def test_auto_sync_file_atomic_write_failure_preserves_target_and_cleans_tmp(monkeypatch, tmp_path):
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"video")
+    sub = tmp_path / "movie.srt"
+    original = "1\n00:00:05,000 --> 00:00:07,000\nOriginal cue\n"
+    sub.write_text(original, encoding="utf-8")
+    out = tmp_path / "synced.srt"
+
+    monkeypatch.setattr("subzero.sync.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("subzero.reference.build_reference", lambda vid, cache: {})
+    monkeypatch.setattr("subzero.reference.verify_text", lambda txt, ref: Report("pass", "aligned"))
+
+    def failing_replace(src, dst):
+        raise OSError("Disk write failed during atomic replacement")
+
+    monkeypatch.setattr("os.replace", failing_replace)
+
+    with pytest.raises(OSError, match="Disk write failed"):
+        auto_sync_file(video, sub, output=out)
+
+    # Subtitle file must remain completely undamaged and out must not exist
+    assert sub.read_text(encoding="utf-8") == original
+    assert not out.exists()
+    # Any temporary files must be cleaned up
+    tmp_files = list(tmp_path.glob(".subzero-*"))
+    assert tmp_files == []
 
 
 def test_auto_sync_preserves_first_backup_and_rejects_symlink(monkeypatch, tmp_path):

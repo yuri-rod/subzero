@@ -2301,7 +2301,7 @@ def test_resync_succeeds_with_piecewise_correction(setup, monkeypatch):
     monkeypatch.setattr('subzero.worker.syncflow.correction', lambda rep: None)
     monkeypatch.setattr(
         'subzero.worker.syncflow.piecewise_correction',
-        lambda rep: [Segment(0.0, 450.0, -3.0), Segment(450.0, 950.0, -33.0)],
+        lambda rep: [Segment(0.0, 450.0, -3.0), Segment(450.0, 950.0, -3.2)],
     )
 
     job = jobs.enqueue('id', 'resync', 'pt-BR')

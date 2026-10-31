@@ -223,18 +223,58 @@ def accepts_cancel_check(fn) -> bool:
 
 
 def _is_pgid_alive(pgid: int | None) -> bool:
-    """Return True if at least one process in the process group is running."""
+    """Return True if at least one non-zombie process in the process group is running."""
     if pgid is None or os.name != 'posix':
         return False
     try:
         os.killpg(pgid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
         return False
+
+    # killpg(pgid, 0) succeeds for zombie processes, which hold no file descriptors or locks.
+    # On Linux, inspect /proc to confirm surviving group members are not all zombies (state 'Z').
+    if os.path.isdir('/proc'):
+        try:
+            found_any = False
+            for entry in os.listdir('/proc'):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f'/proc/{entry}/stat', 'r', encoding='ascii', errors='ignore') as f:
+                        line = f.read()
+                    after_comm = line.rsplit(')', 1)[1].split()
+                    state = after_comm[0]
+                    pgrp = int(after_comm[2])
+                    if pgrp == pgid:
+                        found_any = True
+                        if state != 'Z':
+                            return True
+                except (OSError, IndexError, ValueError):
+                    continue
+            if found_any:
+                return False
+        except OSError:
+            pass
+
+    # Fallback for systems without /proc (or where /proc read was inconclusive)
+    try:
+        out = subprocess.check_output(
+            ['ps', '-o', 'state=', '-g', str(pgid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=1.0,
+        )
+        states = [s.strip() for s in out.splitlines() if s.strip()]
+        if states and all(s.startswith('Z') for s in states):
+            return False
+    except Exception:
+        pass
+
+    return True
 
 
 def reap_process_group(proc, timeout: float = 10.0, name: str = 'child') -> None:

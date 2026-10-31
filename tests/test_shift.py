@@ -122,17 +122,34 @@ def test_shift_timestamps_piecewise_enforces_monotonic_cue_order():
 Boundary 1
 
 2
+00:10:00,100 --> 00:10:03,000
+Boundary 2
+"""
+    segments = [
+        Segment(start=0.0, end=600.0, offset=0.2),
+        Segment(start=600.0, end=1200.0, offset=0.0),
+    ]
+    shifted, count = shift_timestamps(srt, segments=segments)
+    assert count == 2
+    assert "00:09:58,200 --> 00:10:00,200" in shifted
+    # Second cue adjusted forward to preserve ordering and original duration
+    assert "00:10:00,250 --> 00:10:03,150" in shifted
+
+
+def test_shift_timestamps_piecewise_rejects_excessive_cue_movement():
+    from subzero.timing import Segment
+
+    srt = """1
+00:09:58,000 --> 00:10:00,000
+Boundary 1
+
+2
 00:10:01,000 --> 00:10:03,000
 Boundary 2
 """
-    # Segment 1 has +10s offset (cues land at 10:08 - 10:10)
-    # Segment 2 has -15s offset (cues without ordering would land at 09:46 - 09:48)
     segments = [
         Segment(start=0.0, end=600.0, offset=10.0),
         Segment(start=600.0, end=1200.0, offset=-15.0),
     ]
-    shifted, count = shift_timestamps(srt, segments=segments)
-    assert count == 2
-    assert "00:10:08,000 --> 00:10:10,000" in shifted
-    # Second cue must be ordered after 10:10
-    assert "00:10:10,050 --> 00:10:10,150" in shifted
+    with pytest.raises(ValueError, match="Excessive cue movement"):
+        shift_timestamps(srt, segments=segments)
