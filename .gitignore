@@ -9,5 +9,7 @@ dist/
 uv.lock
 .env
 *.db
+*.sqlite
+.agent-memory/
 watch.json
 logs/

@@ -69,7 +69,7 @@ Job routes use shared bearer-token authentication with `hmac.compare_digest` in 
 
 ### Staged installation
 
-Repair workflows retain candidates through [`SyncFlow.stage`](src/subzero/worker/syncflow.py), then validate before `install`. Installation checks job and source state, backs up existing subtitles, and writes through a temporary file, `fsync`, and atomic replacement or creation. Basic delivery uses [`tracks.deliver`](src/subzero/worker/tracks.py) and writes directly. A later audit or media-server refresh can fail after installation; inspect the installed file and job details before retrying.
+Repair workflows retain candidates through [`SyncFlow.stage`](src/subzero/worker/syncflow.py), then validate before `install`. Installation checks job and source state, backs up existing subtitles without overwriting earlier `.orig.srt` or backup copies, rejects symlink targets, and writes through a temporary file, `fsync`, and atomic replacement or creation. Basic delivery uses [`tracks.deliver`](src/subzero/worker/tracks.py) with validated language tags, symlink checks, and atomic writes. A later audit or media-server refresh can fail after installation; inspect the installed file and job details before retrying.
 
 ### Local and API inference paths
 
@@ -112,6 +112,14 @@ An optional macOS policy uses [`compute_phase`](src/subzero/compute.py) to combi
 | Resource admission and benchmarking | [compute.py](src/subzero/compute.py), [benchmark.py](src/subzero/benchmark.py) | [pressure controls](tests/test_compute_pressure.py), [benchmark harness](tests/test_benchmark.py) |
 | Jellyfin, OpenSubtitles, and qBittorrent | [Jellyfin client](src/subzero/worker/jellyfin.py), [subtitle search](src/subzero/worker/opensubs.py), [completion watcher](src/subzero/worker/qbt_watch.py) | [Jellyfin](tests/worker/test_jellyfin.py), [OpenSubtitles](tests/worker/test_opensubs.py), [qBittorrent](tests/worker/test_qbt_watch.py) |
 | Subtitle contribution | [contribute.py](src/subzero/worker/contribute.py) | [test_contribute.py](tests/worker/test_contribute.py) |
+
+### Security and operational limits
+
+- The worker HTTP API authenticates requests with a shared `BEARER_TOKEN` (`Authorization: Bearer ...` or `X-Api-Key`). Bind the service to localhost (`127.0.0.1`) or place it behind an authenticated reverse proxy when running on a shared network.
+- Language tags on job creation, coverage queries, and sidecar path assembly are restricted to `[a-zA-Z]{2,3}(?:-[a-zA-Z]{2})?`. Subtitle writes reject symbolic links at the destination path and preserve existing backup files instead of overwriting them on repeated runs.
+- Cancellation is cooperative between pipeline checkpoints and does not force-kill an in-flight native FFmpeg, Whisper, or Vision OCR child process immediately.
+- External translation providers (OpenAI-compatible endpoints, DeepL Free, or remote Ollama instances) transmit subtitle dialogue to the configured endpoint and depend on external network availability and rate limits.
+- Apple Vision burned-in caption OCR requires macOS and the Swift compiler (`swiftc`). Linux and Windows support subtitle cleanup, format conversion, timing verification, translation, and the worker queue without Vision OCR.
 
 ## Development and tests
 

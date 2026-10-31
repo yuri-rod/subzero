@@ -24,6 +24,38 @@ Track full media runs separately from code tests. For each run, record the insta
 - [x] Explicit environment-file selection fails when the file is absent or the option has no argument. Obsolete automatic configuration discovery was removed without breaking explicit compatibility paths.
 - [x] The native LibreTranslate runtime is isolated, hash-pinned and verified before use. Translation runs on CPU without network access. Installer support remains limited to the documented interpreter and platform.
 
+## Prioritized engineering roadmap
+
+Estimated effort below reflects implementation, automated regression coverage, and end-to-end media verification (total: 34 to 44 hours).
+
+1. **Multi-track embedded subtitle selection and commentary filtering (5 to 6 hours)**
+   - Inspect all embedded text subtitle streams in [`SyncFlow`](src/subzero/worker/syncflow.py) and [`extract.py`](src/subzero/extract.py) instead of stopping at the first matching language tag when multiple tracks exist (full dialogue, SDH, commentary, signs/songs).
+   - Rank candidate streams by cue density, speech-timing overlap against [`reference.py`](src/subzero/reference.py), and stream title metadata so commentary or sparse forced tracks are not selected ahead of main dialogue.
+
+2. **Fine-grained subprocess cancellation for FFmpeg, Whisper, and Vision OCR (5 to 7 hours)**
+   - Propagate job cancellation tokens into [`tracks.run_ffmpeg`](src/subzero/worker/tracks.py), [`asr_process.py`](src/subzero/worker/asr_process.py), and [`ocr.py`](src/subzero/ocr.py) child processes so `DELETE /jobs/{id}` terminates active media extraction or transcription promptly instead of waiting for the current phase to finish.
+   - Ensure child process groups are reaped cleanly before releasing the shared compute lease.
+
+3. **Piecewise drift and commercial-break resynchronization (6 to 8 hours)**
+   - Extend [`timing.py`](src/subzero/timing.py) and [`sync.py`](src/subzero/sync.py) beyond global linear offset and standard framerate ratios to detect segmented constant offsets across act breaks or recut broadcast masters.
+   - Require per-segment speech-anchor confidence thresholds before applying piecewise shifts so sparse music or silence intervals do not skew dialogue timing.
+
+4. **End-to-end worker verification for wrapped SDH cleanup and OCR ROI reconciliation (5 to 6 hours)**
+   - Validate multiline SDH stripping, coarse/dense Vision OCR region admission, and censorship-bar fragment joining across complete episode retries in [`SyncFlow`](src/subzero/worker/syncflow.py).
+   - Record deterministic fixture replays covering sentence-unit redistribution, backup retention, and Jellyfin library refresh failure recovery.
+
+5. **CLI and worker translation provider configuration unification (4 to 5 hours)**
+   - Align standalone CLI translation defaults in [`cli.py`](src/subzero/cli.py), [`translate.py`](src/subzero/translate.py), and [`ocr.py`](src/subzero/ocr.py) with [`worker/config.py`](src/subzero/worker/config.py) so `subzero translate` and `subzero fill-gaps` can read the same provider, model, and fallback settings without hardcoded model names.
+   - Add dry-run provider preflight checks that verify model presence and endpoint reachability before running audio extraction or OCR.
+
+6. **DeepL Free mid-episode quota exhaustion and resume recovery (4 to 5 hours)**
+   - Handle mid-translation HTTP 456 quota errors in [`deepl.py`](src/subzero/worker/deepl.py) and [`SyncFlow`](src/subzero/worker/syncflow.py) by flushing completed blocks to [`translate_cache.py`](src/subzero/worker/translate_cache.py) and transitioning the job to `paused` without losing partial progress.
+   - Add automated tests for partial-episode cache resume after quota reset or explicit fallback switch.
+
+7. **Cross-platform OCR fallback for Linux and Windows workers (5 to 7 hours)**
+   - Add an optional cross-platform burned-in caption backend behind the existing [`ocr.py`](src/subzero/ocr.py) frame-sampling and timeline-coalescing pipeline for non-macOS hosts where Apple Vision (`swiftc`) is unavailable.
+   - Keep the Swift Vision bridge as the default on macOS and gate the cross-platform backend behind an optional dependency extra.
+
 ## Provider limitations and operating rules
 
 DeepL Free uses a fixed Free endpoint and checks the episode budget before translation. With `TRANSLATION_FALLBACK` configured, an episode that exceeds the allowance uses that provider; otherwise the queue pauses. Account usage can change outside this worker, so quota exhaustion during translation still needs a separate check. Paid usage remains disabled.
