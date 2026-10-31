@@ -1974,6 +1974,100 @@ def test_audit_falls_back_to_embedded_when_sidecar_rejected(setup):
     assert flow.current(media, 'pt-BR')
 
 
+def test_embedded_track_score_filters_commentary_forced_and_signs():
+    from subzero.worker.jellyfin import EmbeddedSub
+    from subzero.worker.syncflow import embedded_track_score
+
+    commentary_flag = EmbeddedSub(index=1, lang='por', codec='subrip', title='Portuguese', commentary=True)
+    commentary_title = EmbeddedSub(index=2, lang='por', codec='subrip', title='Comentários do Diretor')
+    forced_flag = EmbeddedSub(index=3, lang='por', codec='subrip', title='Portuguese', forced=True)
+    forced_title = EmbeddedSub(index=4, lang='por', codec='subrip', title='Português (Forçada)')
+    signs_title = EmbeddedSub(index=5, lang='por', codec='subrip', title='Português Músicas e Letreiros')
+    dialogue = EmbeddedSub(index=6, lang='por', codec='subrip', title='Português (Brasil)', default=True)
+
+    assert embedded_track_score(commentary_flag, 'pt-BR') <= -100
+    assert embedded_track_score(commentary_title, 'pt-BR') <= -100
+    assert embedded_track_score(forced_flag, 'pt-BR') <= -100
+    assert embedded_track_score(forced_title, 'pt-BR') <= -100
+    assert embedded_track_score(signs_title, 'pt-BR') <= -50
+    assert embedded_track_score(dialogue, 'pt-BR') >= 150
+
+
+def test_embedded_candidates_ranks_by_cue_density_and_speech_overlap(setup):
+    flow, jobs, provider, media = setup
+    from subzero.worker.jellyfin import EmbeddedSub
+
+    sparse = EmbeddedSub(index=10, lang='por', codec='subrip', title='Portuguese', external=False, sub_index=0)
+    full = EmbeddedSub(index=11, lang='por', codec='subrip', title='Portuguese', external=False, sub_index=1)
+    media.embedded = [sparse, full]
+
+    sparse_text = "1\n00:01:00,000 --> 00:01:02,000\nHello\n\n2\n00:02:00,000 --> 00:02:02,000\nWorld\n"
+    full_text = dialogue(50)
+
+    def fake_extract(path, stream):
+        if stream.index == 10:
+            return sparse_text
+        return full_text
+
+    flow.extract_embedded_text = fake_extract
+    ref = {
+        'duration': 3600.0,
+        'speech': [(float(i * 10), float(i * 10 + 2)) for i in range(50)],
+        'spans': [],
+    }
+
+    ranked = flow.embedded_candidates(media, 'pt-BR', reference=ref)
+    assert len(ranked) == 2
+    # Full dialogue stream (index 11) must be ranked first due to healthy density and overlap
+    assert ranked[0].index == 11
+
+
+def test_audit_selects_dialogue_over_commentary_stream(setup):
+    flow, jobs, provider, media = setup
+    from subzero.worker.jellyfin import EmbeddedSub
+
+    comm = EmbeddedSub(index=1, lang='por', codec='subrip', title='Comentários', external=False, commentary=True, sub_index=0)
+    dial = EmbeddedSub(index=2, lang='por', codec='subrip', title='Português (Brasil)', external=False, sub_index=1)
+    media.embedded = [comm, dial]
+
+    comm_text = dialogue().replace('Test dialogue', 'Diretor falando sobre a cena')
+    dial_text = dialogue()
+
+    def fake_extract(path, stream):
+        if stream.index == 1:
+            return comm_text
+        return dial_text
+
+    flow.extract_embedded_text = fake_extract
+    job = run(flow, jobs, 'audit')
+    assert job.state == 'done'
+    installed = Path(media.path).with_suffix('.pt-BR.srt').read_text(encoding='utf-8')
+    assert 'Diretor falando' not in installed
+    assert 'Test dialogue' in installed
+
+
+def test_embedded_candidates_falls_back_to_disk_when_jellyfin_has_only_commentary(setup, monkeypatch):
+    flow, jobs, provider, media = setup
+    from subzero.worker.jellyfin import EmbeddedSub
+    from subzero.extract import SubtitleStream
+
+    media.embedded = [
+        EmbeddedSub(index=1, lang='por', codec='subrip', title='Comentários', external=False, commentary=True, sub_index=0)
+    ]
+
+    disk_streams = [
+        SubtitleStream(index=1, codec='subrip', language='por', title='Comentários', is_text=True, disposition={'comment': 1}),
+        SubtitleStream(index=2, codec='subrip', language='por', title='Português (Brasil)', is_text=True, disposition={'default': 1}),
+    ]
+    monkeypatch.setattr('subzero.extract.list_subtitle_streams', lambda p: disk_streams)
+
+    candidates = flow.embedded_candidates(media, 'pt-BR')
+    # Must have fallen back to disk and found the non-commentary dialogue stream
+    indexes = [getattr(c, 'index', -1) for c in candidates]
+    assert 2 in indexes
+    assert candidates[0].index == 2
+
+
 def test_semantic_gate_blocks_bad_translation(setup, monkeypatch):
     from subzero.worker import syncflow
     from subzero.translation_quality import Verdict

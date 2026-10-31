@@ -16,8 +16,19 @@ def test_forced_and_commentary_tracks_are_excluded():
         {'index':1,'codec_type':'subtitle','codec_name':'subrip','disposition':{'forced':1}},
         {'index':2,'codec_type':'subtitle','codec_name':'subrip','tags':{'title':'Commentary'}},
         {'index':3,'codec_type':'subtitle','codec_name':'subrip','tags':{'language':'eng'}},
+        {'index':4,'codec_type':'subtitle','codec_name':'subrip','disposition':{'comment':1}},
+        {'index':5,'codec_type':'subtitle','codec_name':'subrip','tags':{'title':"Director's Cut"}},
+        {'index':6,'codec_type':'subtitle','codec_name':'subrip','tags':{'title':'Songs and Signs'}},
     ]
     assert [s['index'] for s in reference.dialogue_tracks(tracks)] == [3]
+
+
+def test_dialogue_tracks_ranks_clean_dialogue_before_sdh():
+    tracks = [
+        {'index':1,'codec_type':'subtitle','codec_name':'subrip','tags':{'language':'eng','title':'English (SDH)'},'disposition':{'hearing_impaired':1}},
+        {'index':2,'codec_type':'subtitle','codec_name':'subrip','tags':{'language':'eng','title':'English'},'disposition':{'default':1}},
+    ]
+    assert [s['index'] for s in reference.dialogue_tracks(tracks)] == [2, 1]
 
 
 def test_absent_audio_evidence_cannot_certify_a_subtitle():

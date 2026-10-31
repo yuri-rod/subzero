@@ -24,13 +24,34 @@ def fingerprint(video):
 def dialogue_tracks(streams):
     selected = []
     for stream in streams:
-        title = stream.get('tags',{}).get('title','').lower()
-        if (stream.get('codec_type') == 'subtitle'
-                and stream.get('codec_name') in ('subrip','ass','ssa','mov_text','webvtt')
-                and not stream.get('disposition',{}).get('forced')
-                and not any(word in title for word in ('forced','signs','commentary'))):
+        title = stream.get('tags', {}).get('title', '').lower()
+        disp = stream.get('disposition', {}) or {}
+        if (
+            stream.get('codec_type') == 'subtitle'
+            and stream.get('codec_name') in ('subrip', 'ass', 'ssa', 'mov_text', 'webvtt')
+            and not disp.get('forced')
+            and not disp.get('comment')
+            and not disp.get('commentary')
+            and not disp.get('lyrics')
+            and not any(word in title for word in (
+                'forced', 'forçada', 'forcada', 'signs', 'songs', 'lyrics',
+                'commentary', 'director', 'comentário', 'comentario', 'cast', 'producer'
+            ))
+        ):
             selected.append(stream)
-    return sorted(selected,key=lambda s: s.get('tags',{}).get('language') not in ('eng','en'))
+
+    def track_order(s):
+        disp = s.get('disposition', {}) or {}
+        lang = (s.get('tags', {}).get('language') or '').lower()
+        is_eng = lang in ('eng', 'en')
+        is_default = bool(disp.get('default'))
+        is_sdh = bool(
+            disp.get('hearing_impaired')
+            or any(w in s.get('tags', {}).get('title', '').lower() for w in ('sdh', 'cc'))
+        )
+        return (not is_eng, not is_default, is_sdh)
+
+    return sorted(selected, key=track_order)
 
 
 def _run(argv, **kwargs):

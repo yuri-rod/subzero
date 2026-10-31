@@ -19,7 +19,7 @@ from subzero.convert import parse_srt, dump_srt
 from subzero.ocr import fill_subtitle_gaps, uncovered_intervals
 from subzero.reference import build_reference, fingerprint, verify_text
 from subzero.shift import shift_timestamps
-from subzero.timing import Report, correction
+from subzero.timing import Report, correction, spans
 from subzero.translate import (TRANSLATION_PROMPT_VERSION, TRANSLATION_CONTEXT_CUES,
                                TRANSLATION_CONTEXT_CHARS, _is_native_translation,
                                _is_translategemma, _previous_context, translation_blocks)
@@ -59,25 +59,112 @@ def valid_cached_block(source, translated, target_lang, accepted_langs):
     return check_language_completeness(text, target_lang)[0]
 
 
-def embedded_track_score(stream, target_lang: str) -> int:
+def is_commentary_track(stream) -> bool:
+    title = (getattr(stream, 'title', '') or '').lower()
+    disp = getattr(stream, 'disposition', {}) or {}
+    return bool(
+        getattr(stream, 'commentary', False)
+        or disp.get('comment')
+        or disp.get('commentary')
+        or any(w in title for w in ('commentary', 'director', 'comentário', 'comentario', 'cast', 'producer'))
+    )
+
+
+def is_forced_track(stream) -> bool:
+    title = (getattr(stream, 'title', '') or '').lower()
+    disp = getattr(stream, 'disposition', {}) or {}
+    return bool(
+        getattr(stream, 'forced', False)
+        or disp.get('forced')
+        or any(w in title for w in ('forced', 'forçada', 'forcada'))
+    )
+
+
+def is_signs_or_songs_track(stream) -> bool:
+    title = (getattr(stream, 'title', '') or '').lower()
+    disp = getattr(stream, 'disposition', {}) or {}
+    return bool(
+        disp.get('lyrics')
+        or disp.get('karaoke')
+        or any(w in title for w in ('signs', 'songs', 'lyrics', 'musica', 'música', 'sing-along'))
+    )
+
+
+def speech_timing_overlap(cues: list[tuple[float, float]], speech: list[tuple[float, float]]) -> float:
+    """Return fraction of cues that overlap with speech intervals in reference."""
+    if not cues or not speech:
+        return 0.0
+    matched = 0
+    s_idx = 0
+    num_speech = len(speech)
+    for c_start, c_end in cues:
+        while s_idx < num_speech and speech[s_idx][1] < c_start:
+            s_idx += 1
+        if s_idx < num_speech and speech[s_idx][0] <= c_end:
+            matched += 1
+    return matched / len(cues)
+
+
+def cue_density(cues: list[tuple[float, float]], duration: float) -> float:
+    """Return cues per minute of video duration."""
+    if duration <= 0:
+        return float(len(cues))
+    return len(cues) / (duration / 60.0)
+
+
+def embedded_track_score(stream, target_lang: str, reference: dict | None = None, cues: list | None = None) -> int:
     title = (getattr(stream, 'title', '') or '').lower()
     codec = (getattr(stream, 'codec', '') or '').lower()
+    disp = getattr(stream, 'disposition', {}) or {}
     score = 100
-    if 'forced' in title:
+
+    if is_commentary_track(stream):
+        return -150
+    if is_forced_track(stream):
         return -100
+    if is_signs_or_songs_track(stream):
+        return -80
     if codec in ('hdmv_pgs_subtitle', 'dvd_subtitle', 'pgs', 'dvdsub', 'pgssub', 'xsub'):
         return -100
+
     if same_language(target_lang, 'pt-BR'):
         if any(w in title for w in ('brazil', 'brasil', 'pob', 'pt-br', 'pt_br')):
             score += 50
         elif any(w in title for w in ('european', 'portugal', 'pt-pt', 'pt_pt')):
             score -= 40
-    if any(w in title for w in ('sdh', 'cc')):
+
+    is_sdh = bool(
+        getattr(stream, 'hearing_impaired', False)
+        or disp.get('hearing_impaired')
+        or any(w in title for w in ('sdh', 'cc'))
+    )
+    if is_sdh:
         score -= 20
+
+    is_default = bool(getattr(stream, 'default', False) or disp.get('default'))
+    if is_default:
+        score += 20
+
     if codec in ('subrip', 'srt'):
         score += 10
     elif codec in ('ass', 'ssa', 'webvtt', 'mov_text'):
         score += 5
+
+    if cues is not None and reference:
+        duration = float(reference.get('duration') or 0)
+        density = cue_density(cues, duration)
+        if len(cues) < 20 or (duration >= 120 and density < 2.0):
+            score -= 120
+        else:
+            score += min(30, int(density))
+
+        speech = reference.get('speech') or []
+        if speech:
+            overlap = speech_timing_overlap(cues, speech)
+            score += int(overlap * 50)
+            if overlap < 0.2:
+                score -= 60
+
     return score
 
 
@@ -304,24 +391,47 @@ class SyncFlow:
             progress(phase,percent)
         return getattr(self,kind)(media,job,key,reference,guarded_progress)
 
-    def embedded_candidates(self, media, target_lang: str):
+    def embedded_candidates(self, media, target_lang: str, reference: dict | None = None):
         candidates = []
         embedded = getattr(media, 'embedded', []) or []
         for s in embedded:
             if is_embedded_match(s, target_lang):
                 candidates.append(s)
-        if not candidates and hasattr(media, 'path') and Path(media.path).exists():
+        has_usable = any(embedded_track_score(s, target_lang) > 0 for s in candidates)
+        if (not candidates or not has_usable) and hasattr(media, 'path') and Path(media.path).exists():
             try:
                 from subzero.extract import list_subtitle_streams
                 for s in list_subtitle_streams(media.path):
                     if not getattr(s, 'is_text', True):
                         continue
                     if is_embedded_match(s, target_lang):
-                        candidates.append(s)
+                        if not any(getattr(c, 'index', -1) == s.index for c in candidates):
+                            candidates.append(s)
             except ComputePressureError:
                 raise
             except Exception:
                 pass
+
+        if not candidates:
+            return []
+
+        if len(candidates) > 1 and reference and hasattr(media, 'path') and Path(media.path).exists():
+            scored = []
+            for s in candidates:
+                base_score = embedded_track_score(s, target_lang)
+                if base_score <= -100:
+                    scored.append((base_score, s))
+                    continue
+                try:
+                    raw = self.extract_embedded_text(media.path, s)
+                    cues = spans(raw) if raw else []
+                    score = embedded_track_score(s, target_lang, reference=reference, cues=cues)
+                except Exception:
+                    score = base_score
+                scored.append((score, s))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            return [s for _, s in scored]
+
         return sorted(candidates, key=lambda s: embedded_track_score(s, target_lang), reverse=True)
 
     def extract_embedded_text(self, video_path: str, stream) -> str:
@@ -375,7 +485,7 @@ class SyncFlow:
                     shutil.copy2(path,quarantine/f'{job.target_lang}-{digest(text)}.srt')
                     path.unlink()
                 self.service.jellyfin.refresh(media.item_id)
-        for stream in self.embedded_candidates(media, job.target_lang):
+        for stream in self.embedded_candidates(media, job.target_lang, reference=reference):
             self.active(job)
             raw = self.extract_embedded_text(media.path, stream)
             if not raw or not raw.strip():

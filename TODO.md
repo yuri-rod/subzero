@@ -23,12 +23,13 @@ Track full media runs separately from code tests. For each run, record the insta
 - [x] Literal sidecar matching handles bracketed release names without expanding them as glob patterns.
 - [x] Explicit environment-file selection fails when the file is absent or the option has no argument. Obsolete automatic configuration discovery was removed without breaking explicit compatibility paths.
 - [x] The native LibreTranslate runtime is isolated, hash-pinned and verified before use. Translation runs on CPU without network access. Installer support remains limited to the documented interpreter and platform.
+- [x] Multi-track embedded subtitle selection filters commentary, forced, and signs or songs tracks in extraction and worker flows, ranking candidate streams by stream metadata, cue density, and speech-timing overlap against audio references.
 
 ## Prioritized engineering roadmap
 
-Estimated effort below reflects implementation, automated regression coverage, and end-to-end media verification (total: 34 to 44 hours).
+Estimated effort below reflects implementation, automated regression coverage, and end-to-end media verification (remaining: 29 to 38 hours).
 
-1. **Multi-track embedded subtitle selection and commentary filtering (5 to 6 hours)**
+1. [x] **Multi-track embedded subtitle selection and commentary filtering (completed)**
    - Inspect all embedded text subtitle streams in [`SyncFlow`](src/subzero/worker/syncflow.py) and [`extract.py`](src/subzero/extract.py) instead of stopping at the first matching language tag when multiple tracks exist (full dialogue, SDH, commentary, signs/songs).
    - Rank candidate streams by cue density, speech-timing overlap against [`reference.py`](src/subzero/reference.py), and stream title metadata so commentary or sparse forced tracks are not selected ahead of main dialogue.
 

@@ -34,6 +34,10 @@ class EmbeddedSub:
     # Position among embedded subtitles. Jellyfin Index also counts sidecars
     # and cannot be used directly for FFmpeg subtitle mapping.
     sub_index: int = 0
+    forced: bool = False
+    hearing_impaired: bool = False
+    default: bool = False
+    commentary: bool = False
 
 
 @dataclass
@@ -96,12 +100,20 @@ class JellyfinClient:
         for stream in sorted((s for s in streams if s.get("Type") == "Subtitle"),
                              key=lambda s: s.get("Index", 0)):
             external = bool(stream.get("IsExternal"))
+            forced = bool(stream.get("IsForced") or stream.get("Forced"))
+            hearing_impaired = bool(stream.get("IsHearingImpaired") or stream.get("HearingImpaired"))
+            default = bool(stream.get("IsDefault") or stream.get("Default"))
+            commentary = bool(stream.get("IsCommentary") or stream.get("Commentary"))
             embedded.append(EmbeddedSub(index=stream.get("Index", 0),
                                         lang=(stream.get("Language") or "und"),
                                         codec=(stream.get("Codec") or ""),
                                         title=(stream.get("Title") or ""),
                                         external=external,
-                                        sub_index=-1 if external else inside))
+                                        sub_index=-1 if external else inside,
+                                        forced=forced,
+                                        hearing_impaired=hearing_impaired,
+                                        default=default,
+                                        commentary=commentary))
             if not external:
                 inside += 1
 

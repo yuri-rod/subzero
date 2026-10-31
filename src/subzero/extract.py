@@ -135,7 +135,7 @@ def list_subtitle_streams(path) -> list[SubtitleStream]:
         "-select_streams", "s",
         "-show_entries",
         "stream=index,codec_name,codec_type:stream_tags=language,title:"
-        "stream_disposition=default,forced,hearing_impaired",
+        "stream_disposition",
         "-of", "json",
         str(path),
     ]
@@ -260,6 +260,60 @@ def extract_stream(
     return out
 
 
+def stream_quality_score(stream: SubtitleStream) -> int:
+    """Score a subtitle stream for dialogue extraction.
+
+    Penalizes commentary, forced, and signs or songs tracks. Rewards main
+    dialogue, default disposition, and clean text formats.
+    """
+    score = 100
+    title = (stream.title or "").lower()
+    disp = getattr(stream, "disposition", {}) or {}
+
+    is_commentary = bool(
+        disp.get("comment")
+        or disp.get("commentary")
+        or any(w in title for w in ("commentary", "director", "comentário", "comentario", "cast", "producer"))
+    )
+    if is_commentary:
+        score -= 150
+
+    is_forced = bool(
+        disp.get("forced")
+        or any(w in title for w in ("forced", "forçada", "forcada"))
+    )
+    if is_forced:
+        score -= 100
+
+    is_signs_songs = bool(
+        disp.get("lyrics")
+        or disp.get("karaoke")
+        or any(w in title for w in ("signs", "songs", "lyrics", "musica", "música", "sing-along"))
+    )
+    if is_signs_songs:
+        score -= 80
+
+    is_sdh = bool(
+        disp.get("hearing_impaired")
+        or any(w in title for w in ("sdh", "cc"))
+    )
+    if is_sdh:
+        score -= 20
+
+    if disp.get("default") and not (is_commentary or is_forced or is_signs_songs):
+        score += 20
+
+    codec = (stream.codec or "").lower()
+    if codec in ("subrip", "srt"):
+        score += 10
+    elif codec in ("ass", "ssa", "webvtt", "mov_text", "tx3g", "text"):
+        score += 5
+    elif not stream.is_text:
+        score -= 50
+
+    return score
+
+
 def extract_from_video(
     path,
     output_dir=None,
@@ -304,8 +358,8 @@ def extract_from_video(
         return result
 
     if not all_streams and indexes is None:
-        text = [s for s in chosen if s.is_text]
-        chosen = [text[0] if text else chosen[0]]
+        candidates = [s for s in chosen if s.is_text] or chosen
+        chosen = [max(candidates, key=stream_quality_score)]
 
     out_dir = Path(output_dir) if output_dir else path.parent
     for s in chosen:

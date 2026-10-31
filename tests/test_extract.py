@@ -15,6 +15,7 @@ from subzero.extract import (
     is_video,
     list_subtitle_streams,
     require_ffmpeg,
+    stream_quality_score,
 )
 
 
@@ -171,3 +172,90 @@ def test_video_extensions_include_mlv_mp4():
     assert ".mlv" in VIDEO_EXTENSIONS
     assert ".mp4" in VIDEO_EXTENSIONS
     assert ".mkv" in VIDEO_EXTENSIONS
+
+
+def test_stream_quality_score_ranks_dialogue_over_commentary_and_forced():
+    commentary = SubtitleStream(
+        index=0, codec="subrip", language="eng", title="Commentary by Director",
+        disposition={"comment": 1},
+    )
+    forced = SubtitleStream(
+        index=1, codec="subrip", language="eng", title="English Forced",
+        disposition={"forced": 1},
+    )
+    signs = SubtitleStream(
+        index=2, codec="subrip", language="eng", title="Songs and Signs",
+        disposition={"lyrics": 1},
+    )
+    sdh = SubtitleStream(
+        index=3, codec="subrip", language="eng", title="English SDH",
+        disposition={"hearing_impaired": 1},
+    )
+    dialogue = SubtitleStream(
+        index=4, codec="subrip", language="eng", title="English",
+        disposition={"default": 1},
+    )
+
+    assert stream_quality_score(commentary) < 0
+    assert stream_quality_score(forced) < 50
+    assert stream_quality_score(signs) < 50
+    assert stream_quality_score(dialogue) > stream_quality_score(sdh)
+    assert stream_quality_score(sdh) > stream_quality_score(forced)
+    assert stream_quality_score(forced) > stream_quality_score(commentary)
+
+
+def test_extract_from_video_selects_main_dialogue_over_commentary_and_forced(tmp_path, monkeypatch):
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"fake")
+    monkeypatch.setattr("subzero.extract.require_ffmpeg", lambda: ("ffmpeg", "ffprobe"))
+
+    streams = [
+        SubtitleStream(
+            index=0, codec="subrip", language="eng", title="Director Commentary",
+            disposition={"comment": 1},
+        ),
+        SubtitleStream(
+            index=1, codec="subrip", language="eng", title="English (Forced)",
+            disposition={"forced": 1},
+        ),
+        SubtitleStream(
+            index=2, codec="subrip", language="eng", title="English Full Dialogue",
+            disposition={"default": 1},
+        ),
+    ]
+    monkeypatch.setattr("subzero.extract.list_subtitle_streams", lambda p: streams)
+
+    res = extract_from_video(video, dry=True, all_streams=False, languages=("eng",))
+    assert len(res.outputs) == 1
+    # Chosen stream must be index 2 (full dialogue), not 0 (commentary) or 1 (forced)
+    assert res.outputs[0].endswith(".eng.2.srt")
+
+
+def test_list_subtitle_streams_parses_all_dispositions(tmp_path, monkeypatch):
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"fake")
+    monkeypatch.setattr("subzero.extract.require_ffmpeg", lambda: ("ffmpeg", "ffprobe"))
+
+    payload = _ffprobe_payload([
+        {
+            "index": 0,
+            "codec_name": "subrip",
+            "tags": {"language": "eng", "title": "Commentary"},
+            "disposition": {"comment": 1, "default": 0, "forced": 0, "hearing_impaired": 0},
+        },
+        {
+            "index": 1,
+            "codec_name": "subrip",
+            "tags": {"language": "eng", "title": "Dialogue"},
+            "disposition": {"default": 1, "forced": 0, "hearing_impaired": 0, "lyrics": 0},
+        },
+    ])
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr("subzero.extract._run", fake_run)
+    streams = list_subtitle_streams(video)
+    assert len(streams) == 2
+    assert streams[0].disposition.get("comment") == 1
+    assert streams[1].disposition.get("default") == 1

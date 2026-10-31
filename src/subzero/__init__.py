@@ -23,6 +23,7 @@ from .extract import (
     collect_videos,
     extract_from_video,
     list_subtitle_streams,
+    stream_quality_score,
 )
 from .merge import merge_cues, merge_files
 from .moviehash import moviehash
@@ -66,6 +67,7 @@ __all__ = [
     "rewrap",
     "strip_sdh",
     "list_subtitle_streams",
+    "stream_quality_score",
     "moviehash",
     "parse_ass",
     "parse_srt",
