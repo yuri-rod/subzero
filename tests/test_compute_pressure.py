@@ -1,4 +1,6 @@
+import importlib.util
 import json
+import os
 import subprocess
 import threading
 from types import SimpleNamespace
@@ -7,12 +9,17 @@ import pytest
 
 from subzero import compute
 
+posix_only = pytest.mark.skipif(
+    os.name != 'posix' or importlib.util.find_spec('fcntl') is None,
+    reason='Shared compute lock requires POSIX fcntl',
+)
+
 
 def test_linux_snapshot_uses_available_memory_and_swap_in_bytes(monkeypatch):
     monkeypatch.setattr(compute.sys, 'platform', 'linux')
     read_text = compute.Path.read_text
     def read(path, *args, **kwargs):
-        if str(path) == '/proc/meminfo':
+        if str(path).replace('\\', '/') == '/proc/meminfo':
             return 'MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 200 kB\nSwapFree: 50 kB\n'
         return read_text(path, *args, **kwargs)
     monkeypatch.setattr(compute.Path, 'read_text', read)
@@ -131,6 +138,7 @@ def test_pressure_does_not_interrupt_an_active_compute_owner(monkeypatch):
         thread.join(3)
 
 
+@posix_only
 def test_pressure_cleanup_keeps_another_process_lease_intact(tmp_path, monkeypatch):
     import fcntl
     lock_path = tmp_path / 'compute.lock'
@@ -145,6 +153,7 @@ def test_pressure_cleanup_keeps_another_process_lease_intact(tmp_path, monkeypat
         assert compute._blocked is None
 
 
+@posix_only
 def test_pressure_cleanup_uses_owned_policy_lock(tmp_path, monkeypatch):
     lock_path = tmp_path / 'compute.lock'
     lock_path.touch(mode=0o600)
@@ -161,6 +170,7 @@ def test_pressure_cleanup_uses_owned_policy_lock(tmp_path, monkeypatch):
     assert compute._blocked is None
 
 
+@posix_only
 def test_unverified_pressure_cleanup_retains_the_native_lock(tmp_path, monkeypatch):
     lock_path = tmp_path / 'compute.lock'
     policy = SimpleNamespace(lock_path=lock_path, label='test.ollama')
@@ -182,6 +192,7 @@ def test_unverified_pressure_cleanup_retains_the_native_lock(tmp_path, monkeypat
             compute.os.close(compute._blocked[0])
 
 
+@posix_only
 def test_pressure_is_rechecked_after_waiting_for_compute_lease(tmp_path, monkeypatch):
     lock_path = tmp_path / 'compute.lock'
     policy = SimpleNamespace(lock_path=lock_path, startup_timeout=1, shutdown_timeout=1)
@@ -247,6 +258,8 @@ def test_background_watchdog_samples_without_interrupting_running_work(monkeypat
 
 @pytest.mark.parametrize('pending_stage', ['sampling', 'cleanup'])
 def test_pressure_status_remains_readable_during_slow_resource_work(tmp_path, monkeypatch, pending_stage):
+    if pending_stage == 'cleanup' and (os.name != 'posix' or importlib.util.find_spec('fcntl') is None):
+        pytest.skip('Compute lock cleanup requires POSIX fcntl')
     entered = threading.Event()
     release = threading.Event()
     observed = threading.Event()
