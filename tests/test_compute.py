@@ -3,6 +3,8 @@ import json
 import multiprocessing
 import os
 import plistlib
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -672,3 +674,62 @@ def test_start_never_checks_http_when_daemon_identity_remains_wrong(policy, monk
     monkeypatch.setattr(lifecycle, '_ready', lambda: pytest.fail('Unverified daemon must not receive HTTP'))
     with pytest.raises(RuntimeError, match='startup timeout'):
         lifecycle.start()
+
+
+def test_reap_process_group_kills_orphaned_grandchildren_after_parent_exits(tmp_path):
+    if os.name != 'posix':
+        pytest.skip('Process group operations require POSIX')
+    grandchild_pid_file = tmp_path / 'grandchild.pid'
+    script = f'''
+import os, subprocess, sys, time
+p = subprocess.Popen([sys.executable, '-c', 'import os, pathlib, time; pathlib.Path("{grandchild_pid_file}").write_text(str(os.getpid())); time.sleep(60)'])
+sys.exit(0)
+'''
+    parent = subprocess.Popen([sys.executable, '-c', script], start_new_session=True)
+    parent.wait(timeout=5)
+    assert parent.poll() == 0
+
+    deadline = time.monotonic() + 5
+    while not grandchild_pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert grandchild_pid_file.exists()
+    grandchild_pid = int(grandchild_pid_file.read_text())
+
+    os.kill(grandchild_pid, 0)
+    compute.reap_process_group(parent, timeout=5)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(grandchild_pid, 0)
+
+
+def test_reap_process_group_releases_compute_lease_held_by_grandchild(policy, lifecycle, tmp_path):
+    if os.name != 'posix':
+        pytest.skip('Process group lease tests require POSIX')
+    grandchild_pid_file = tmp_path / 'grandchild.pid'
+
+    with compute.compute_phase('vision'):
+        lease = compute.compute_lease_fd()
+        assert lease is not None
+        script = f'''
+import os, subprocess, sys, time
+p = subprocess.Popen([sys.executable, '-c', 'import os, pathlib, time; pathlib.Path("{grandchild_pid_file}").write_text(str(os.getpid())); time.sleep(60)'], pass_fds=({lease},))
+sys.exit(0)
+'''
+        parent = subprocess.Popen([sys.executable, '-c', script], pass_fds=(lease,), start_new_session=True)
+        parent.wait(timeout=5)
+        assert parent.poll() == 0
+
+        deadline = time.monotonic() + 5
+        while not grandchild_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert grandchild_pid_file.exists()
+        grandchild_pid = int(grandchild_pid_file.read_text())
+
+        compute.reap_process_group(parent, timeout=5)
+
+        with pytest.raises(ProcessLookupError):
+            os.kill(grandchild_pid, 0)
+
+    with compute.compute_phase('vision') as strict:
+        assert strict is True
+        assert compute.compute_lease_fd() is not None

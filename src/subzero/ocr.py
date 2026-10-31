@@ -26,6 +26,7 @@ from .caption_scan_cache import CaptionScanCache
 from .compute import (
     ComputePressureError,
     ComputeShutdownError,
+    accepts_cancel_check,
     check_cancelled,
     compute_lease_fd,
     compute_phase,
@@ -818,9 +819,9 @@ def _scan_caption_frames(
                 timestamps = [float(value) for value in re.findall(r"\bpts_time:([\d.eE+-]+)", stderr)]
                 if not frames or len(timestamps) < len(frames):
                     raise RuntimeError("ffmpeg did not return timestamped caption frames")
-                try:
+                if cancel_check is not None and accepts_cancel_check(_vision_frames):
                     by_file = _vision_frames(binary, frames, cancel_check=cancel_check)
-                except TypeError:
+                else:
                     by_file = _vision_frames(binary, frames)
                 ordered = [by_file[frame.name] for frame in frames]
                 selected = ([index for index, frame in enumerate(ordered) if not _caption_title_card(frame)]
@@ -828,9 +829,9 @@ def _scan_caption_frames(
                 retried = {}
                 if selected:
                     retry_frames = [frames[index] for index in selected]
-                    try:
+                    if cancel_check is not None and accepts_cancel_check(_vision_frames):
                         retried = _vision_frames(binary, retry_frames, caption_region=True, cancel_check=cancel_check)
-                    except TypeError:
+                    else:
                         retried = _vision_frames(binary, retry_frames, caption_region=True)
                     readings = recover_caption_runs(ordered, {index: retried[frames[index].name] for index in selected},
                                                     timestamps, center_tolerance)

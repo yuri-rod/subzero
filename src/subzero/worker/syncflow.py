@@ -17,6 +17,7 @@ from subzero.caption_timeline import compose_caption_timeline, validate_caption_
 from subzero.compute import (
     ComputePressureError,
     ComputeShutdownError,
+    accepts_cancel_check,
     check_cancelled,
     compute_phase,
     is_cancelled,
@@ -52,11 +53,8 @@ def digest(text):
 
 
 def _call_with_cancel(fn, *args, cancel_check=None, **kwargs):
-    if cancel_check is not None:
-        try:
-            return fn(*args, cancel_check=cancel_check, **kwargs)
-        except TypeError:
-            pass
+    if cancel_check is not None and accepts_cancel_check(fn):
+        return fn(*args, cancel_check=cancel_check, **kwargs)
     return fn(*args, **kwargs)
 
 

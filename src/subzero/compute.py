@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import inspect
 import ipaddress
 import json
 import math
@@ -202,47 +203,115 @@ def check_cancelled(cancel_check) -> None:
         raise RuntimeError('Subtitle job cancelled')
 
 
+def accepts_cancel_check(fn) -> bool:
+    """Return True if callable accepts cancel_check or arbitrary kwargs."""
+    if not callable(fn):
+        return False
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == 'cancel_check' and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def _is_pgid_alive(pgid: int | None) -> bool:
+    """Return True if at least one process in the process group is running."""
+    if pgid is None or os.name != 'posix':
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def reap_process_group(proc, timeout: float = 10.0, name: str = 'child') -> None:
     """Terminate and reap a subprocess and its process group cleanly.
 
-    Ensures child processes do not linger and retain the shared compute lease.
+    Ensures child processes and any surviving descendants do not linger
+    and retain the shared compute lease.
     """
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
+
+    pid = getattr(proc, 'pid', None)
     pgid = None
-    if os.name == 'posix':
+    if os.name == 'posix' and pid is not None:
         try:
-            pgid = os.getpgid(proc.pid)
-            if pgid != os.getpid():
-                os.killpg(pgid, signal.SIGTERM)
+            current_pgrp = os.getpgrp()
+            current_pid = os.getpid()
+        except OSError:
+            current_pgrp = None
+            current_pid = None
+
+        try:
+            cand = os.getpgid(pid)
+            if cand not in (current_pid, current_pgrp):
+                pgid = cand
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+        if pgid is None and pid not in (current_pid, current_pgrp) and _is_pgid_alive(pid):
+            pgid = pid
+
+    # If the process and its entire process group have already exited, return
+    proc_dead = proc.poll() is not None
+    group_dead = not _is_pgid_alive(pgid)
+    if proc_dead and group_dead:
+        return
+
+    # Phase 1: Graceful termination via SIGTERM
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
     try:
         proc.terminate()
     except (ProcessLookupError, PermissionError, OSError):
         pass
 
-    try:
-        proc.wait(timeout=timeout)
-        return
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    deadline = time.monotonic() + max(0.1, timeout)
+    term_deadline = time.monotonic() + min(max(0.1, timeout) * 0.5, 5.0)
 
-    if os.name == 'posix' and pgid is not None and pgid != os.getpid():
+    while time.monotonic() < term_deadline:
+        if proc.poll() is not None and not _is_pgid_alive(pgid):
+            return
+        time.sleep(0.05)
+
+    # Phase 2: Escalation to SIGKILL
+    if pgid is not None:
         try:
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
     try:
         proc.kill()
     except (ProcessLookupError, PermissionError, OSError):
         pass
 
-    try:
-        proc.wait(timeout=timeout)
-    except (subprocess.TimeoutExpired, OSError) as err:
-        pids = (proc.pid,) if getattr(proc, 'pid', None) is not None else ()
-        raise ComputeShutdownError(f'{name} did not exit after termination', pids=pids) from err
+    while time.monotonic() < deadline:
+        if proc.poll() is not None and not _is_pgid_alive(pgid):
+            return
+        time.sleep(0.05)
+
+    if proc.poll() is None or _is_pgid_alive(pgid):
+        pids = (pid,) if pid is not None else ()
+        raise ComputeShutdownError(f'{name} did not exit after termination', pids=pids)
 
 
 def _endpoint(url):

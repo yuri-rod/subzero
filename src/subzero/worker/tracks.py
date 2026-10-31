@@ -16,6 +16,7 @@ from typing import Callable
 from subzero.compute import (
     ComputePressureError,
     ComputeShutdownError,
+    accepts_cancel_check,
     check_cancelled,
     compute_phase,
     is_cancelled,
@@ -302,15 +303,10 @@ def transcribe(audio_path: str, holder: ModelHolder, progress: Progress, *,
                cancel_check=None) -> tuple[list[Cue], str]:
     with holder.lock:
         with compute_phase("whisper") as isolated:
-            if isolated:
-                try:
-                    return transcribe_in_process(audio_path, holder, progress, cancel_check=cancel_check)
-                except TypeError:
-                    return transcribe_in_process(audio_path, holder, progress)
-            try:
-                return _transcribe(audio_path, holder, progress, cancel_check=cancel_check)
-            except TypeError:
-                return _transcribe(audio_path, holder, progress)
+            target_fn = transcribe_in_process if isolated else _transcribe
+            if cancel_check is not None and accepts_cancel_check(target_fn):
+                return target_fn(audio_path, holder, progress, cancel_check=cancel_check)
+            return target_fn(audio_path, holder, progress)
 
 
 def _transcribe(audio_path: str, holder: ModelHolder, progress: Progress, *,

@@ -2246,5 +2246,35 @@ def test_cancellation_during_rebuild_terminates_job_cleanly(setup, monkeypatch, 
     assert cancelled_seen is True
 
 
+def test_call_with_cancel_does_not_mask_internal_type_error_or_run_twice():
+    from subzero.worker.syncflow import _call_with_cancel
+
+    calls = []
+
+    def buggy_func(*args, cancel_check=None):
+        calls.append(1)
+        raise TypeError('internal type error inside function')
+
+    with pytest.raises(TypeError, match='internal type error inside function'):
+        _call_with_cancel(buggy_func, 1, 2, cancel_check=lambda: False)
+
+    assert len(calls) == 1, 'Function must not be invoked a second time upon TypeError'
+
+
+def test_call_with_cancel_omits_cancel_check_for_incompatible_signatures():
+    from subzero.worker.syncflow import _call_with_cancel
+
+    calls = []
+
+    def simple_func(a, b):
+        calls.append((a, b))
+        return a + b
+
+    res = _call_with_cancel(simple_func, 10, 20, cancel_check=lambda: False)
+    assert res == 30
+    assert calls == [(10, 20)]
+
+
+
 
 
