@@ -272,6 +272,8 @@ def convert_file(
         out = path.with_suffix(f".{target}")
     result.path = str(out)
     if not dry:
+        if out.is_symlink():
+            raise OSError(f"Refusing to write through symbolic link: {out}")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(result.text.encode("utf-8"))
     return result

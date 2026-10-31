@@ -394,6 +394,9 @@ def read(path) -> tuple[str, str]:
 def fix_file(path, opts: Options | None = None, backup_dir=None,
              dry: bool = False) -> Result | None:
     """Fix one file in place. Returns None when nothing parsed as a cue."""
+    target = Path(path)
+    if target.is_symlink():
+        raise OSError(f"Refusing to modify symbolic link: {path}")
     raw, encoding = read(path)
     result = fix_text(raw, opts)
     if not result.cues:
@@ -403,11 +406,12 @@ def fix_file(path, opts: Options | None = None, backup_dir=None,
         return result
     if backup_dir:
         os.makedirs(backup_dir, exist_ok=True)
-        dest = os.path.join(backup_dir, os.path.basename(str(path)))
+        dest = Path(backup_dir) / target.name
+        if dest.is_symlink():
+            raise OSError(f"Refusing to write backup through symbolic link: {dest}")
         # never overwrite an existing backup: the first one is the true original
-        if not os.path.exists(dest):
-            with open(dest, "wb") as fh:
-                fh.write(open(path, "rb").read())
+        if not dest.exists():
+            dest.write_bytes(target.read_bytes())
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", newline="", delete=False,
         dir=os.path.dirname(os.path.abspath(path)), prefix=".subzero-", suffix=".subzero-part",

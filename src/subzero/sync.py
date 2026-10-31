@@ -91,8 +91,10 @@ def auto_sync_file(
     if not sub_p.exists():
         raise FileNotFoundError(f"Subtitle file not found: {sub_p}")
 
-    content, _ = read(sub_p)
     target = Path(output) if output else sub_p
+    if sub_p.is_symlink() or target.is_symlink():
+        raise OSError(f"Refusing to modify symbolic link: {target if target.is_symlink() else sub_p}")
+    content, _ = read(sub_p)
     result = None
     try:
         from .reference import build_reference, verify_text
@@ -121,7 +123,11 @@ def auto_sync_file(
             if backup_dir and target == sub_p:
                 bdir = Path(backup_dir)
                 bdir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sub_p, bdir / sub_p.name)
+                bfile = bdir / sub_p.name
+                if bfile.is_symlink():
+                    raise OSError(f"Refusing to write backup through symbolic link: {bfile}")
+                if not bfile.exists():
+                    shutil.copy2(sub_p, bfile)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content.encode("utf-8"))
         return result

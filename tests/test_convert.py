@@ -163,3 +163,17 @@ class TestConvert:
     def test_unsupported_target(self):
         with pytest.raises(ValueError):
             convert_text(SRT, "xyz", source="srt")
+
+    def test_convert_file_rejects_output_symlink(self, tmp_path):
+        src = tmp_path / "a.srt"
+        src.write_text(SRT, encoding="utf-8")
+        unrelated = tmp_path / "unrelated.txt"
+        unrelated.write_text("keep", encoding="utf-8")
+        out = tmp_path / "a.vtt"
+        try:
+            out.symlink_to(unrelated)
+        except OSError:
+            pytest.skip("Creating symlinks requires platform permissions")
+        with pytest.raises(OSError, match="symbolic link"):
+            convert_file(src, "vtt")
+        assert unrelated.read_text(encoding="utf-8") == "keep"

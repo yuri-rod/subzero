@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import os
 import sys
 from pathlib import Path
 
@@ -13,7 +12,6 @@ from . import __version__
 from .convert import FORMATS, convert_file
 from .core import Options, analyze, fix_file, read
 from .extract import (
-    VIDEO_EXTENSIONS,
     collect_videos,
     extract_from_video,
     list_subtitle_streams,
@@ -373,11 +371,17 @@ def cmd_translate(args) -> int:
         return 1
     failed = 0
     for p in files:
+        out_arg = args.output
+        if out_arg:
+            out_path = Path(out_arg)
+            if len(files) > 1 or out_path.is_dir():
+                out_path.mkdir(parents=True, exist_ok=True)
+                out_arg = out_path
         try:
             out = translate_file(
                 p,
                 target_lang=args.to,
-                output=args.output,
+                output=out_arg,
                 provider=args.provider,
                 model=args.model,
                 url=args.url,
@@ -412,13 +416,15 @@ def cmd_moviehash(args) -> int:
     if not files:
         print("subzero: no files found", file=sys.stderr)
         return 1
+    failed = 0
     for p in files:
         try:
             h = moviehash(p)
             print(f"{h}  {p}")
         except Exception as e:                              # noqa: BLE001
+            failed += 1
             print(f"failed {p}: {str(e)[:160]}", file=sys.stderr)
-    return 0
+    return 1 if failed else 0
 
 
 def cmd_watch(args) -> int:

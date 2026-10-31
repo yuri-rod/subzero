@@ -90,6 +90,8 @@ def merge_files(
     merged = merge_cues(cues1, cues2, separator=separator, secondary_color=secondary_color)
 
     out_path = Path(output) if output else p1.parent / f"{p1.stem}.bilingual.srt"
+    if out_path.is_symlink():
+        raise OSError(f"Refusing to write through symbolic link: {out_path}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(dump_srt(merged), encoding="utf-8")
     return out_path, len(merged)

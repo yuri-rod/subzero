@@ -69,3 +69,23 @@ def test_utf8_dialogue_with_a_nul_is_not_mistaken_for_utf16(tmp_path):
     _, count = shift_file(subtitle, delta_seconds=1)
     assert count == 2
     assert "Hello\x00 world." in subtitle.read_text(encoding="utf-8")
+
+
+def test_shift_file_preserves_first_backup_and_rejects_symlinks(tmp_path):
+    subtitle = tmp_path / "movie.srt"
+    subtitle.write_text(SAMPLE_SRT, encoding="utf-8")
+    backup_dir = tmp_path / "backups"
+
+    shift_file(subtitle, delta_seconds=1.0, backup_dir=backup_dir)
+    shift_file(subtitle, delta_seconds=1.0, backup_dir=backup_dir)
+
+    assert "00:00:01,000 --> 00:00:04,000" in (backup_dir / "movie.srt").read_text(encoding="utf-8")
+    assert "00:00:03,000 --> 00:00:06,000" in subtitle.read_text(encoding="utf-8")
+
+    link = tmp_path / "link.srt"
+    try:
+        link.symlink_to(subtitle)
+    except OSError:
+        pytest.skip("Creating symlinks requires platform permissions")
+    with pytest.raises(OSError, match="symbolic link"):
+        shift_file(link, delta_seconds=1.0)

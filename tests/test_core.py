@@ -76,6 +76,23 @@ class TestFileReplacement:
         assert subtitle.read_bytes() == original
         assert list(tmp_path.iterdir()) == [subtitle]
 
+    def test_refuses_to_modify_symlink_or_backup_symlink(self, tmp_path):
+        real = tmp_path / "real.srt"
+        real.write_text(cue("[sighs] Hello."), encoding="utf-8")
+        link = tmp_path / "link.srt"
+        try:
+            link.symlink_to(real)
+        except OSError:
+            pytest.skip("Creating symlinks requires platform permissions")
+        with pytest.raises(OSError, match="symbolic link"):
+            fix_file(link)
+
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        (backup_dir / "real.srt").symlink_to(tmp_path / "target.srt")
+        with pytest.raises(OSError, match="symbolic link"):
+            fix_file(real, backup_dir=backup_dir)
+
 
 class TestSdhRemoval:
     @pytest.mark.parametrize("body", [

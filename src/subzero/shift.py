@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 from .core import read
@@ -91,10 +93,13 @@ def shift_file(
     if from_fps is not None and to_fps is not None:
         scale_factor = scale_factor * calculate_fps_factor(from_fps, to_fps)
 
+    path = Path(path)
+    target = Path(output) if output else path
+    if path.is_symlink() or target.is_symlink():
+        raise OSError(f"Refusing to modify symbolic link: {target if target.is_symlink() else path}")
+
     content, _ = read(path)
     shifted_text, count = shift_timestamps(content, delta_seconds=delta_seconds, scale_factor=scale_factor)
-
-    target = Path(output) if output else path
 
     if dry:
         return target, count
@@ -102,8 +107,26 @@ def shift_file(
     if backup_dir and target == path:
         bdir = Path(backup_dir)
         bdir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, bdir / path.name)
+        bfile = bdir / path.name
+        if bfile.is_symlink():
+            raise OSError(f"Refusing to write backup through symbolic link: {bfile}")
+        if not bfile.exists():
+            shutil.copy2(path, bfile)
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(shifted_text.encode("utf-8"))
+    with tempfile.NamedTemporaryFile(
+        mode="wb", delete=False, dir=target.parent, prefix=".subzero-", suffix=".subzero-part",
+    ) as fh:
+        try:
+            fh.write(shifted_text.encode("utf-8"))
+            fh.flush()
+            os.fsync(fh.fileno())
+            fh.close()
+            if path.exists():
+                shutil.copymode(path, fh.name)
+            os.replace(fh.name, target)
+        finally:
+            fh.close()
+            if os.path.exists(fh.name):
+                os.unlink(fh.name)
     return target, count

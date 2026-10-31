@@ -693,16 +693,22 @@ def translate_file(
     translated = translate_cues(cues, target_lang, client, batch_size=batch_size,
                                 progress=progress, source_lang=source_lang)
 
+    stem = p.stem
+    default_name = (
+        f"{stem.rsplit('.', 1)[0]}.{target_lang}.srt"
+        if stem.endswith(".en") or stem.endswith(".eng")
+        else f"{stem}.{target_lang}.srt"
+    )
     if output:
         out_path = Path(output)
+        if out_path.is_dir():
+            out_path = out_path / default_name
     else:
-        stem = p.stem
-        if stem.endswith(".en") or stem.endswith(".eng"):
-            base_stem = stem.rsplit(".", 1)[0]
-            out_path = p.parent / f"{base_stem}.{target_lang}.srt"
-        else:
-            out_path = p.parent / f"{stem}.{target_lang}.srt"
+        out_path = p.parent / default_name
 
+    if out_path.is_symlink():
+        raise OSError(f"Refusing to write through symbolic link: {out_path}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     raw_srt = dump_srt(translated)
     fixed = fix_text(raw_srt, Options(max_line=42, preserve_breaks=False))
     out_path.write_text(fixed.text, encoding="utf-8", errors="replace")

@@ -123,3 +123,37 @@ def test_sync_output_error_does_not_fall_back_to_container_delay(monkeypatch, tm
         auto_sync_file(video, subtitle, output=tmp_path / "synced.srt")
     assert subtitle.read_text(encoding="utf-8") == original
 
+
+def test_auto_sync_preserves_first_backup_and_rejects_symlink(monkeypatch, tmp_path):
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"video")
+    sub = tmp_path / "movie.srt"
+    original = "1\n00:00:05,000 --> 00:00:07,000\nDelayed cue\n"
+    sub.write_text(original, encoding="utf-8")
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setattr("subzero.sync.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("subzero.reference.build_reference", lambda vid, cache: {})
+    monkeypatch.setattr(
+        "subzero.reference.verify_text",
+        lambda txt, ref: Report("pass", "ok") if "00:00:03,000" in txt or "00:00:01,000" in txt else Report("reject", "drift"),
+    )
+    monkeypatch.setattr("subzero.timing.correction", lambda rep: (1.0, -2.0))
+
+    auto_sync_file(video, sub, backup_dir=backup_dir)
+    sub.write_text("1\n00:00:06,000 --> 00:00:08,000\nSecond shift\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "subzero.reference.verify_text",
+        lambda txt, ref: Report("pass", "ok") if "00:00:04,000" in txt else Report("reject", "drift"),
+    )
+    auto_sync_file(video, sub, backup_dir=backup_dir)
+
+    assert (backup_dir / "movie.srt").read_text(encoding="utf-8") == original
+
+    link = tmp_path / "link.srt"
+    try:
+        link.symlink_to(sub)
+    except OSError:
+        pytest.skip("Creating symlinks requires platform permissions")
+    with pytest.raises(OSError, match="symbolic link"):
+        auto_sync_file(video, link)
+
